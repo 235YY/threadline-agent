@@ -1,16 +1,16 @@
-﻿{
-    "name":  "agent-continuity-core",
-    "version":  "0.1.0",
-    "private":  true,
-    "type":  "module",
-    "engines":  {
-                    "node":  "\u003e=22.13.0"
-                },
-    "scripts":  {
-                    "start":  "node tools/ops/launch.mjs start",
-                    "stop":  "node tools/ops/launch.mjs stop"
-                },
-    "dependencies":  {
-                         "ws":  "8.22.0"
-                     }
+{
+  "name": "threadline-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node tools/ops/launch.mjs start",
+    "stop": "node tools/ops/launch.mjs stop"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  }
 }
