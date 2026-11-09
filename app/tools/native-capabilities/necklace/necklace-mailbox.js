@@ -1,4 +1,4 @@
-import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';import {DatabaseSync} from 'node:sqlite';
+﻿import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';import {DatabaseSync} from 'node:sqlite';
 const day=stamp=>new Date(stamp+8*3600000).toISOString().slice(0,10);
 const text=(value,max,label)=>{if(typeof value!=='string'||!value.trim()||value.length>max)throw Error(label+'需为1至'+max+'字');return value.trim();};
 // Letters are durable objects, separate from conversational memory. Reading is

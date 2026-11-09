@@ -1,4 +1,4 @@
-import {createServer} from 'node:http';
+﻿import {createServer} from 'node:http';
 import {readFileSync,existsSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -17,7 +17,7 @@ const server=createServer(async(req,res)=>{
   if(req.url==='/'||req.url==='/index.html'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html);}
   if(req.url==='/api/qq-status'){
     // 连接器写的状态文件；文件太久没更新说明连接器没在跑
-    const dir=process.env.JINGYANG_DATA,file=dir?join(dir,'ops','qq-status.json'):null;
+    const dir=process.env.AGENT_DATA,file=dir?join(dir,'ops','qq-status.json'):null;
     let value={known:false};
     try{if(file&&existsSync(file))value={known:true,...JSON.parse(readFileSync(file,'utf8'))};}catch{}
     res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify(value));

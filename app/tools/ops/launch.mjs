@@ -1,6 +1,6 @@
-// 跨平台启动器（打包版使用，不依赖 PowerShell）：start | stop | status
+﻿// 跨平台启动器（打包版使用，不依赖 PowerShell）：start | stop | status
 //   node launch.mjs start [--no-open]
-// 目录约定：<包根>/app（本工程）、<包根>/data（记忆与配置）。data 可用环境变量 JINGYANG_DATA 改位置。
+// 目录约定：<包根>/app（本工程）、<包根>/data（记忆与配置）。data 可用环境变量 AGENT_DATA 改位置。
 import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync,mkdirSync,openSync,readFileSync,writeFileSync,unlinkSync,copyFileSync} from 'node:fs';
@@ -8,7 +8,7 @@ import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const app=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
-const data=resolve(process.env.JINGYANG_DATA??join(app,'..','data'));
+const data=resolve(process.env.AGENT_DATA??join(app,'..','data'));
 const ops=join(data,'ops'),logs=join(data,'logs');
 const BRAIN_PORT=Number(process.env.BRAIN_PORT??8787),UI_PORT=Number(process.env.UI_PORT??8790),OFFICE_PORT=Number(process.env.OFFICE_WORKER_PORT??8791);
 const node=process.execPath;
@@ -41,7 +41,7 @@ async function start({open=true}={}){
   const officeToken=process.env.OFFICE_WORKER_TOKEN??randomUUID();
   const officeUrl=`http://127.0.0.1:${OFFICE_PORT}`;
   const env={
-    JINGYANG_DATA:data,BRAIN_LIVE:process.env.BRAIN_LIVE??'1',BRAIN_GLOBAL:'1',BRAIN_HEARTBEAT_MS:process.env.BRAIN_HEARTBEAT_MS??'5000',
+    AGENT_DATA:data,BRAIN_LIVE:process.env.BRAIN_LIVE??'1',BRAIN_GLOBAL:'1',BRAIN_HEARTBEAT_MS:process.env.BRAIN_HEARTBEAT_MS??'5000',
     BRAIN_STORE:join(data,'memory.sqlite'),BRAIN_IDENTITY_FILE:join(data,'persona.txt'),BRAIN_STYLE_DIR:join(data,'style'),
     BRAIN_STATE:join(data,'state'),BRAIN_LEDGER:join(data,'budget.json'),QQ_STICKERS_FILE:join(data,'stickers.json'),QQ_OWNER:process.env.QQ_OWNER??'3482479936',
     OFFICE_WORKER_PORT:String(OFFICE_PORT),OFFICE_WORKER_TOKEN:officeToken,

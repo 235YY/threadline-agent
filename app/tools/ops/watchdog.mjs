@@ -1,11 +1,11 @@
-// 办公室 worker 看门狗：只负责把挂掉的办公室拉回来，不碰 brain、不碰目标。
+﻿// 办公室 worker 看门狗：只负责把挂掉的办公室拉回来，不碰 brain、不碰目标。
 import {spawn} from 'node:child_process';
 import {existsSync,mkdirSync,openSync,readFileSync,writeFileSync} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const app=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
-const data=resolve(process.env.JINGYANG_DATA??join(app,'..','data'));
+const data=resolve(process.env.AGENT_DATA??join(app,'..','data'));
 const ops=join(data,'ops'),logs=join(data,'logs');
 const port=Number(process.env.OFFICE_WORKER_PORT??8791);
 const url=process.env.OFFICE_WORKER_URL??`http://127.0.0.1:${port}`;

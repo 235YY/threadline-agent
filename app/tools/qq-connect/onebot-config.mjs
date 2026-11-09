@@ -1,4 +1,4 @@
-// OneBot v11 连接配置解析。本工程只说标准 OneBot v11（WebSocket 收事件、HTTP 发动作），
+﻿// OneBot v11 连接配置解析。本工程只说标准 OneBot v11（WebSocket 收事件、HTTP 发动作），
 // 不包含也不依赖任何具体实现的代码（SnowLuma / NapCat / LLOneBot 等都行）。
 // 优先级：环境变量 → <data>/qq.json → 自动发现 SnowLuma 的 config → 默认端口(ws 3001 / http 3000)。
 import {existsSync,readFileSync,readdirSync} from 'node:fs';
@@ -6,7 +6,7 @@ import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const app=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
-export const dataDir=()=>process.env.JINGYANG_DATA?resolve(process.env.JINGYANG_DATA):null;
+export const dataDir=()=>process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):null;
 
 function fromFile(){
   const dir=dataDir();if(!dir)return null;

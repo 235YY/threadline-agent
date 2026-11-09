@@ -4,7 +4,7 @@ import {existsSync,readFileSync} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const app=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
-const data=resolve(process.env.JINGYANG_DATA??join(app,'..','data'));
+const data=resolve(process.env.AGENT_DATA??join(app,'..','data'));
 const read=(name,fallback)=>{try{return readFileSync(join(data,'ops',name),'utf8').trim()||fallback;}catch{return fallback;}};
 const url=process.env.OFFICE_WORKER_URL??read('office.url','http://127.0.0.1:8791');
 const token=process.env.OFFICE_WORKER_TOKEN??read('office.token','');
