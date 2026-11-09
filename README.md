@@ -31,6 +31,7 @@ Threadline 是一个可复用的持续认知智能体框架。它把“客观发
 - [数学性质与证明草稿](docs/01-mathematical-properties.md)
 - [设计演进过程](docs/02-evolution.md)
 - [实现状态与边界](docs/03-implementation-status.md)
+- [统觉层数学研究 v0.1.2](docs/04-apperception-math.md)
 
 ## 目录
 
