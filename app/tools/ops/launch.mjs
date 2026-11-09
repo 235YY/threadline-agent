@@ -1,4 +1,4 @@
-﻿// 跨平台启动器（打包版使用，不依赖 PowerShell）：start | stop | status
+// 跨平台启动器（打包版使用，不依赖 PowerShell）：start | stop | status
 //   node launch.mjs start [--no-open]
 // 目录约定：<包根>/app（本工程）、<包根>/data（记忆与配置）。data 可用环境变量 AGENT_DATA 改位置。
 import {spawn,spawnSync} from 'node:child_process';
@@ -41,9 +41,9 @@ async function start({open=true}={}){
   const officeToken=process.env.OFFICE_WORKER_TOKEN??randomUUID();
   const officeUrl=`http://127.0.0.1:${OFFICE_PORT}`;
   const env={
-    AGENT_DATA:data,BRAIN_LIVE:process.env.BRAIN_LIVE??'1',BRAIN_GLOBAL:'1',BRAIN_HEARTBEAT_MS:process.env.BRAIN_HEARTBEAT_MS??'5000',
-    BRAIN_STORE:join(data,'memory.sqlite'),BRAIN_IDENTITY_FILE:join(data,'persona.txt'),BRAIN_STYLE_DIR:join(data,'style'),
-    BRAIN_STATE:join(data,'state'),BRAIN_LEDGER:join(data,'budget.json'),QQ_STICKERS_FILE:join(data,'stickers.json'),QQ_OWNER:process.env.QQ_OWNER??'3482479936',
+    AGENT_DATA:data,BRAIN_LIVE:process.env.BRAIN_LIVE??'0',BRAIN_GLOBAL:'1',BRAIN_HEARTBEAT_MS:process.env.BRAIN_HEARTBEAT_MS??'5000',
+    BRAIN_STORE:join(data,'memory.sqlite'),BRAIN_IDENTITY_FILE:join(data,'identity.txt'),BRAIN_STYLE_DIR:join(data,'style'),
+    BRAIN_STATE:join(data,'state'),BRAIN_LEDGER:join(data,'budget.json'),QQ_STICKERS_FILE:join(data,'stickers.json'),...(process.env.QQ_OWNER?{QQ_OWNER:process.env.QQ_OWNER}:{}),
     OFFICE_WORKER_PORT:String(OFFICE_PORT),OFFICE_WORKER_TOKEN:officeToken,
     OFFICE_WORKER_URL:officeUrl,
   };

@@ -1,9 +1,9 @@
-﻿// 本机脑服务启动器：默认 dry-run；BRAIN_LIVE=1 时接真实模型，日预算封顶。
+// 本机脑服务启动器：默认 dry-run；BRAIN_LIVE=1 时接真实模型，日预算封顶。
 import {startBrainService} from './server.mjs';
 import {createModelDecision} from '../../src/model-transport.mjs';
 import {MaintenanceSession,startMaintenanceHeartbeat} from '../../src/maintenance.mjs';
 import {executeTool} from '../qq-connect/tools.mjs';
-import {plainKeyPath} from '../../experiments/automated-study/credential.mjs';
+import {studyKey} from '../../src/model-key.mjs';
 import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 
@@ -38,10 +38,10 @@ if(live){
 let model=null,decide=undefined;
 try{
   if(live){
-    model=createModelDecision({ledgerPath,profile:{dailyMicros:10_000_000,dailyCalls:300,maxTokens:3000,reasoning:'low'}});
+    model=createModelDecision({ledgerPath,getKey:studyKey,profile:{dailyMicros:10_000_000,dailyCalls:300,maxTokens:3000,reasoning:'low'}});
     decide=model.decide;
   }
-  const service=await startBrainService({port,token,storePath,taskStorePath:resolve(process.env.BRAIN_TASKS??'../data/tasks.sqlite'),stateDirectory,styleDirectory,heartbeatMs,decide,identity,keyFile:plainKeyPath(),rhythm:{dailyCallCap:300},extraStatus:()=>({mode:model?'live':'dry-run',budget:model?.state?.()??null}),vision:model?.vision??null,adapter:{act:({tool,args,action,taskId})=>executeTool(tool,args,{actionId:action?.id,taskId}),send:async({scene,text,utterances})=>{
+  const service=await startBrainService({port,token,storePath,taskStorePath:resolve(process.env.BRAIN_TASKS??'../data/tasks.sqlite'),stateDirectory,styleDirectory,heartbeatMs,decide,identity,rhythm:{dailyCallCap:300},extraStatus:()=>({mode:model?'live':'dry-run',budget:model?.state?.()??null}),vision:model?.vision??null,adapter:{act:({tool,args,action,taskId})=>executeTool(tool,args,{actionId:action?.id,taskId}),send:async({scene,text,utterances})=>{
     if(scene?.startsWith('local/'))return {delivered:true,local:true};
     const parts=Array.isArray(utterances)&&utterances.length?utterances:[{text,delayMs:0}];
     const target=scene?.startsWith('qq/private/')?{kind:'private',id:scene.slice('qq/private/'.length)}:scene?.startsWith('qq/group/')?{kind:'group',id:scene.slice('qq/group/'.length)}:null;

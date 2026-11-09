@@ -5,9 +5,9 @@ import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {canonical,ensure,digest} from './contracts.mjs';
 import {verifiedModelInput} from './cognition.mjs';
-import {DeepSeekStudyClient,RATES,requireStudyNetwork} from '../experiments/model-study/client.mjs';
-import {writeLedgerAtomically} from '../experiments/model-study/ledger-io.mjs';
-import {studyKey} from '../experiments/automated-study/credential.mjs';
+import {DeepSeekStudyClient,RATES,requireStudyNetwork} from './model-client.mjs';
+import {writeLedgerAtomically} from './model-ledger.mjs';
+import {studyKey} from './model-key.mjs';
 
 const DAY=/^\d{4}-\d{2}-\d{2}$/;
 const usedMicros=rows=>rows.reduce((sum,r)=>sum+(r.status==='settled'?r.actualMicros:r.status==='released'?0:r.reserveMicros),0);

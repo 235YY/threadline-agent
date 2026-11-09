@@ -43,28 +43,45 @@ app/
 data.example/  本地数据目录示例（不含任何真实数据）
 ```
 
-## 运行要求
+## 快速开始
+
+要求：
 
 ```text
 Node.js >= 22.13
 ```
 
+从仓库根目录执行：
+
 ```bash
 cd app
 npm install
+node tools/ops/init.mjs
 ```
 
-把 `data.example/` 复制成 `data/`，再按需配置：
+`init` 会创建：
 
 ```text
-data/identity.txt   智能体身份模板（可空）
-data/secrets/       本地凭据，不进入 Git
+data/memory.sqlite   空记忆库
+data/identity.txt    通用身份模板
+data/secrets/        本地凭据目录
+data/style/          风格目录
+data/logs/           日志目录
+workspace/agent-office/  办公室工作区
 ```
 
-启动：
+然后启动：
 
 ```bash
-node tools/ops/launch.mjs start
+node tools/ops/launch.mjs start --no-open
+```
+
+默认是 **dry-run**，不需要模型 key，用来检查服务能否启动。
+
+控制台：
+
+```text
+http://127.0.0.1:8790
 ```
 
 停止：
@@ -72,6 +89,84 @@ node tools/ops/launch.mjs start
 ```bash
 node tools/ops/launch.mjs stop
 ```
+
+## 接入真实模型
+
+默认 `BRAIN_LIVE=0`。接真实模型时：
+
+```bash
+BRAIN_LIVE=1 node tools/ops/launch.mjs start --no-open
+```
+
+模型 key 支持两种方式：
+
+```text
+DEEPSEEK_API_KEY 环境变量
+或
+data/secrets/deepseek.key
+```
+
+PowerShell 示例：
+
+```powershell
+$env:BRAIN_LIVE = "1"
+$env:DEEPSEEK_API_KEY = "你的 key"
+node tools/ops/launch.mjs start --no-open
+```
+
+不要把 key 写进仓库、README 或日志。
+
+## 接入 QQ / OneBot
+
+把示例：
+
+```text
+data.example/qq.json.example
+```
+
+复制为：
+
+```text
+data/qq.json
+```
+
+按你的 OneBot 实现修改：
+
+```json
+{
+  "ws": "ws://127.0.0.1:3001/",
+  "http": "http://127.0.0.1:3000",
+  "token": ""
+}
+```
+
+支持标准 OneBot v11；SnowLuma / NapCat / LLOneBot 等都可以，不做绑定。
+
+QQ 没启动时，连接器会等待，不会影响 brain/office 启动。
+
+## 办公室和插件
+
+办公室工作区默认在：
+
+```text
+workspace/agent-office/
+```
+
+插件放在：
+
+```text
+workspace/agent-office/plugins/
+```
+
+相关工具：
+
+```text
+office_*       文件、命令、npm
+office_plugin_* 插件安装与运行
+github_*       一个配置仓库的最小权限操作
+```
+
+具体能力可以从 UI 或工具层查看。
 
 ## 隐私边界
 
