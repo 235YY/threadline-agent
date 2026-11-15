@@ -1,0 +1,31 @@
+{
+  "commit": "2132fa81b20134f469fd7adeb8e38fa20dd32071",
+  "source": "https://github.com/fistu4088/limbic",
+  "license": "MIT",
+  "files": {
+    "LICENSE": "89fd402f84aa54815f36264f5645e18c2801f4a04944444bc975674b0fb4fae4",
+    "pyproject.toml": "d6d612335e0f80fbee1225752585bb0f19ac77f26e6f335607b346718c13e268",
+    "limbic/agent.py": "eb8d2dc7bf89c962b66d12dfd8ee96e493e9096ac4b6cc6cf14f35a2efd39ee0",
+    "limbic/appraisal.py": "e80b1b40c399c12ddad9f38c6862bee0d1521cbede204f763a71c15ddc09b69d",
+    "limbic/cli.py": "a94ece991168b4ec6c0dd58348b9db9e8ab78911ae9a66d01acdead56f393434",
+    "limbic/demo.py": "c58fa2a92155d3f4cf180209da6b07973c195060af90ec22cbf6ec053b934102",
+    "limbic/emotions.py": "bfcaa369683510c332385f6bb6ed06bf1034850846c13149fcbec76de2075e68",
+    "limbic/engine.py": "2872c990ce8f269562053f3b6a50a8d016a17f2f2f2d36655573a07ca515f24a",
+    "limbic/hermes.py": "939919a68ff619ed2ce4b071adfbf696e81a28c34ffa9d960b4ad19f15843f9f",
+    "limbic/intents.py": "c9abad3728dd79b805b6bb8756308ad8eb234846c2161cd2c98b2a09cf12a509",
+    "limbic/leisure.py": "7063f7c8129ab36daf81935d5fd77eb61eb89f647719789c82e3f96d0a300236",
+    "limbic/needs.py": "d3b88ba223722a61b269ed790a522378922e3d0aab34d200be3170abfe980a92",
+    "limbic/prompt.py": "567d39cffe726d90a15878995997ade1433d9b7f67ea4a539fb0ebbb0dcc50b2",
+    "limbic/replay.py": "1563da52ebf4d758862289fedab5f0bf231cd5bf48c1666198de16135d983cfd",
+    "limbic/server.py": "97d9411b00df12c92cdddf9e060098dce9ee0058f1aba761a55f9768e778a9d4",
+    "limbic/store.py": "97dc697cb7d4f3170c6939f61f695dc9445cd20b8f7900694cf5d9ff8c53efb3",
+    "limbic/temperament.py": "8b5fb4cf2d3a9fd24db45b561f59088cd9f27a5d77f234f55669d00a6ba096b8",
+    "limbic/thread.py": "8ed528009ed27ad4bbd855f769972831bf87f308ff1b601e43f9becdb3744371",
+    "limbic/__init__.py": "fc584be7b4c9722bc400f85fbe6605c3a51a4a4b718ff44a031e181c03c9552b",
+    "upstream-tests/test_fatigue.py": "7a8096e33386ea23b70d88678b15024b88e06aac5e694b3c967ed8c641e85755",
+    "upstream-tests/test_fiction.py": "356e1d8d747fc355972f8484a673ba1f91d06edcf11aee79a6cb0667acbd3085",
+    "upstream-tests/test_limbic.py": "507f369b32bc86a859ca0a62714b3d6e3369d315e8c51ef93e70a00219c9f078",
+    "upstream-tests/test_needs.py": "e0e1c6e2929b29b0184fb6409d36e5ffccf96924f474324596afeabfce025c7b",
+    "upstream-tests/test_trust.py": "8b2b006d0e9b4d9b58e6469c4fd1ccf2c717e0d540f9e7acf74160e0a29b64fd"
+  }
+}

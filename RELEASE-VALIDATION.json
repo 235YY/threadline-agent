@@ -1,0 +1,39 @@
+{
+  "format": "threadline-public-release-validation-v1",
+  "source": "privacy-clean export of candidate-v14",
+  "sourceBuild": "8f077c3c34248f3262d5dec8261c73c866261ad2150db92c8f16aec76027556c",
+  "node": "26.12.1",
+  "platform": "Windows x64",
+  "schema": 11,
+  "regression": {
+    "tests": 727,
+    "pass": 727,
+    "fail": 0,
+    "skipped": 0,
+    "paidCalls": 0,
+    "privateHistoricalReplay": "replaced with equivalent synthetic boundary fixtures"
+  },
+  "startup": {
+    "mode": "dry-run",
+    "freshDatabase": "PASS",
+    "syntheticObservation": "PASS",
+    "shutdown": "PASS",
+    "restart": "PASS",
+    "modelCalls": 0,
+    "fetchCalls": 0
+  },
+  "optionalIntegrations": "unconfigured adapters fail explicitly; no QQ/Minecraft/Office credentials or services distributed",
+  "privacy": {
+    "policy": "source allowlist; no live databases, chats, memories, persona, credentials, budgets, private evidence, binaries or Git history in ZIP",
+    "knownPersonalIdentifiers": "no matches",
+    "credentialShapeScan": "no matches",
+    "forbiddenFiles": "none"
+  },
+  "limitations": [
+    "No new real-model or QQ acceptance was performed on this blank export.",
+    "Historical private experiment evidence is not distributed.",
+    "Cross-platform behavior beyond this Windows run is not certified.",
+    "Private possession assets and incomplete historical patch templates are excluded."
+  ],
+  "at": "2026-11-15T09:01:20.647Z"
+}
