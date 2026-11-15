@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node tools/ops/launch.mjs start",
     "stop": "node tools/ops/launch.mjs stop",
-    "init": "node tools/ops/init.mjs"
+    "init": "node tools/ops/init.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "ws": "8.22.0"

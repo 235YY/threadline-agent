@@ -40,9 +40,10 @@ export function seedProductionSubject({store,directory,subjectId='agent'}){
 
 if(process.argv[1]&&process.argv[1].endsWith('seed.mjs')){
   const root=fileURLToPath(new URL('../../../',import.meta.url));
+  const dataRoot=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):join(root,'app/data');
   const args=process.argv.slice(2);const opt=(name,fallback)=>{const i=args.indexOf(name);return i>=0?args[i+1]:fallback;};
-  const directory=opt('--snapshot',join(root,'_local/private-chat-v1'));
-  const storePath=opt('--store',join(root,'_local/qq-brain/subject.sqlite'));
+  const directory=opt('--snapshot',join(dataRoot,'snapshot'));
+  const storePath=opt('--store',join(dataRoot,'state/memory.sqlite'));
   const subjectId=opt('--subject','agent');
   const store=new ContinuityStore(storePath);
   try{console.log(JSON.stringify({seeded:seedProductionSubject({store,directory,subjectId}),storePath}));}

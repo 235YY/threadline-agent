@@ -3,7 +3,8 @@ import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {StyleStore} from '../../src/style-store.mjs';
 
-const source=process.env.OLD_SOCIAL??resolve('..','整理版_2026-10-16','qq-bridge','state','social-v2.json');
+const source=process.env.OLD_SOCIAL?resolve(process.env.OLD_SOCIAL):'';
+if(!source)throw Error('OLD_SOCIAL environment variable is required');
 const data=JSON.parse(readFileSync(source,'utf8'));
 const texts=[];
 for(const conv of Object.values(data.conversations??{})){
@@ -18,7 +19,7 @@ for(const conv of Object.values(data.conversations??{})){
 }
 if(texts.length<40)throw Error(`not enough self messages: ${texts.length}`);
 const lens=texts.map(t=>[...t].length).sort((a,b)=>a-b);
-const q=t=>texts.filter(t=>t.includes(q)).length;
+const q=ch=>texts.filter(t=>t.includes(ch)).length;
 const avg=Math.round(lens.reduce((a,b)=>a+b,0)/lens.length);
 const median=lens[Math.floor(lens.length/2)];
 const short=Math.round(texts.filter(t=>[...t].length<=15).length/texts.length*100);
@@ -55,6 +56,7 @@ const style=`# 智能体说话方式 v1
 ## 原话示例
 ${examples.map(t=>`- ${t}`).join('\n')}
 `;
-const store=new StyleStore({directory:resolve('_local/style')});
+const styleDir=process.env.BRAIN_STYLE_DIR??resolve(process.env.AGENT_DATA??'data','style');
+const store=new StyleStore({directory:styleDir});
 const out=store.update({text:style,label:'legacy-self-v1',source:'old-qq-self'});
 console.log(JSON.stringify({messages:texts.length,avg,median,short,long,examples:examples.length,active:out.active},null,2));

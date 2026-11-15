@@ -141,7 +141,7 @@ async function deliverInitial(result,scene,event){
     try{body=JSON.stringify(await executeTool(act.tool,act.args??{}));}
     catch(error){state='failed';body=error.message;}
     await fetch(`${brainUrl}/v1/receipt`,{method:'POST',headers:headers(),
-      body:JSON.stringify({scene,action:act.action,status:state,body,eventId:`tool:${act.action.id}:${event.message_id??Date.now()}`,actor:'qq-host'})});
+      body:JSON.stringify({scene:act.scene??scene,action:act.action,status:state,body,eventId:`tool:${act.action.id}:${event.message_id??Date.now()}`,actor:'qq-host'})});
   }
   return acted;
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>鲸漾 · 控制台</title>
+<title>Threadline · 控制台</title>
 <style>
 :root{--bg:#f6f4ef;--panel:#fffdf8;--ink:#25231f;--muted:#77716a;--line:#e7e1d7;--accent:#2f6f68;--warm:#b56b45}
 *{box-sizing:border-box}
@@ -45,7 +45,7 @@ button:disabled{opacity:.45;cursor:default}
 </head>
 <body>
 <header>
-  <div><h1>鲸漾 · 控制台</h1><div class="muted" id="sub">连接中…</div></div>
+  <div><h1>Threadline · 控制台</h1><div class="muted" id="sub">连接中…</div></div>
   <div class="muted"><span class="dot" id="dot"></span><span id="mode">—</span></div>
 </header>
 <main>
@@ -136,7 +136,7 @@ async function api(path,opts={}){
   return v;
 }
 let sending=false;
-const errText={STUDY_KEY_REQUIRED:'还没有填写模型密钥，请在下方“模型密钥”里填写。',NETWORK_PREFLIGHT_FAILED:'连不上 DeepSeek（网络检查未通过），请检查网络或代理。',BUDGET_HALTED:'今日预算已停（费用无法确认），明天自动恢复或检查 budget.json。',CALL_LIMIT:'今天的调用次数用完了。',SPEND_LIMIT:'今天的预算用完了。',PROVIDER_HTTP:'DeepSeek 返回了错误（密钥无效或余额不足？）。'};
+const errText={MODEL_KEY_REQUIRED:'还没有填写模型密钥，请在下方“模型密钥”里填写。',STUDY_KEY_REQUIRED:'还没有填写模型密钥，请在下方“模型密钥”里填写。',NETWORK_PREFLIGHT_FAILED:'连不上 DeepSeek（网络检查未通过），请检查网络或代理。',BUDGET_HALTED:'今日预算已停（费用无法确认），明天自动恢复或检查 budget.json。',CALL_LIMIT:'今天的调用次数用完了。',SPEND_LIMIT:'今天的预算用完了。',PROVIDER_AUTH:'模型密钥无效或权限不足（HTTP 401/403）。',PROVIDER_HTTP:'模型服务返回了错误。',UNCERTAIN_REQUEST:'请求结果未确认，已停止自动重试。'};
 function showError(e){
   const b=$('banner');
   if(!e){b.className='banner';b.textContent='';return}
@@ -183,7 +183,7 @@ async function send(){
   refreshChat().catch(()=>{});
   try{
     // 先显示自己的话；回复在服务端处理完才返回，期间聊天区靠轮询刷新
-    const v=await api('/v1/reply',{method:'POST',body:JSON.stringify({protocol:'jingyang-brain-bridge-v1',scene:'local/console',key:'local:console',message_id:Date.now()+'-'+Math.random().toString(16).slice(2),execute:false,sender:{system:'local',id:'owner',name:'哥哥',nickname:'哥哥',isOwner:true,entityId:'legacy:person:3482479936'},occurredAt:Date.now(),messages:[{role:'user',content:text}]})});
+    const v=await api('/v1/reply',{method:'POST',body:JSON.stringify({protocol:'agent-brain-bridge-v1',scene:'local/console',key:'local:console',message_id:Date.now()+'-'+Math.random().toString(16).slice(2),execute:true,sender:{system:'local',id:'owner',name:'owner',nickname:'owner',isOwner:true},occurredAt:Date.now(),messages:[{role:'user',content:text}]})});
     if(v.ok===false)showError({code:v.error,message:v.message});
     else if(v.queued)showError({code:'QUEUED',message:'她暂时没空，消息已记下，稍后会回复。'});
     else if(v.silent)showError({code:'SILENT',message:'她选择了不说话。'});

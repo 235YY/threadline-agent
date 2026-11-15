@@ -1,6 +1,6 @@
 ﻿// 办公室 worker 看门狗：只负责把挂掉的办公室拉回来，不碰 brain、不碰目标。
 import {spawn} from 'node:child_process';
-import {existsSync,mkdirSync,openSync,readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,openSync,closeSync,readFileSync,writeFileSync} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -25,13 +25,12 @@ function startWorker(){
   if(Date.now()-lastStart<3000)return;
   lastStart=Date.now();
   mkdirSync(logs,{recursive:true});
-  const out=join(logs,'office.out.log'),err=join(logs,'office.err.log');
-  child=spawn(process.execPath,['tools/office-worker/worker.mjs'],{cwd:app,detached:true,windowsHide:true,
-    stdio:['ignore',requireFd(out),requireFd(err)],env:{...process.env,OFFICE_WORKER_PORT:String(port),OFFICE_WORKER_TOKEN:token,OFFICE_WORKER_URL:url}});
-  child.unref();writeFileSync(pidFile,String(child.pid));log(`office restarted pid ${child.pid}`);
-}
-function requireFd(path){
-  return openSync(path,'a');
+  const out=openSync(join(logs,'office.out.log'),'a'),err=openSync(join(logs,'office.err.log'),'a');
+  try{
+    child=spawn(process.execPath,['tools/office-worker/worker.mjs'],{cwd:app,detached:true,windowsHide:true,
+      stdio:['ignore',out,err],env:{...process.env,OFFICE_WORKER_PORT:String(port),OFFICE_WORKER_TOKEN:token,OFFICE_WORKER_URL:url}});
+    child.unref();writeFileSync(pidFile,String(child.pid));log(`office restarted pid ${child.pid}`);
+  }finally{closeSync(out);closeSync(err);}
 }
 async function tick(){
   if(await healthy())return;

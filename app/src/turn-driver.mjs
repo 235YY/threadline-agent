@@ -166,16 +166,16 @@ export class TurnDriver {
     try{return this.#session.commit({packet,output,decisionId,requestId,allowedActionTools:this.#allowed,maxOutputBytes:32768});}
     catch(error){
       const stateErrors=new Set(['RESIDENCY_CONFLICT','UNDELIVERED_BASIS','UNREAD_STATE','MIND_KIND','STALE_SUBJECT','STALE_ATTENTION']);
-      if(!stateErrors.has(error.code)||!output?.continuity)throw error;
+      if(!stateErrors.has(error.code))throw error;
+      let parsed;
+      try{parsed=typeof output==='string'?JSON.parse(output):output;}catch{throw error;}
+      if(!parsed||typeof parsed!=='object'||!parsed.continuity||typeof parsed.continuity!=='object')throw error;
+      const baseContinuity=packet.stage==='reflection'
+        ?{changes:[],residency:{add:[],remove:[]},attention:{processes:[],relations:[],residency:{upsert:[],remove:[]},questions:[]}}
+        :{expressionChoice:parsed.continuity.expressionChoice,observationDisposition:parsed.continuity.observationDisposition,changes:[],residency:{add:[],remove:[]},attention:{processes:[],relations:[],residency:{upsert:[],remove:[]},questions:[]}};
       // 状态更新不合法时保留本轮说话/动作，丢弃这次状态增量，避免整轮静默失败。
-      const fallback={...output,continuity:{...output.continuity,changes:[],residency:{add:[],remove:[]},attention:{processes:[],relations:[],residency:{upsert:[],remove:[]},questions:[]}}};
-      try{return this.#session.commit({packet,output:fallback,decisionId,requestId,allowedActionTools:this.#allowed,maxOutputBytes:32768});}
-      catch(second){
-        if(!['RESIDENCY_CONFLICT','UNDELIVERED_BASIS','UNREAD_STATE','MIND_KIND','STALE_SUBJECT','STALE_ATTENTION'].includes(second.code))throw second;
-        // 第二次仍失败：完全不带 continuity 提交，保留说话/动作，不写状态。
-        const bare={...output};delete bare.continuity;
-        return this.#session.commit({packet,output:bare,decisionId,requestId,allowedActionTools:this.#allowed,maxOutputBytes:32768});
-      }
+      const fallback=JSON.stringify({...parsed,continuity:{...parsed.continuity,...baseContinuity}});
+      return this.#session.commit({packet,output:fallback,decisionId:`${decisionId}:fallback`,requestId:`${requestId}:fallback`,allowedActionTools:this.#allowed,maxOutputBytes:32768});
     }
   }  #pushChoice(outbox,choice,decision){
     const speech=choice.kind==='respond'||(choice.kind==='turn'&&Array.isArray(choice.payload.utterances)&&choice.payload.utterances.length)?choice.payload:null;

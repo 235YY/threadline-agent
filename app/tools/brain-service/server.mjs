@@ -60,7 +60,7 @@ function keyFor(scene,key){
 // 队列项只是“去看哪条观察”的指针；收件箱才是唯一事实源。
 const eventIdOf=item=>item?.eventId??(String(item?.key??'').startsWith('obs:')?item.key:`obs:${item?.key}`);
 // 这些错误重试没有意义（没钥匙/没网/预算停了/同一请求已发过），立刻停下并退避，别空转也别重复烧钱
-const HARD_ERRORS=new Set(['STUDY_KEY_REQUIRED','MISSING_CREDENTIAL','NETWORK_PREFLIGHT_FAILED','BUDGET_HALTED','CALL_LIMIT','SPEND_LIMIT','TRANSPORT_REPLAY','ALREADY_REQUESTED','LEDGER_LOCKED','LEDGER_UNAVAILABLE','UNCERTAIN_REQUEST','PROVIDER_HTTP']);
+const HARD_ERRORS=new Set(['MODEL_KEY_REQUIRED','STUDY_KEY_REQUIRED','MISSING_CREDENTIAL','NETWORK_PREFLIGHT_FAILED','BUDGET_HALTED','CALL_LIMIT','SPEND_LIMIT','TRANSPORT_REPLAY','ALREADY_REQUESTED','LEDGER_LOCKED','LEDGER_UNAVAILABLE','UNCERTAIN_REQUEST','PROVIDER_HTTP','PROVIDER_AUTH','UNKNOWN_USAGE']);
 const MAX_RECEIPT_CHAIN=4; // 无人说话时，工具回执连续触发下一轮的上限，防止 act→回执→act 无限循环
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function firstText(messages){
@@ -284,7 +284,8 @@ export function createBrainService({storePath=':memory:',subjectId='agent',ident
       }
       for(const o of outbox)o.scene=targetScene;
       driver.persistState();saveState();
-      const delivery=deliver?await dispatch(outbox,{scene:targetScene,execute}):null;
+      const shouldExecute=typeof execute==='function'?execute(item.eventId):execute===true;
+      const delivery=deliver?await dispatch(outbox,{scene:targetScene,execute:shouldExecute}):null;
       return {ok:true,scene:targetScene,item:item.key??null,eventId:item.eventId,result,outbox,delivery,silent:!outbox.some(o=>o.kind==='respond'),pending:scheduler.pending()};
     }finally{scheduler.complete(queueKey);}
   }
@@ -306,12 +307,12 @@ export function createBrainService({storePath=':memory:',subjectId='agent',ident
       const state=store.subjectObservation(subjectId,eventId);
       if(!state||state.status!=='received')break;
       if(clock()<blockedUntil&&attempt>0)break;
-      const result=await turn({preferred:global?null:scene,deliver:true,execute});
+      const result=await turn({preferred:global?null:scene,deliver:true,execute:id=>(id===eventId?execute:true)});
       if(result.ok&&!result.busy)lastError=null;
       if(result?.error){failure=result;if(!result.retryable)break;await sleep(700);continue;}
       failure=null;
       if(result.busy||result.deferred){waited=true;await sleep(500);continue;}
-      outbox.push(...(result.outbox??[]));
+      if(result.eventId===eventId)outbox.push(...(result.outbox??[]));
     }
     // 本地聊天没有外部连接器：显示出来就是送达，由服务端自己回写状态
     for(const item of outbox)if(item.kind==='respond'&&item.response&&String(item.scene??'').startsWith('local/'))markDelivered(item.response,'sent','本地聊天已显示');

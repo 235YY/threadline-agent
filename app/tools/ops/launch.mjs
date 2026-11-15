@@ -3,7 +3,7 @@
 // 目录约定：<包根>/app（本工程）、<包根>/data（记忆与配置）。data 可用环境变量 AGENT_DATA 改位置。
 import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {existsSync,mkdirSync,openSync,readFileSync,writeFileSync,unlinkSync,copyFileSync} from 'node:fs';
+import {existsSync,mkdirSync,openSync,closeSync,readFileSync,writeFileSync,unlinkSync,copyFileSync} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -26,9 +26,11 @@ function launch(name,script,env={}){
   if(existing&&alive(existing)){log(`  ${name}: 已在运行 (pid ${existing})`);return existing;}
   mkdirSync(logs,{recursive:true});
   const out=openSync(join(logs,`${name}.out.log`),'a'),err=openSync(join(logs,`${name}.err.log`),'a');
-  const child=spawn(node,[script],{cwd:app,detached:true,windowsHide:true,stdio:['ignore',out,err],env:{...process.env,...env}});
-  child.unref();writeFileSync(pidFile(name),String(child.pid));
-  log(`  ${name}: 已启动 (pid ${child.pid})`);return child.pid;
+  try{
+    const child=spawn(node,[script],{cwd:app,detached:true,windowsHide:true,stdio:['ignore',out,err],env:{...process.env,...env}});
+    child.unref();writeFileSync(pidFile(name),String(child.pid));
+    log(`  ${name}: 已启动 (pid ${child.pid})`);return child.pid;
+  }finally{closeSync(out);closeSync(err);}
 }
 function prepareData(){
   mkdirSync(ops,{recursive:true});mkdirSync(join(data,'state'),{recursive:true});mkdirSync(join(data,'secrets'),{recursive:true});
@@ -42,7 +44,9 @@ async function start({open=true}={}){
   const officeUrl=`http://127.0.0.1:${OFFICE_PORT}`;
   const env={
     AGENT_DATA:data,BRAIN_LIVE:process.env.BRAIN_LIVE??'0',BRAIN_GLOBAL:'1',BRAIN_HEARTBEAT_MS:process.env.BRAIN_HEARTBEAT_MS??'5000',
-    BRAIN_STORE:join(data,'memory.sqlite'),BRAIN_IDENTITY_FILE:join(data,'identity.txt'),BRAIN_STYLE_DIR:join(data,'style'),
+    BRAIN_URL:`http://127.0.0.1:${BRAIN_PORT}`,
+    BRAIN_STORE:join(data,'memory.sqlite'),BRAIN_TASKS:join(data,'tasks.sqlite'),BRAIN_KEY_FILE:join(data,'secrets','deepseek.key'),
+    BRAIN_IDENTITY_FILE:join(data,'identity.txt'),BRAIN_STYLE_DIR:join(data,'style'),
     BRAIN_STATE:join(data,'state'),BRAIN_LEDGER:join(data,'budget.json'),QQ_STICKERS_FILE:join(data,'stickers.json'),...(process.env.QQ_OWNER?{QQ_OWNER:process.env.QQ_OWNER}:{}),
     OFFICE_WORKER_PORT:String(OFFICE_PORT),OFFICE_WORKER_TOKEN:officeToken,
     OFFICE_WORKER_URL:officeUrl,

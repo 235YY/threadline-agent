@@ -9,7 +9,8 @@ import {listPlugins,runPlugin,installPlugin} from '../../src/plugins.mjs';
 import {createGitHubClient,githubConfig} from '../../src/github.mjs';
 
 const PROJECT=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
-const STICKERS=process.env.QQ_STICKERS_FILE??resolve(PROJECT,'_local/migrate/stickers.json');
+const DATA_ROOT=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):resolve(PROJECT,'data');
+const STICKERS=process.env.QQ_STICKERS_FILE??resolve(DATA_ROOT,'stickers.json');
 const BRAIN_URL=process.env.BRAIN_URL??'http://127.0.0.1:8787';
 const BRAIN_TOKEN=process.env.BRAIN_TOKEN??'';
 
@@ -82,25 +83,36 @@ export const TOOL_NAMES=Object.freeze([
 ]);
 
 async function speak(args={}){
-  const legacy=resolve(PROJECT,'../整理版_2026-10-16/qq-bridge');
-  const {speechPlan,synthesizeMinimax}=await import(pathToFileURL(join(legacy,'src/companion-life/speech.js')).href);
-  const cfg=JSON.parse(readFileSync(join(legacy,'config.json'),'utf8'));
+  const modPath=process.env.TTS_MODULE;
+  if(!modPath)throw new Error('tts module not configured (set TTS_MODULE)');
+  const {speechPlan,synthesizeMinimax}=await import(pathToFileURL(resolve(modPath)).href);
+  const voiceRoot=process.env.VOICE_DIR?resolve(process.env.VOICE_DIR):resolve(DATA_ROOT,'audio');
+  const cfg=process.env.TTS_CONFIG&&existsSync(process.env.TTS_CONFIG)?JSON.parse(readFileSync(process.env.TTS_CONFIG,'utf8')):{};
   const style=/^(bright|soft)$/.test(String(args.style??''))?String(args.style):(/亮|轻|活泼|明快/.test(String(args.style??''))?'bright':'soft');
   const emotionMap={'得意':'happy','开心':'happy','高兴':'happy','自信':'happy','兴奋':'happy','难过':'sad','伤心':'sad','低落':'sad','生气':'angry','愤怒':'angry','害怕':'fearful','恐惧':'fearful','惊讶':'surprised','吃惊':'surprised','平静':'calm','日常':'calm','温柔':'calm','自动':'auto','auto':'auto'};
   const emotion=emotionMap[String(args.emotion??'auto')]??'auto';
   const plan=speechPlan(cfg.socialV2?.life?.speech??{provider:'minimax'},{...args,style,emotion},{maxChars:160});
-  const dir=join(legacy,'audio/generated');mkdirSync(dir,{recursive:true});
+  const dir=join(voiceRoot,'generated');mkdirSync(dir,{recursive:true});
   const file=join(dir,`tts-${Date.now()}-${Math.random().toString(16).slice(2)}.mp3`);
-  const synth=await synthesizeMinimax({root:legacy,plan,output:file});
+  const synth=await synthesizeMinimax({root:voiceRoot,plan,output:file});
   const target=args.target??'private',id=String(args.id??args.user_id??args.group_id??'');
   if(!id)throw new Error('target id required');
   await call(target==='group'?'send_group_msg':'send_private_msg',target==='group'?{group_id:Number(id),message:[{type:'record',data:{file}}]}:{user_id:Number(id),message:[{type:'record',data:{file}}]});
   return {...synth,file,delivered:true};
 }
+const AUDIO_EXT=/\.(mp3|wav|ogg|silk|amr|m4a|flac)$/i;
 async function listVoices(args={}){
-  const legacy=resolve(PROJECT,'../整理版_2026-10-16/qq-bridge');
-  const {listAudioFiles}=await import(pathToFileURL(join(legacy,'src/voice-core.js')).href);
-  return listAudioFiles(join(legacy,'audio')).slice(0,Number(args.limit??30));
+  const dir=process.env.VOICE_DIR?resolve(process.env.VOICE_DIR):resolve(DATA_ROOT,'audio');
+  if(!existsSync(dir))return [];
+  const limit=Math.max(1,Math.min(200,Number(args.limit??30)||30));
+  const out=[];
+  for(const entry of readdirSync(dir,{withFileTypes:true})){
+    if(!entry.isFile()||!AUDIO_EXT.test(entry.name))continue;
+    const full=join(dir,entry.name);
+    out.push({name:entry.name,path:full,size:statSync(full).size});
+    if(out.length>=limit)break;
+  }
+  return out;
 }
 async function stickerNote(args={}){
   if(!existsSync(STICKERS))throw new Error('sticker library missing');
@@ -119,13 +131,17 @@ async function brainJson(path,body=null,method='POST'){
   if(!response.ok)throw new Error(value.error??`brain ${response.status}`);
   return value;
 }
-async function webTool(name,toolArgs){  const legacy=resolve(PROJECT,'../整理版_2026-10-16/qq-bridge');
-  const {Client}=await import(pathToFileURL(join(legacy,'node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')).href);
-  const {StdioClientTransport}=await import(pathToFileURL(join(legacy,'node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js')).href);
-  const transport=new StdioClientTransport({command:process.execPath,args:[join(legacy,'src/mcp-web-search-safe.js')],cwd:legacy,stderr:'pipe'});
-  const client=new Client({name:'qq-capability-host',version:'1.0.0'});
-  try{await client.connect(transport);return await client.callTool({name,arguments:toolArgs});}
-  finally{try{await client.close();}catch{}}
+async function webTool(name,toolArgs){
+  if(name==='web_fetch'){
+    const {safeFetch}=await import('../native-capabilities/video/safe-fetch.js');
+    return safeFetch(toolArgs.url,Number(toolArgs.maxChars??50000));
+  }
+  const searchUrl=process.env.WEB_SEARCH_URL;
+  if(!searchUrl)throw new Error('web_search not configured (set WEB_SEARCH_URL)');
+  const response=await fetch(searchUrl,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(toolArgs)});
+  const value=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(value.error??`web_search ${response.status}`);
+  return value;
 }
 export async function executeTool(tool,args={},meta={}){
   switch(tool){

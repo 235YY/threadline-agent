@@ -15,7 +15,7 @@ const args=process.argv.slice(2);const live=args.includes('--live');
 const opt=(name,fallback)=>{const i=args.indexOf(name);return i>=0?args[i+1]:fallback;};
 if(!live){console.log(JSON.stringify({ran:false,reason:'pass --live to spend one real call'}));process.exit(0);}
 
-const runDir=join(root,'evaluation','qq-brain-smoke_2026-11-07');mkdirSync(runDir,{recursive:true});
+const runDir=opt('--dir',join(process.env.AGENT_DATA?join(process.env.AGENT_DATA,'smoke'):join(root,'data','smoke')));mkdirSync(runDir,{recursive:true});
 const storePath=join(runDir,'smoke.sqlite'),ledgerPath=join(runDir,'budget.json');
 const store=new ContinuityStore(storePath);
 let transport=null;

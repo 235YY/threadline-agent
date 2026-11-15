@@ -3,18 +3,23 @@ import {startBrainService} from './server.mjs';
 import {createModelDecision} from '../../src/model-transport.mjs';
 import {MaintenanceSession,startMaintenanceHeartbeat} from '../../src/maintenance.mjs';
 import {executeTool} from '../qq-connect/tools.mjs';
-import {studyKey} from '../../src/model-key.mjs';
+import {plainKeyPath,studyKey} from '../../src/model-key.mjs';
 import {existsSync,mkdirSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
-import {resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
+const appDir=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
+const dataDir=resolve(process.env.AGENT_DATA??join(appDir,'..','data'));
 const port=Number(process.env.BRAIN_PORT??8787);
 const token=process.env.BRAIN_TOKEN??null;
-const stateDirectory=resolve(process.env.BRAIN_STATE??'_local/brain/state');
-const styleDirectory=resolve(process.env.BRAIN_STYLE_DIR??'_local/style');
-const storePath=resolve(process.env.BRAIN_STORE??'_local/brain/subject.sqlite');
+const stateDirectory=resolve(process.env.BRAIN_STATE??join(dataDir,'state'));
+const styleDirectory=resolve(process.env.BRAIN_STYLE_DIR??join(dataDir,'style'));
+const storePath=resolve(process.env.BRAIN_STORE??join(dataDir,'memory.sqlite'));
+const taskStorePath=resolve(process.env.BRAIN_TASKS??join(dataDir,'tasks.sqlite'));
 const heartbeatMs=Number(process.env.BRAIN_HEARTBEAT_MS??60000);
-const identityFile=resolve(process.env.BRAIN_IDENTITY_FILE??'_local/migrate/persona.txt');
-const ledgerPath=resolve(process.env.BRAIN_LEDGER??'_local/brain/budget.json');
+const identityFile=resolve(process.env.BRAIN_IDENTITY_FILE??join(dataDir,'identity.txt'));
+const ledgerPath=resolve(process.env.BRAIN_LEDGER??join(dataDir,'budget.json'));
+const keyFile=plainKeyPath(process.env)??join(dataDir,'secrets','deepseek.key');
 const pidFile=resolve(stateDirectory,'brain-service.pid');
 const live=process.env.BRAIN_LIVE==='1';
 let identity='你是智能体。';try{identity=readFileSync(identityFile,'utf8').trim().slice(0,8000)||identity;}catch{}
@@ -41,7 +46,7 @@ try{
     model=createModelDecision({ledgerPath,getKey:studyKey,profile:{dailyMicros:10_000_000,dailyCalls:300,maxTokens:3000,reasoning:'low'}});
     decide=model.decide;
   }
-  const service=await startBrainService({port,token,storePath,taskStorePath:resolve(process.env.BRAIN_TASKS??'../data/tasks.sqlite'),stateDirectory,styleDirectory,heartbeatMs,decide,identity,rhythm:{dailyCallCap:300},extraStatus:()=>({mode:model?'live':'dry-run',budget:model?.state?.()??null}),vision:model?.vision??null,adapter:{act:({tool,args,action,taskId})=>executeTool(tool,args,{actionId:action?.id,taskId}),send:async({scene,text,utterances})=>{
+  const service=await startBrainService({port,token,storePath,taskStorePath,keyFile,stateDirectory,styleDirectory,heartbeatMs,decide,identity,rhythm:{dailyCallCap:300},extraStatus:()=>({mode:model?'live':'dry-run',budget:model?.state?.()??null}),vision:model?.vision??null,adapter:{act:({tool,args,action,taskId})=>executeTool(tool,args,{actionId:action?.id,taskId}),send:async({scene,text,utterances})=>{
     if(scene?.startsWith('local/'))return {delivered:true,local:true};
     const parts=Array.isArray(utterances)&&utterances.length?utterances:[{text,delayMs:0}];
     const target=scene?.startsWith('qq/private/')?{kind:'private',id:scene.slice('qq/private/'.length)}:scene?.startsWith('qq/group/')?{kind:'group',id:scene.slice('qq/group/'.length)}:null;

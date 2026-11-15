@@ -95,7 +95,14 @@ export class TaskStore {
     if(patch.budget!==undefined)next.budget=normalizeBudget(patch.budget);
     if(patch.attempts!==undefined){if(!Number.isSafeInteger(patch.attempts)||patch.attempts<0)throw Object.assign(new Error('attempts invalid'),{code:'TASK_INPUT'});next.attempts=patch.attempts;}
     if(patch.failure!==undefined)next.failure=patch.failure===null?null:clone(patch.failure);
-    if(patch.nextWakeAt!==undefined)next.nextWakeAt=patch.nextWakeAt===null?null:Number(patch.nextWakeAt);
+    if(patch.nextWakeAt!==undefined){
+      if(patch.nextWakeAt===null)next.nextWakeAt=null;
+      else{
+        const wakeAt=Number(patch.nextWakeAt);
+        if(!Number.isSafeInteger(wakeAt)||wakeAt<0)throw Object.assign(new Error('nextWakeAt must be a non-negative integer'),{code:'TASK_INPUT'});
+        next.nextWakeAt=wakeAt;
+      }
+    }
     if(patch.scene!==undefined)next.scene=patch.scene===null?null:text(patch.scene,'scene',200);
     if(next.status==='done'){next.plan=next.plan.map(s=>['pending','running'].includes(s.status)?{...s,status:'done'}:s);next.currentStep=null;next.nextStep=null;next.nextWakeAt=null;}
     else if(next.status==='abandoned'){next.plan=next.plan.map(s=>['pending','running'].includes(s.status)?{...s,status:'skipped'}:s);next.currentStep=null;next.nextStep=null;next.nextWakeAt=null;}

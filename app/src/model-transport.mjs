@@ -10,7 +10,7 @@ import {writeLedgerAtomically} from './model-ledger.mjs';
 import {studyKey} from './model-key.mjs';
 
 const DAY=/^\d{4}-\d{2}-\d{2}$/;
-const usedMicros=rows=>rows.reduce((sum,r)=>sum+(r.status==='settled'?r.actualMicros:r.status==='released'?0:r.reserveMicros),0);
+const usedMicros=rows=>rows.reduce((sum,r)=>sum+(r.status==='settled'?r.actualMicros:(r.status==='released'||r.status==='failed')?0:r.reserveMicros),0);
 
 export class DailyBudgetLedger {
   constructor(path,{dailyMicros=3000000,dailyCalls=96,dayKey=new Date().toISOString().slice(0,10)}={}){
@@ -61,6 +61,7 @@ export class DailyBudgetLedger {
     ensure(!this.data.halted,'RESERVATION_OVERRUN','settled usage exceeded reservation; stop');
   }
   uncertain(id,code){const r=this.find(id);if(r.status==='uncertain')return;ensure(r.status==='dispatched','REQUEST_STATE','only dispatched requests can become cost-unknown');r.status='uncertain';r.error=code;this.data.halted='request cost not confirmed; do not auto-retry';this.save();}
+  fail(id,code){const r=this.find(id);if(r.status==='failed')return;ensure(r.status==='dispatched','REQUEST_STATE','only dispatched requests can be marked failed');r.status='failed';r.actualMicros=0;r.error=code;this.save();}
   attachOutput(id,output){const r=this.find(id);ensure(r.status==='settled','REQUEST_STATE','only settled requests keep output');r.output=output;this.save();}
   find(id){const r=this.data.requests.find(r=>r.id===id);ensure(r,'REQUEST_STATE','unknown request');return r;}
   tryFind(id){return this.data.requests.find(r=>r.id===id)??null;}

@@ -16,7 +16,8 @@ export async function probeStudyNetwork({transport=fetch,lookup=systemLookup,tim
   ensure(Number.isSafeInteger(timeoutMs)&&timeoutMs>=1&&timeoutMs<=20000,'NETWORK_PROBE_LIMIT','bounded public probe timeout');
   let timer,dns;
   try{
-    const answer=await Promise.race([lookup('api.deepseek.com'),new Promise((_,reject)=>{
+    const apiHost=new URL(PUBLIC_API).hostname;
+    const answer=await Promise.race([lookup(apiHost),new Promise((_,reject)=>{
       timer=setTimeout(()=>{const e=new Error('DNS deadline');e.code='DNS_TIMEOUT';reject(e);},timeoutMs);
     })]);dns={ok:true,family:answer.family};
   }catch(e){dns={ok:false,code:safeNetworkCode(e)};}finally{clearTimeout(timer);}
@@ -44,7 +45,11 @@ export async function requireStudyNetwork(options={}){
 // Official peak rates, CNY per 1M tokens, checked 2026-11-02.
 export const RATES=Object.freeze({hit:0.04,miss:2,output:8,source:'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'});
 export function pricedUsage(u) {
-  const values=[u?.prompt_tokens,u?.completion_tokens,u?.prompt_cache_hit_tokens,u?.prompt_cache_miss_tokens];
+  const prompt=u?.prompt_tokens,completion=u?.completion_tokens;
+  const hasSplit=u?.prompt_cache_hit_tokens!==undefined||u?.prompt_cache_miss_tokens!==undefined;
+  const hit=hasSplit?u?.prompt_cache_hit_tokens:(u?.prompt_tokens_details?.cached_tokens??0);
+  const miss=hasSplit?u?.prompt_cache_miss_tokens:(Number.isSafeInteger(prompt)&&Number.isSafeInteger(hit)?prompt-hit:undefined);
+  const values=[prompt,completion,hit,miss];
   ensure(values.every(v=>Number.isSafeInteger(v)&&v>=0)&&values[2]+values[3]===values[0], 'UNKNOWN_USAGE','complete consistent provider usage required');
   return {prompt:values[0],completion:values[1],hit:values[2],miss:values[3],
     reasoning:Number.isSafeInteger(u.completion_tokens_details?.reasoning_tokens)?u.completion_tokens_details.reasoning_tokens:null,
@@ -91,7 +96,7 @@ export class StudyLedger {
     ensure(typeof id==='string'&&id.length>0&&typeof fingerprint==='string'&&fingerprint.length>0,'REQUEST_ID','nonempty request and fingerprint required');
     ensure(!this.data.requests.some(r=>r.id===id),'ALREADY_REQUESTED','never automatically resend a study id');
     ensure(this.data.requests.length<this.data.maxCalls,'CALL_LIMIT','attempt limit counts released reservations too');
-    const used=this.data.requests.reduce((sum,r)=>sum+(r.status==='settled'?r.actualMicros:r.status==='released'?0:r.reserveMicros),0);
+    const used=this.data.requests.reduce((sum,r)=>sum+(r.status==='settled'?r.actualMicros:(r.status==='released'||r.status==='failed')?0:r.reserveMicros),0);
     ensure(Number.isSafeInteger(reserveMicros)&&reserveMicros>0&&used+reserveMicros<=this.data.limitMicros,'SPEND_LIMIT','cannot reserve within study limit');
     this.data.requests.push({id,fingerprint,reserveMicros,status:'reserved'});this.save();
   }
@@ -106,6 +111,7 @@ export class StudyLedger {
     if(r.actualMicros>r.reserveMicros)this.data.halted='provider usage exceeded conservative reservation';this.save();
     ensure(!this.data.halted,'RESERVATION_OVERRUN','settled usage exceeded reservation; stop');}
   uncertain(id,code){ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','ledger unavailable');const r=this.find(id);if(r.status==='uncertain')return;ensure(r.status==='dispatched','REQUEST_STATE','only dispatched requests can become cost-unknown');r.status='uncertain';r.error=code;this.data.halted='request cost not confirmed; do not auto-retry';this.save();}
+  fail(id,code){ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','ledger unavailable');const r=this.find(id);if(r.status==='failed')return;ensure(['reserved','dispatched'].includes(r.status),'REQUEST_STATE','only active request can fail cleanly');r.status='failed';r.error=code;this.save();}
   recordUnsentMonitorStop(id,phase){
     ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','ledger unavailable');
     ensure(['before-dispatch','before-transport'].includes(phase),'REQUEST_STATE','known pre-transport monitor failure required');
@@ -173,7 +179,15 @@ export class DeepSeekStudyClient {
         headers:{'content-type':'application/json',authorization:`Bearer ${key}`},body:JSON.stringify(request),
         signal:signal?AbortSignal.any([signal,AbortSignal.timeout(this.timeoutMs)]):AbortSignal.timeout(this.timeoutMs)});
       trace?.record('transport.response',{httpStatus:response.status});
-      ensure(response.ok,'PROVIDER_HTTP',`provider returned HTTP ${response.status}`,{httpStatus:response.status});
+      if(!response.ok){
+        try{await response.body?.cancel();}catch{}
+        const code=[401,403].includes(response.status)?'PROVIDER_AUTH':'PROVIDER_HTTP';
+        if(response.status>=400&&response.status<500&&typeof this.ledger.fail==='function'){
+          this.ledger.fail(id,`${code}_${response.status}`);
+          accounted=true;
+        }
+        ensure(false,code,`provider returned HTTP ${response.status}`,{httpStatus:response.status});
+      }
       const reader=response.body.getReader(),parts=[];let length=0;
       try{while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;
         ensure(length<=1024*1024,'RESPONSE_LIMIT','bounded provider response required');parts.push(Buffer.from(value));}}
@@ -198,8 +212,10 @@ export class DeepSeekStudyClient {
         this.ledger.uncertain(id,error.cause?.code??error.code??'NETWORK_OR_PROVIDER_ERROR');
         if(Number.isInteger(error.details?.httpStatus)) {this.ledger.find(id).httpStatus=error.details.httpStatus;this.ledger.save();}
       }
-      const safe=new Error(accounted?'provider response unusable after accounting':'request outcome/cost uncertain; stopped without retry');
-      safe.code=accounted?(error.code??'PROVIDER_OUTPUT'):'UNCERTAIN_REQUEST';throw safe;}
+      const safe=new Error(accounted?(error.message||'provider response unusable after accounting'):'request outcome/cost uncertain; stopped without retry');
+      safe.code=accounted?(error.code??'PROVIDER_OUTPUT'):'UNCERTAIN_REQUEST';
+      if(error.details)safe.details=error.details;
+      throw safe;}
     }catch(error){
       if(this.requireMonitor&&!transportInvoked&&monitorStopPhase
         &&this.ledger.data.requests.some(r=>r.id===id&&['reserved','dispatched'].includes(r.status))){

@@ -18,7 +18,7 @@ const SKIP_DIRS=new Set(['.git','node_modules','.office','__pycache__','.venv','
 
 const fail=(code,message)=>{const error=new Error(message);error.code=code;throw error;};
 export function officeRoot(override=null){
-  const root=resolve(override??process.env.JY_OFFICE_ROOT??DEFAULT_ROOT);
+  const root=resolve(override??process.env.AGENT_OFFICE_ROOT??process.env.JY_OFFICE_ROOT??DEFAULT_ROOT);
   if(!existsSync(root))fail('OFFICE_MISSING','office root does not exist');
   return root;
 }
@@ -71,8 +71,9 @@ export function listOffice({root=null,path='.',max=200}={}){
   const limit=Math.max(1,Math.min(MAX_LIST,Number(max)||200));
   const entries=readdirSync(dir,{withFileTypes:true}).slice(0,limit).map(entry=>{
     const full=join(dir,entry.name);
-    const stat=statSync(full);
-    return {name:entry.name,path:relativePath(base,full),type:entry.isDirectory()?'dir':entry.isSymbolicLink()?'symlink':'file',size:entry.isFile()?stat.size:null};
+    let stat=null;
+    try{stat=statSync(full);}catch{}
+    return {name:entry.name,path:relativePath(base,full),type:entry.isDirectory()?'dir':entry.isSymbolicLink()?'symlink':'file',size:entry.isFile()&&stat?stat.size:null};
   });
   return {root:base,path:relativePath(base,dir),entries,truncated:entries.length>=limit};
 }
@@ -147,9 +148,16 @@ export function searchOffice({root=null,path='.',query,max=20}={}){
   return {root:base,query,scannedFiles:out.files,total:hits.length,items:hits,truncated:out.files>=MAX_SCAN_FILES||hits.length>=limit};
 }
 const MAX_COMMAND_OUTPUT=20000;
-const GIT_CA=fileURLToPath(new URL('../../data/state/git-ca-bundle.pem',import.meta.url));
-const GIT_EXE=process.env.JY_GIT_EXE??'C:\\Program Files\\Git\\cmd\\git.exe';
+const DATA_ROOT=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):fileURLToPath(new URL('../../data',import.meta.url));
+const GIT_CA=resolve(DATA_ROOT,'state/git-ca-bundle.pem');
+const GIT_EXE=process.env.AGENT_GIT_EXE??process.env.JY_GIT_EXE??'C:\\Program Files\\Git\\cmd\\git.exe';
 const COMMANDS=new Set(['node','node.exe','python','python3','py','git','git.exe','rg','rg.exe']);
+function terminateChild(child){
+  if(process.platform==='win32'&&child?.pid){
+    try{spawn('taskkill',['/pid',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});}catch{}
+  }
+  try{child?.kill('SIGKILL');}catch{}
+}
 export function runOffice({root=null,command,args=[],cwd='.',timeoutMs=20000}={}){
   return new Promise((resolve,reject)=>{
     const base=officeRoot(root);
@@ -173,7 +181,7 @@ export function runOffice({root=null,command,args=[],cwd='.',timeoutMs=20000}={}
     let stdout='',stderr='',done=false,timedOut=false;
     const append=(current,chunk)=>{if(current.length>=MAX_COMMAND_OUTPUT)return current;const next=current+chunk.toString('utf8');return next.length>MAX_COMMAND_OUTPUT?next.slice(0,MAX_COMMAND_OUTPUT)+'\n…[输出截断]':next;};
     const finish=(code,signal)=>{if(done)return;done=true;clearTimeout(timer);resolve({root:base,path:relativePath(base,dir),command:name,args:argv,exitCode:code,signal,timedOut,stdout,stderr});};
-    const timer=setTimeout(()=>{timedOut=true;try{child.kill('SIGKILL');}catch{}},limit);
+    const timer=setTimeout(()=>{timedOut=true;terminateChild(child);},limit);
     child.stdout?.on('data',chunk=>{stdout=append(stdout,chunk);});
     child.stderr?.on('data',chunk=>{stderr=append(stderr,chunk);});
     child.once('error',error=>{if(done)return;done=true;clearTimeout(timer);reject(error);});
@@ -197,7 +205,7 @@ export function runNpm({root=null,cwd='.',args=[],timeoutMs=120000}={}){
     let child;try{child=spawn('npm',args,{cwd:dir,env,shell:true,windowsHide:true});}catch(error){reject(error);return;}
     let stdout='',stderr='',done=false,timedOut=false;
     const append=(cur,chunk)=>{if(cur.length>=MAX_COMMAND_OUTPUT)return cur;const next=cur+chunk.toString('utf8');return next.length>MAX_COMMAND_OUTPUT?next.slice(0,MAX_COMMAND_OUTPUT)+'\n…[输出截断]':next;};
-    const timer=setTimeout(()=>{timedOut=true;try{child.kill('SIGKILL');}catch{}},limit);
+    const timer=setTimeout(()=>{timedOut=true;terminateChild(child);},limit);
     child.stdout?.on('data',c=>{stdout=append(stdout,c);});child.stderr?.on('data',c=>{stderr=append(stderr,c);});
     child.once('error',e=>{if(done)return;done=true;clearTimeout(timer);reject(e);});
     child.once('close',(code,signal)=>{if(done)return;done=true;clearTimeout(timer);resolve({root:base,path:relativePath(base,dir),command:'npm',args,exitCode:code,signal,timedOut,stdout,stderr});});

@@ -1,14 +1,26 @@
-﻿// 原生桌宠：复用旧 DesktopLink/动画协议；不经过旧 DSH。
-import {DesktopLink} from '../../../整理版_2026-10-16/qq-bridge/src/desktop-link.js';
-import {fileURLToPath} from 'node:url';
+﻿// 原生桌宠：通过 THREADLINE_DESKTOP_MODULE 动态加载外部模块；不绑定写死路径。
+import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
-const legacy=fileURLToPath(new URL('../../../整理版_2026-10-16/qq-bridge/',import.meta.url));
-const link=new DesktopLink({
-  directory:resolve(legacy,'..','desktop-companion'),
-  logDirectory:resolve(legacy,'..','..','智能体框架','_local','desktop'),
-  enabled:()=>true,renderer:()=>'animation',
-});
+
+let linkPromise=null;
+async function getLink(){
+  const modPath=process.env.THREADLINE_DESKTOP_MODULE;
+  if(!modPath)throw new Error('desktop companion module not configured (set THREADLINE_DESKTOP_MODULE)');
+  if(!linkPromise){
+    linkPromise=(async()=>{
+      const {DesktopLink}=await import(pathToFileURL(resolve(modPath)).href);
+      const dataRoot=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):resolve(process.cwd(),'data');
+      return new DesktopLink({
+        directory:process.env.THREADLINE_DESKTOP_DIR?resolve(process.env.THREADLINE_DESKTOP_DIR):resolve(dataRoot,'desktop-companion'),
+        logDirectory:resolve(dataRoot,'desktop'),
+        enabled:()=>true,renderer:()=>'animation',
+      });
+    })();
+  }
+  return linkPromise;
+}
 export async function runDesktop(input={}){
+  const link=await getLink();
   const action=input.action??'status';
   if(action==='status')return link.status();
   if(action==='start')return link.start();

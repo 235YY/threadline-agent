@@ -4,10 +4,11 @@ import {fileURLToPath} from 'node:url';
 import {Necklace} from './necklace.js';
 
 const here=fileURLToPath(new URL('.',import.meta.url));
-const dataDir=process.env.NECKLACE_DIR??resolve(here,'../../../_local/necklace');
+const defaultData=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA,'necklace'):resolve(here,'../../../data/necklace');
+const dataDir=process.env.NECKLACE_DIR??defaultData;
 const file=resolve(dataDir,'necklace.json');
 const memory={enabled:false,store:{data:{self:{entries:[]}}}};
-const necklace=new Necklace({file,ownerKey:'private:3482479936',memory,experiences:{},journal:{},canReadMemory:()=>false});
+const necklace=new Necklace({file,ownerKey:process.env.NECKLACE_OWNER_KEY??'owner',memory,experiences:{},journal:{},canReadMemory:()=>false});
 
 export async function runNecklace(input={}){
   return necklace.request({...input,action:input.action??'status'},{actor:'agent'});

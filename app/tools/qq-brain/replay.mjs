@@ -41,7 +41,8 @@ export function replayDatabase(dbPath){
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const i=process.argv.indexOf('--db');
-  const dbPath=resolve(i>=0?process.argv[i+1]:'_local/private-chat-v1/subject.sqlite');
+  const dataRoot=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):resolve('data');
+  const dbPath=resolve(i>=0?process.argv[i+1]:resolve(dataRoot,'state/memory.sqlite'));
   const result=replayDatabase(dbPath);
   console.log(JSON.stringify(result,null,2));
   if(!result.ok)process.exitCode=1;

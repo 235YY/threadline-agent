@@ -1,5 +1,5 @@
 ﻿// 办公室插件：她自己写的工具扩展。插件是受控子进程，不拿 brain/QQ 凭据。
-import {existsSync,mkdirSync,readFileSync,rmSync,renameSync,statSync} from 'node:fs';
+import {existsSync,mkdirSync,readFileSync,readdirSync,rmSync,renameSync,statSync} from 'node:fs';
 import {join,resolve,sep} from 'node:path';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
@@ -36,7 +36,6 @@ function manifestOf(root,name){
   return {root:base,plugins};
 }
 function readdirSyncSafe(dir){try{return readdirSync(dir);}catch{return [];}}
-import {readdirSync} from 'node:fs';
 export async function installPlugin({root=null,url,name=null,ref=null}={}){
   const base=officeRoot(root),raw=String(url??'');
   let parsed;try{parsed=new URL(raw);}catch{throw fail('PLUGIN_URL','invalid plugin URL');}
@@ -54,11 +53,9 @@ export async function installPlugin({root=null,url,name=null,ref=null}={}){
   const {runOffice}=await import('./office.mjs');
   try{
     const args=['clone','--depth','1',...(ref?['--branch',String(ref)]:[]),raw,tempName];
-    const result=await runOffice({root:base,command:'git',args,cwd:'.',timeoutMs:60000});
+    const result=await runOffice({root:base,command:'git',args,cwd:'plugins',timeoutMs:60000});
     if(result.exitCode!==0)throw fail('PLUGIN_CLONE',String(result.stderr||'git clone failed').slice(0,500));
-    const manifest=manifestOf(join(base,'plugins'),pluginName,'');
-    // manifestOf expects plugins root; temp name differs; validate inside temp directly
-    const tempManifest=manifestOf(join(base,'plugins'),tempName,'');
+    const tempManifest=manifestAt(temp,pluginName);
     if(!tempManifest.actions.length)throw fail('PLUGIN_MANIFEST','plugin declares no actions');
     renameSync(temp,dir);
     return {name:pluginName,version:tempManifest.version,description:tempManifest.description,actions:tempManifest.actions,path:'plugins/'+pluginName};

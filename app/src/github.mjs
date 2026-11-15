@@ -1,9 +1,11 @@
 // 最小权限 GitHub 客户端：一个仓库、只写 agent/* 分支、PR 不能直接合 main。
 // token 只从本机 secrets 或环境变量读取，不进入提示词、模型输出或审计参数。
 import {existsSync,readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-const DEFAULT_SECRET=fileURLToPath(new URL('../../data/secrets/github.json',import.meta.url));
+const DATA_ROOT=process.env.AGENT_DATA?resolve(process.env.AGENT_DATA):fileURLToPath(new URL('../../data',import.meta.url));
+const DEFAULT_SECRET=resolve(DATA_ROOT,'secrets/github.json');
 const BRANCH_PREFIX='agent/';
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const text=(value,name,max=200)=>{if(typeof value!=='string'||!value||value.length>max)fail('GITHUB_INPUT',`${name} required`);return value;};
