@@ -138,6 +138,8 @@ if($qqMode -and -not (PortOpen 3000)){
 }
 
 if($qqMode){
+  if(-not $env:QQ_CONNECTOR_LOCK_ROOT){$env:QQ_CONNECTOR_LOCK_ROOT=Join-Path $ops 'connector-locks'}
+  New-Item -ItemType Directory -Force -Path $env:QQ_CONNECTOR_LOCK_ROOT | Out-Null
   $connPidFile=Join-Path $ops 'connector.pid'
   $connId=0
   if(Test-Path $connPidFile){$connId=[int](Get-Content $connPidFile -Raw)}
@@ -149,13 +151,16 @@ if($qqMode){
   }
 }
 
-$uiPidFile=Join-Path $ops 'ui.pid'
-$uiId=0
-if(Test-Path $uiPidFile){$uiId=[int](Get-Content $uiPidFile -Raw)}
-if(Alive $uiId){AssertOwned ui}
-if(-not (Alive $uiId)){
-  $p=StartHiddenNode $root (Join-Path $ops 'ui.out.log') (Join-Path $ops 'ui.err.log') 'tools/ui/server.mjs'
-  Set-Content $uiPidFile $p.Id
+$uiEntry=Join-Path $root 'tools/ui/server.mjs'
+if(Test-Path -LiteralPath $uiEntry){
+  $uiPidFile=Join-Path $ops 'ui.pid'
+  $uiId=0
+  if(Test-Path $uiPidFile){$uiId=[int](Get-Content $uiPidFile -Raw)}
+  if(Alive $uiId){AssertOwned ui}
+  if(-not (Alive $uiId)){
+    $p=StartHiddenNode $root (Join-Path $ops 'ui.out.log') (Join-Path $ops 'ui.err.log') 'tools/ui/server.mjs'
+    Set-Content $uiPidFile $p.Id
+  }
 }
 
 try{$health=(Invoke-WebRequest 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 5).Content}catch{$health='brain not ready'}

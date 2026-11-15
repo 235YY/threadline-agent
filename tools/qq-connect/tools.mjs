@@ -17,7 +17,7 @@ const OFFICE_URL=process.env.OFFICE_WORKER_URL??'http://127.0.0.1:8791';
 const OFFICE_TOKEN_FILE=resolve(PROJECT,'_local/ops/office.token');
 function officeToken(){return process.env.OFFICE_WORKER_TOKEN??(()=>{try{return readFileSync(OFFICE_TOKEN_FILE,'utf8').trim();}catch{return '';}})();}
 
-function account(){const a=readAccount({home:SNOW,uin:process.env.QQ_UIN});return {uin:a.uin,base:a.httpUrl,token:String(a.http.accessToken??'')};}
+function account(){try{const a=readAccount({home:SNOW,uin:process.env.QQ_UIN});return {uin:a.uin,base:a.httpUrl,token:String(a.http.accessToken??'')};}catch(error){error.transportInvoked=false;throw error;}}
 async function call(action,params={}){
   const a=account();
   const r=await fetch(`${a.base}/${action}`,{method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),headers:{'content-type':'application/json',...(a.token?{authorization:`Bearer ${a.token}`}:{})},body:JSON.stringify(params)});
@@ -30,10 +30,11 @@ async function officeCall(tool,args={}){
   let response;try{response=await fetch(OFFICE_URL+'/call',{method:'POST',headers:{'content-type':'application/json',...(officeToken()?{'x-office-token':officeToken()}:{})},body:JSON.stringify({tool,args}),signal:AbortSignal.timeout(35000)});}catch(error){throw Object.assign(new Error('office worker unavailable: '+error.message),{code:'OFFICE_UNAVAILABLE'});}
   const body=await response.json().catch(()=>null);if(!response.ok||!body?.ok)throw new Error('office worker: '+(body?.message??body?.error??response.status));return body.result;
 }
+const unsentError=(message,code='TOOL_PREFLIGHT')=>Object.assign(new Error(message),{code,transportInvoked:false});
 async function githubTool(op,args={}){
-  const cfg=githubConfig({secretPath:process.env.GITHUB_SECRET??resolve(PROJECT,'_local/ops/github.json')});
+  let cfg;try{cfg=githubConfig({secretPath:process.env.GITHUB_SECRET??resolve(PROJECT,'_local/ops/github.json')});}catch(error){error.transportInvoked=false;throw error;}
   if(op==='status')return {configured:cfg.configured,writable:cfg.writable,owner:cfg.owner,repo:cfg.repo};
-  if(!cfg.configured)throw new Error('github owner/repo not configured');
+  if(!cfg.configured)throw unsentError('github owner/repo not configured','GITHUB_NOT_CONFIGURED');
   const gh=createGitHubClient(cfg);
   if(op==='repo')return gh.repoInfo();
   if(op==='issues')return gh.issues({state:args.state,limit:args.limit});
@@ -43,7 +44,7 @@ async function githubTool(op,args={}){
   if(op==='create_branch')return gh.createBranch(args.branch,{from:args.from??'main'});
   if(op==='put_file')return gh.putFile({branch:args.branch,path:args.path,content:args.content,message:args.message});
   if(op==='create_pr')return gh.createPull({title:args.title,body:args.body??'',head:args.head,base:args.base??'main'});
-  throw new Error('github operation not granted: '+op);
+  throw unsentError('github operation not granted: '+op,'TOOL_ARGUMENTS');
 }
 const textSeg=t=>({type:'text',data:{text:String(t)}});
 export const targetArgs=(a={})=>{
@@ -84,10 +85,10 @@ async function listVoices(args={}){
   return listAudioFiles(join(legacy,'audio')).slice(0,Number(args.limit??30));
 }
 async function stickerNote(args={}){
-  if(!existsSync(STICKERS))throw new Error('sticker library missing');
+  if(!existsSync(STICKERS))throw unsentError('sticker library missing','STICKER_LIBRARY_MISSING');
   const list=JSON.parse(readFileSync(STICKERS,'utf8'));
   const item=list.find(s=>s.id===args.id);
-  if(!item)throw new Error('sticker not found');
+  if(!item)throw unsentError('sticker not found','TOOL_ARGUMENTS');
   if(typeof args.note==='string')item.localNote=args.note.slice(0,800);
   if(Array.isArray(args.tags))item.tags=args.tags.filter(x=>typeof x==='string').slice(0,12);
   item.updatedAt=new Date().toISOString();
@@ -139,23 +140,23 @@ export async function executeTool(tool,args={}){
     case 'qq_list_groups':return (await call('get_group_list')).map(g=>({group_id:g.group_id,group_name:g.group_name,member_count:g.member_count}));
     case 'qq_list_friends':return (await call('get_friend_list')).map(f=>({user_id:f.user_id,nickname:f.nickname,remark:f.remark??''}));
     case 'qq_get_group_members':{
-      const gid=args.group_id??args.id;if(!gid)throw new Error('group_id required');
+      const gid=args.group_id??args.id;if(!gid)throw unsentError('group_id required','TOOL_ARGUMENTS');
       return (await call('get_group_member_list',{group_id:Number(gid)})).map(m=>({user_id:m.user_id,nickname:m.nickname,card:m.card}));
     }
     case 'qq_get_group_history':{
-      const gid=args.group_id??args.id;if(!gid)throw new Error('group_id required');
+      const gid=args.group_id??args.id;if(!gid)throw unsentError('group_id required','TOOL_ARGUMENTS');
       const count=Math.max(1,Math.min(20,Number(args.count??5)));
       const data=await call('get_group_msg_history',{group_id:Number(gid),count});
       return (data.messages??[]).map(m=>({message_id:m.message_id,time:m.time,user_id:m.user_id,nickname:m.sender?.nickname??'',text:plainMessage(m)}));
     }
     case 'qq_get_friend_history':{
-      const uid=args.user_id??args.id;if(!uid)throw new Error('user_id required');
+      const uid=args.user_id??args.id;if(!uid)throw unsentError('user_id required','TOOL_ARGUMENTS');
       const count=Math.max(1,Math.min(20,Number(args.count??5)));
       const data=await call('get_friend_msg_history',{user_id:Number(uid),count});
       return (data.messages??[]).map(m=>({message_id:m.message_id,time:m.time,user_id:m.user_id,text:plainMessage(m)}));
     }
     case 'qq_get_forward_msg':{
-      if(!args.id)throw new Error('forward id required');
+      if(!args.id)throw unsentError('forward id required','TOOL_ARGUMENTS');
       return call('get_forward_msg',{id:String(args.id)});
     }
     case 'qq_list_stickers':{
@@ -163,12 +164,12 @@ export async function executeTool(tool,args={}){
     }
     case 'qq_send_sticker':{
       const {target,id}=targetArgs(args);const url=args.url??args.sticker;
-      if(!url)throw new Error('sticker url required');
+      if(!url)throw unsentError('sticker url required','TOOL_ARGUMENTS');
       return call(target==='group'?'send_group_msg':'send_private_msg',target==='group'?{group_id:Number(id),message:[{type:'image',data:{file:String(url)}}]}:{user_id:Number(id),message:[{type:'image',data:{file:String(url)}}]});
     }
     case 'qq_send_voice':{
       const {target,id}=targetArgs(args);const file=args.file;
-      if(!file||!existsSync(file))throw new Error('voice file required');
+      if(!file||!existsSync(file))throw unsentError('voice file required','TOOL_ARGUMENTS');
       return call(target==='group'?'send_group_msg':'send_private_msg',target==='group'?{group_id:Number(id),message:[{type:'record',data:{file:String(file)}}]}:{user_id:Number(id),message:[{type:'record',data:{file:String(file)}}]});
     }
     case 'qq_necklace':{const {runNecklace}=await import('../native-capabilities/necklace/adapter.mjs');return runNecklace(args);}
@@ -210,9 +211,9 @@ export async function executeTool(tool,args={}){
     case 'github_put_file':return githubTool('put_file',args);
     case 'github_create_pr':return githubTool('create_pr',args);
     case 'qq_send_poke':{
-      if(!args.user_id)throw new Error('user_id required');
+      if(!args.user_id)throw unsentError('user_id required','TOOL_ARGUMENTS');
       return call('send_poke',{user_id:Number(args.user_id),...(args.group_id?{group_id:Number(args.group_id)}:{})});
     }
-    default:throw new Error(`tool not migrated: ${tool}`);
+    default:throw unsentError(`tool not migrated: ${tool}`,'TOOL_NOT_SUPPORTED');
   }
 }

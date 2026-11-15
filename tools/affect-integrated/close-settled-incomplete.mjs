@@ -6,7 +6,7 @@ if(process.argv[2]!=='--apply')throw Error('explicit reviewed --apply required')
 const p=JSON.parse(readFileSync('_local/ops/affect-active.json')),ledger=JSON.parse(readFileSync(p.ledgerPath));
 const store=new ContinuityStore(p.storePath);
 try{const results=[];for(const turn of store.all('affect_turn')){
- if(turn.status!=='uncertain'||turn.error!=='MODEL_INCOMPLETE')continue;
+ if(turn.status!=='uncertain'||!['MODEL_INCOMPLETE','AFFECT_OUTPUT_LIMIT'].includes(turn.error))continue;
  const row=ledger.requests.find(r=>r.id==='turn:'+turn.packet.packetId);
  if(row?.status!=='settled'||!Number.isSafeInteger(row.actualMicros)||turn.rawOutput!==null)throw Error('NO_CONCLUSIVE_SETTLEMENT');
  if([...store.all('decision')].some(d=>d.input?.packetId===turn.packet.packetId))throw Error('DECISION_ALREADY_EXISTS');

@@ -14,6 +14,7 @@ import {safeFetchBuffer} from './safe-fetch.mjs';
 import {acceptsChat,canStopAll} from './scope.mjs';
 import {MessageReceiver} from './receive.mjs';
 import {isClosedRejection} from '../../src/processing-outcome.mjs';
+import {classifyBridgeError,isAddressed,applyContextToParts,normalizeNoticeEvent} from './bridge-helpers.mjs';
 
 const here=fileURLToPath(new URL('.',import.meta.url));
 const project=resolve(here,'../..');
@@ -27,12 +28,9 @@ const log=(...args)=>console.log(new Date().toISOString(),...args);
 
 function pickAccount(){return readAccount({home:snowHome,uin:wantUin});}
 const WAKE=(process.env.QQ_WAKE_KEYWORDS??'鲸鱼,小鲸鱼,鲸漾,在吗').split(',').map(s=>s.trim()).filter(Boolean);
-function addressed(event){
-  return true;
-}
-function messageText(event){
-  const parts=Array.isArray(event.message)?event.message.filter(s=>s?.type==='text').map(s=>s.data?.text??''):[];
-  return parts.join('').trim();
+const listenAllGroup=process.env.QQ_GROUP_LISTEN_ALL==='1';
+function addressed(event,botUin=selfId){
+  return isAddressed(event,{selfId:botUin,wakeWords:WAKE,listenAll:listenAllGroup});
 }
 
 const account=pickAccount();
@@ -47,8 +45,8 @@ async function onebot(action,params={}){
 }
 function plain(message){const segs=Array.isArray(message?.message)?message.message:Array.isArray(message?.content)?message.content:[];return segs.map(x=>x?.type==='text'?x.data?.text??'':x?.type==='at'?`@${x.data?.name??x.data?.qq??''}`:x?.type==='image'?'[图片]':x?.type==='face'?'[表情]':x?.type==='record'?'[语音]':' ').join('').trim()}
 async function resolveContext(payload){
-  if(payload.replyTo){try{const m=await onebot('get_msg',{message_id:payload.replyTo});const name=m?.sender?.card||m?.sender?.nickname||m?.sender?.user_id||'原消息';const body=plain(m);if(body)payload.messages[0].content=`[引用 ${name}：${body.slice(0,800)}]\n${payload.messages[0].content}`;}catch{payload.messages[0].content=`[引用消息：${payload.replyTo}]\n${payload.messages[0].content}`;}}
-  if(payload.forwardId){try{const f=await onebot('get_forward_msg',{id:payload.forwardId});const items=Array.isArray(f?.messages)?f.messages:Array.isArray(f?.content)?f.content:[];const text=items.slice(0,12).map(x=>plain(x)).filter(Boolean).join(' / ').slice(0,1600);if(text)payload.messages[0].content+=`\n[合并转发：${text}]`;}catch{payload.messages[0].content+=`\n[合并转发：${payload.forwardId}]`;}}
+  if(payload.replyTo){try{const m=await onebot('get_msg',{message_id:payload.replyTo});const name=m?.sender?.card||m?.sender?.nickname||m?.sender?.user_id||'原消息';const body=plain(m);if(body){payload.quoteText=`[引用 ${name}：${body.slice(0,800)}]`;payload.messages[0].content=`${payload.quoteText}\n${payload.messages[0].content}`;}}catch{payload.quoteText=`[引用消息：${payload.replyTo}]`;payload.messages[0].content=`${payload.quoteText}\n${payload.messages[0].content}`;}}
+  if(payload.forwardId){try{const f=await onebot('get_forward_msg',{id:payload.forwardId});const items=Array.isArray(f?.messages)?f.messages:Array.isArray(f?.content)?f.content:[];const text=items.slice(0,12).map(x=>plain(x)).filter(Boolean).join(' / ').slice(0,1600);if(text){payload.forwardText=`[合并转发：${text}]`;payload.messages[0].content+=`\n${payload.forwardText}`;}}catch{payload.forwardText=`[合并转发：${payload.forwardId}]`;payload.messages[0].content+=`\n${payload.forwardText}`;}}
   return payload;
 }
 const bot=new SnowLumaWebSocketClient({url:`ws://${account.ws.host||'127.0.0.1'}:${account.ws.port||3001}/`,accessToken:account.ws.accessToken??'',reconnect:true});
@@ -85,11 +83,8 @@ async function materializeMessage(payload){
   }
   flush();
   const context=payload.messages?.[0]?.content??'';
-  const quote=context.match(/^\[引用[^\n]*\]\n?/)?.[0]??'';
-  const forward=context.match(/\n\[合并转发[^\n]*\]$/)?.[0]??'';
-  if(quote)content.unshift(textPart(quote.trim()+'\n'));
-  if(forward){if(content.at(-1)?.type==='text')content.at(-1).text+=forward;else content.push(textPart(forward));}
-  if(content.length===0)content.push(textPart(context));
+  applyContextToParts(content,{context,quoteText:payload.quoteText??null,forwardText:payload.forwardText??null,textPart});
+  delete payload.quoteText;delete payload.forwardText;
   payload.message=jyMessage('user',content);
   payload.messages=[{role:'user',content:projectText(payload.message)}];
   return payload;
@@ -99,21 +94,30 @@ async function handle(event,ctx){
   const privateChat=event.message_type==='private';
   const ownerOnly=process.env.QQ_TEST_ONLY_OWNER;
   if(!acceptsChat({privateChat,userId:event.user_id},{scope:chatScope,ownerOnly}))return;
-  if(privateChat&&canStopAll(event.user_id,ownerQQ)&&/^\/(stop|停止任务)$/i.test(text)){await fetch(`${brainUrl}/v1/tasks/stop-all`,{method:'POST',headers:{'content-type':'application/json',...(brainToken?{'x-brain-token':brainToken}:{})},body:JSON.stringify({reason:'explicit user stop'})}).catch(()=>{});return;}
+  if(privateChat&&canStopAll(event.user_id,ownerQQ)&&/^\/(stop|停止任务)$/i.test(text)){const r=await fetch(`${brainUrl}/v1/tasks/stop-all`,{method:'POST',headers:{'content-type':'application/json',...(brainToken?{'x-brain-token':brainToken}:{})},body:JSON.stringify({reason:'explicit user stop'})});if(!r.ok)log('stop-all-error',r.status,await r.text().catch(()=>''));return;}
   if(!addressed(event))return;
   const scene=privateChat?`qq/private/${event.user_id}`:`qq/group/${event.group_id}`;
   const key=privateChat?`private:${event.user_id}`:`group:${event.group_id}`;
-  if(!once(`${scene}:${event.message_id}`))return;
+  const dedupKey=`${scene}:${event.message_id}`;
+  if(!once(dedupKey))return;
   const sender={system:'qq',id:String(event.user_id),name:String(event.sender?.card||event.sender?.nickname||event.user_id),
     entityId:`person:qq:${event.user_id}`,isOwner:String(event.user_id)===String(ownerQQ)};
   const occurredAt=Number.isSafeInteger(event.time)?event.time*1000:Date.now();
-  await resolveContext(payload);
-  await materializeMessage(payload);
-  const response=await fetch(`${brainUrl}/v1/reply`,{method:'POST',headers:{'content-type':'application/json',...(brainToken?{'x-brain-token':brainToken}:{})},
-    body:JSON.stringify(payload)});
-  if(!response.ok)throw new Error(`brain ${response.status} ${await response.text()}`);
-  const result=await response.json();
-  if(result.error&&!isClosedRejection(result.processingOutcome))throw Object.assign(new Error(`brain ${result.error}: ${result.message??''}`),{code:result.error});
+  let replyAttempted=false;
+  let result;
+  try{
+    await resolveContext(payload);
+    await materializeMessage(payload);
+    replyAttempted=true;
+    const response=await fetch(`${brainUrl}/v1/reply`,{method:'POST',headers:{'content-type':'application/json',...(brainToken?{'x-brain-token':brainToken}:{})},
+      body:JSON.stringify(payload)});
+    if(!response.ok)throw new Error(`brain ${response.status} ${await response.text()}`);
+    result=await response.json();
+    if(result.error&&!isClosedRejection(result.processingOutcome))throw Object.assign(new Error(`brain ${result.error}: ${result.message??''}`),{code:result.error});
+  }catch(error){
+    if(!replyAttempted)seen.delete(dedupKey);
+    throw error;
+  }
   if(result.error)log('cognition-failed-closed',JSON.stringify(result.processingOutcome));
   // Brain is the sole egress owner, including durable claims and real receipts.
   // The connector only transports incoming messages and acknowledges admission.
@@ -127,7 +131,12 @@ function enqueueIncoming(event,ctx,source='push'){
   if(process.env.QQ_ACCEPT_SINCE&&Number(event.time)*1000<Number(process.env.QQ_ACCEPT_SINCE))return Promise.resolve({ignored:true,reason:'before-approved-test-window'});
   if(!acceptsChat({privateChat:event.message_type==='private',userId:event.user_id},{scope:chatScope,ownerOnly:process.env.QQ_TEST_ONLY_OWNER}))return Promise.resolve({ignored:true});
   const next=chain.then(()=>receiver?receiver.accept(event,{source,deliver:e=>handle(e,ctx)}):handle(event,ctx));
-  chain=next.catch(error=>{if(error.code==='DAILY_BUDGET_LIMIT'){log('daily-budget-paused',error.message);return;}stopping=true;log('handle-error-stopped',error.code??error.name,error.message);});return next;
+  chain=next.catch(error=>{
+    const kind=classifyBridgeError(error);
+    if(kind==='quota'){log('daily-budget-paused',error.message);return;}
+    if(kind==='fatal'){stopping=true;log('handle-error-stopped',error.code??error.name,error.message);return;}
+    log('handle-error',error.code??error.name,error.message);
+  });return next;
 }
 bot.onPrivateMessage((event,ctx)=>enqueueIncoming(event,ctx).catch(()=>{}));
 bot.onGroupMessage((event,ctx)=>enqueueIncoming(event,ctx).catch(()=>{}));
@@ -164,15 +173,14 @@ function scheduleReceiveCheck(){
 }
 bot.onNotice(async event=>{
   if(!identityReady||stopping)return;
-  const type=String(event?.notice_type??'');
-  if(!['group_recall','friend_recall','group_poke','friend_poke','notify'].includes(type))return;
-  const privateChat=type.startsWith('friend_');
-  const scene=privateChat?`qq/private/${event.user_id}`:`qq/group/${event.group_id}`;
+  const notice=normalizeNoticeEvent(event,{ownerQQ});
+  if(!notice)return;
   const ownerOnly=process.env.QQ_TEST_ONLY_OWNER;
-  if(!acceptsChat({privateChat,userId:event.user_id},{scope:chatScope,ownerOnly}))return;
-  const body=type.endsWith('_recall')?`[撤回] ${event.message_id??''}`:type.endsWith('_poke')?`[拍一拍] ${event.target_id??event.user_id??''}`:`[${type}]`;
-  const sender={system:'qq',id:String(event.user_id??event.operator_id??'0'),name:String(event.user_id??event.operator_id??'qq'),entityId:`person:qq:${event.user_id??event.operator_id??'0'}`,isOwner:String(event.user_id??event.operator_id??0)===String(ownerQQ)};
-  try{await fetch(`${brainUrl}/v1/observe`,{method:'POST',headers:{'content-type':'application/json',...(brainToken?{'x-brain-token':brainToken}:{})},body:JSON.stringify({protocol:'jingyang-brain-bridge-v1',key:privateChat?`private:${event.user_id}`:`group:${event.group_id}`,scene,text:body,sender,occurredAt:Number.isSafeInteger(event.time)?event.time*1000:Date.now()})});}catch(error){log('notice-error',type,error.message);}
+  if(!acceptsChat({privateChat:notice.privateChat,userId:event.user_id},{scope:chatScope,ownerOnly}))return;
+  try{
+    const r=await fetch(`${brainUrl}/v1/observe`,{method:'POST',headers:{'content-type':'application/json',...(brainToken?{'x-brain-token':brainToken}:{})},body:JSON.stringify({protocol:'jingyang-brain-bridge-v1',key:notice.key,scene:notice.scene,text:notice.body,sender:notice.sender,occurredAt:notice.occurredAt})});
+    if(!r.ok)log('notice-http-error',notice.type,r.status,await r.text().catch(()=>''));
+  }catch(error){log('notice-error',notice.type,error.message);}
 });
 bot.onBotStatus(event=>log('bot-status',event.sub_type??'',event.user_id??''));
 

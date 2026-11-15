@@ -62,6 +62,7 @@
     "test/full-runtime-profile.test.mjs",
     "test/daily-quota-recovery.test.mjs",
     "test/billing-reconciliation.test.mjs",
-    "test/llm-friendly-runtime.test.mjs"
+    "test/llm-friendly-runtime.test.mjs",
+    "test/qq-bridge-and-recovery-fixes.test.mjs"
   ]
 }

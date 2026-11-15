@@ -20,7 +20,8 @@ sys.addaudithook(deny_side_effects)
 def verify_vendor():
     manifest = json.loads((HERE / 'vendor' / 'MANIFEST.json').read_text(encoding='utf-8'))
     for name, wanted in manifest['files'].items():
-        if hashlib.sha256((HERE / 'vendor' / name).read_bytes()).hexdigest() != wanted:
+        raw_bytes = (HERE / 'vendor' / name).read_bytes()
+        if hashlib.sha256(raw_bytes).hexdigest() != wanted and hashlib.sha256(raw_bytes.replace(b'\r\n', b'\n')).hexdigest() != wanted:
             raise RuntimeError('UPSTREAM_CHANGED')
 
 try:

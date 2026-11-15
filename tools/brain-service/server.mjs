@@ -436,7 +436,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
           }
           const claimed=responseClaim({response:item.response,worker:'brain-host'});let result,outcome='unknown';
           try{result=await adapter.send({scene:sendScene,text:current.body});outcome=result?.delivered===false?'failed':'sent';}
-          catch(error){result={error:error.code??'SEND_ERROR'};}
+          catch(error){
+            if(error.transportInvoked===false){outcome='failed';result={error:error.code??'SEND_ERROR',message:error.message,transportInvoked:false};}
+            else result={error:error.code??'SEND_ERROR'};
+          }
           responseDelivered({response:claimed.response,claimId:claimed.claimId,outcome,body:JSON.stringify({...(result??{outcome}),scene:sendScene})});
           item.delivery={status:outcome};sent.push({...result,delivered:outcome==='sent',status:outcome});
         }else sent.push({kind:'respond',text:item.text,delivered:false});
@@ -474,7 +477,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
         // Quota refusal is terminal for this source, not an interrupted provider
         // request. Require both durable no-transport proof and no budget row;
         // genuine UNKNOWN reservations must remain blocked and fully retained.
-        const unsentQuota=t.status==='failed'&&t.error==='DAILY_BUDGET_LIMIT'&&t.transportInvoked===false&&!row;
+        const unsentQuota=t.status==='failed'&&['DAILY_BUDGET_LIMIT','SPEND_LIMIT','CALL_LIMIT','BUDGET_EXPIRED','BUDGET_HALTED'].includes(t.error)&&t.transportInvoked===false&&!row;
         if(row?.status==='settled'||unsentQuota){
           closeRecoveryTurn({turnId:t.id,expectedRevision:t.revision,ledgerHash:createHash('sha256').update(bytes).digest('hex')});
           const done=store.read(t.id);if(done.status==='closed-incomplete')closed.push({format:'host-processing-outcome-v1',status:'failed-not-adopted',packetId:t.packet.packetId,sourceEvent:t.packet.payload.current?.id??null,adopted:false,execution:'not-started',accounting:unsentQuota?'not-dispatched':'settled',closure:{id:done.id,revision:done.revision},error:t.error});
@@ -540,12 +543,14 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const chatKey=keyFor(scene,input.key);
     const sourceKey=`${chatKey}:${input.message_id??`${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
     observe({source,key:chatKey,sourceKey,text:body,message:messageValue,scene,sender:input.sender??null,threadId:input.threadId??null,occurredAt:input.occurredAt??input.message_time??null});
+    const maxWaitMs=Number.isSafeInteger(input.waitMs)&&input.waitMs>=0?Math.min(120000,input.waitMs):30000;
+    const deadline=Date.now()+maxWaitMs;
     let result;
-    for(let attempt=0;attempt<6;attempt++){
+    for(;;){
       result=await turn({preferred:global?null:scene,deliver:true,execute});
-      if(result?.error)break;
-      if(!result.busy&&!result.deferred)break;
-      await new Promise(resolve=>setTimeout(resolve,500));
+      if(result?.error||result?.deferred||!result?.busy)break;
+      if(Date.now()>=deadline)break;
+      await new Promise(resolve=>setTimeout(resolve,Math.min(500,Math.max(10,deadline-Date.now()))));
     }
     if(result?.error)return {ok:false,error:result.error,message:result.message,retryable:false,scene,outbox:[],silent:true,busy:false,...(result.processingOutcome?{processingOutcome:result.processingOutcome}: {})};
     const text=result.outbox?.find(o=>o.kind==='respond')?.text??'';
@@ -590,6 +595,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const selected=row.proposalRecovery?selectedModelOutput(data.requests,row):null;
       const raw=selected?.output??row.output??row.providerResult?.output;
       if(turn.status==='failed'&&typeof turn.rawOutput==='string'&&raw===turn.rawOutput)resolution={reason:'OUTPUT_REJECTED',outputHash:digest(turn.rawOutput)};
+      else if(turn.error==='AFFECT_OUTPUT_LIMIT'&&typeof raw==='string'&&Buffer.byteLength(raw)>32768)resolution={reason:'AFFECT_OUTPUT_LIMIT',outputHash:digest(raw)};
       else ensure(turn.error==='MODEL_INCOMPLETE'&&row.providerResult?.complete===false,'AFFECT_RESOLUTION','settled row does not establish this rejected/incomplete output');
       resolution={...resolution,requestId:row.id,ledgerStatus:'settled',actualMicros:row.actualMicros,evidenceHash};
     }else if(turn.error==='UNCERTAIN_REQUEST'&&row?.status==='uncertain'&&Number.isSafeInteger(row.reserveMicros)&&row.reserveMicros>0&&input.keepUnknownReserve===true){
