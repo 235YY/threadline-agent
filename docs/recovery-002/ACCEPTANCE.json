@@ -1,0 +1,69 @@
+{
+  "task": "JY-RECOVERY-002",
+  "localCandidateBuild": "1cdb7a2dac3fff04ace7bac6b781cc312a2565bdeeda7427c026a8eca80a6b40",
+  "localManagedFiles": 448,
+  "localRuntimeFiles": 215,
+  "localManifestSHA256": "6f2eb3c698e34b8829c6f32ac944aa39e7bae79c053f458817e1d45869899909",
+  "publicProjection": "Not the exact private448 executable snapshot. Use SOURCE-PROVENANCE.json for all exclusions/retained portable counterparts. No production data or credentials are published.",
+  "patches": {
+    "A": {
+      "pr": 3,
+      "commit": "38fd0951508cc5b7fbdad795b85e88761dadadd3",
+      "status": "PASS"
+    },
+    "B": {
+      "pr": 4,
+      "commit": "b62b2863114a7685a6d9fdbbd76e0c379ac6657f",
+      "status": "PASS"
+    }
+  },
+  "localFullRegression": {
+    "selectedFiles": 74,
+    "tests": 837,
+    "pass": 832,
+    "fail": 5,
+    "exitCode": 1
+  },
+  "remaining": {
+    "budgetLegacyHaltContract": 3,
+    "affectPrepareContract": 2,
+    "action": "Dual-maintainer decision required before changing contract/expectations; assertions preserved"
+  },
+  "resolved": {
+    "originalWirePackets": 4,
+    "quotaOldFailures": 4,
+    "oldEnvironmentFailuresInFullRun": 7,
+    "historicalCounterexample": "minimum3 local-only original files hash verified; replay PASS"
+  },
+  "overallOfflineAcceptance": "FAIL",
+  "production": "NOT-TOUCHED; NO-GO",
+  "realModel": "NOT-CALLED",
+  "qq": "NOT-USED",
+  "changedFiles": [
+    {
+      "file": "src/cognition.mjs",
+      "sha256": "3a2a3e829fac7bc3b452b812713b74c5ad4a7e36eddb85ae7abc7ead1761e107",
+      "blob": "69ad52c713580159664d47f7a4a133d1b4967b0e"
+    },
+    {
+      "file": "test/thin-focus-contract.test.mjs",
+      "sha256": "a0cdf28cb23711ab5d9f39848cbb3320d63278f68a68f21cd073b32841826fea",
+      "blob": "9eadc07544e19eb70fd121926bb9e3871bd5242b"
+    },
+    {
+      "file": "src/turn-driver.mjs",
+      "sha256": "7e18f6d477261ae43a8096eb9c2aaacb1d04b14e3d2d4450ee3ee2196936524e",
+      "blob": "ae5a35bc7dc2037e4e7966672a4fe5ecd8895670"
+    },
+    {
+      "file": "tools/brain-service/server.mjs",
+      "sha256": "2611893e5355232654a1f00737aea7eec0e0e312b7a89e1ae6615dfb119b62e4",
+      "blob": "1b6e8f6643a9fba4c323f857cd7390f8779ee40b"
+    },
+    {
+      "file": "test/release-hardening.test.mjs",
+      "sha256": "7756e0ce9b54124f9090f3c8692c759c8c4d9eaa42c19b12067945dbb15dfd5b",
+      "blob": "9b2d5ca4bac05a364ae168fbbfabf98c990687a8"
+    }
+  ]
+}

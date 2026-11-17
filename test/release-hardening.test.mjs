@@ -88,6 +88,48 @@ test('plain 调用发送结果未知时，即使更换 Driver 也阻断重发',a
   await assert.rejects(make().tick({now:T+10000,localHour:12,eventBypass:true}),e=>e.code==='TURN_OUTCOME_UNKNOWN');assert.equal(calls,1);
 });
 
+test('recovery-002 UNKNOWN survives restart, isolates only its source and accepts explicit fixed verification',async t=>{
+ const f=driverSetup(t);let store=f.store;const calls=[];
+ const make=()=>new TurnDriver({store,subjectId:'p',workspace:{id:'w',revision:1},decide:p=>{
+  calls.push(p.payload.current.id);if(p.payload.current.id==='obs:unknown')throw Error('synthetic uncertain execution');return output(p);
+ }});
+ let d=make();d.ingest({key:'unknown',body:'synthetic unknown operation',at:T});
+ await assert.rejects(d.tick({now:T,localHour:12,eventBypass:true}));
+ const unknown=readActivity(store,'p',{id:'w'});assert.equal(unknown.value.phase,'dispatched');assert.equal(unknown.value.failure.outcome,'uncertain');
+ const fixed=pin(unknown),packetId=unknown.value.packet.packetId;store.close();store=f.open();d=make();
+ await assert.rejects(d.tick({now:T+1,localHour:12,eventBypass:true}),{code:'TURN_OUTCOME_UNKNOWN'});assert.deepEqual(calls,['obs:unknown']);
+ d.ingest({key:'unrelated',body:'synthetic independent work',at:T+2});
+ assert.equal((await d.tick({now:T+2,localHour:12,eventBypass:true})).action,'decided');assert.deepEqual(calls,['obs:unknown','obs:unrelated']);
+ assert.equal(store.read(fixed.id,fixed.revision).value.phase,'dispatched');
+ assert.throws(()=>d.resolveUnknown({activity:fixed,evidence:{id:'missing',revision:1},outcome:'succeeded'}),{code:'TURN_RESOLUTION'});
+ const event=store.execute({requestId:'explicit-verification',commands:[{op:'append_event',id:'verified',body:JSON.stringify({packetId,outcome:'succeeded',summary:'host checked the original operation'}),scene:'synthetic',actor:'host',origin:'reported',occurredAt:T+3,source:{system:'host-verification',key:packetId}}]})[0];
+ const current=pin(readActivity(store,'p',{id:'w'})),resolved=d.resolveUnknown({activity:fixed,evidence:pin(event),outcome:'succeeded'});
+ assert.deepEqual(resolved.value.resolution.evidence,pin(event));assert.deepEqual(pin(readActivity(store,'p',{id:'w'})),current);
+ assert.deepEqual(d.resolveUnknown({activity:fixed,evidence:pin(event),outcome:'succeeded'}),resolved);
+ assert.throws(()=>d.resolveUnknown({activity:fixed,evidence:pin(event),outcome:'failed'}),{code:'TURN_RESOLUTION'});
+ await d.tick({now:T+4,localHour:12,eventBypass:true});assert.deepEqual(calls,['obs:unknown','obs:unrelated']);
+});
+
+test('recovery-002 known unsent FAILED is distinct from UNKNOWN and new sources still succeed',async t=>{
+ const f=driverSetup(t),calls=[];
+ const d=new TurnDriver({store:f.store,subjectId:'p',workspace:{id:'w',revision:1},decide:p=>{calls.push(p.payload.current.id);if(calls.length===1)throw Object.assign(Error('preflight rejected'),{code:'NETWORK_PREFLIGHT_FAILED',transportInvoked:false});return output(p);}});
+ d.ingest({key:'unsent',body:'synthetic',at:T});await assert.rejects(d.tick({now:T,localHour:12,eventBypass:true}),{code:'NETWORK_PREFLIGHT_FAILED'});
+ const journal=readActivity(f.store,'p',{id:'w'});assert.equal(journal.value.failure.outcome,'not-executed');assert.equal(journal.value.phase,'prepared');
+ const feedback=[...f.store.all('extension_record')].find(r=>r.stateType==='operation-feedback'&&r.value.packetId===journal.value.packet.packetId);
+ assert.equal(feedback.value.execution,'not-started');assert.equal(feedback.value.accounting,'not-dispatched');
+ d.ingest({key:'fresh',body:'synthetic fresh',at:T+1});assert.equal((await d.tick({now:T+1,localHour:12,eventBypass:true})).action,'decided');
+ assert.deepEqual(calls,['obs:unsent','obs:fresh']);assert.equal([...f.store.all('decision')].length,1);
+});
+
+test('recovery-002 legacy complete marker with UNKNOWN evidence cannot resurrect its source',async t=>{
+ const f=driverSetup(t),d=f.make(),event=d.ingest({key:'legacy',body:'synthetic legacy unknown',at:T});
+ const session=new ContinuitySession({store:f.store,subjectId:'p',attention:true,maxForeground:16}),packet=session.prepare({workspace:{id:'w',revision:1},currentEvent:event,budgetBytes:131072});
+ f.store.execute({requestId:'legacy-evidence',commands:[activityWrite(null,{subject:'p',workspace:{id:'w',revision:1},value:{phase:'complete',context:{kind:'decision',now:T,reason:'event',observation:f.store.subjectObservation('p',event.id)},packet,failure:{code:'MODEL_ERROR',outcome:'uncertain',reason:'old interrupted invocation'}}})]});
+ await assert.rejects(d.tick({now:T+1,localHour:12,eventBypass:true}),{code:'TURN_OUTCOME_UNKNOWN'});
+ assert.equal(f.calls(),0);assert.equal(readActivity(f.store,'p',{id:'w'}).value.phase,'dispatched');
+ d.ingest({key:'new-after-legacy',body:'synthetic independent',at:T+2});await d.tick({now:T+2,localHour:12,eventBypass:true});assert.equal(f.calls(),1);
+});
+
 test('重启恢复超过一页的积压，不丢第 101 条之后的事件',async t=>{
   const f=await service(t,{decide:p=>output(p)});for(let i=0;i<251;i++)f.s.observe({source:'fixture',key:'k',sourceKey:'bulk-'+i,scene:'qq/private/1',text:'合成 '+i});
   await new Promise(r=>f.s.server.close(r));f.s.close();

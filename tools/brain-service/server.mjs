@@ -531,6 +531,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       try{result=await driver.tick({now:clock()});}
       catch(error){
         const closed=recoverSettledRejectedTurns();let processingOutcome=closed.find(c=>c.sourceEvent===item?.key||c.sourceEvent==='obs:'+item?.key);
+        if(!processingOutcome&&[item?.key,'obs:'+item?.key].includes(error.processingOutcome?.sourceEvent))processingOutcome=error.processingOutcome;
         // A failed input has no packet/provider call. Quarantine only an exact
         // fresh source with no prior adopted decision and no in-flight journal.
         if(!processingOutcome&&(['INPUT_OVERFLOW','WORKBENCH_REQUIRED_OVERFLOW'].includes(error.code)||error.transportInvoked===false&&['PACKET_CHANGED','PACKET_STAGE'].includes(error.code))){
