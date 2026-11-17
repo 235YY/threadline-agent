@@ -1,8 +1,8 @@
 {
-  "format": "threadline-public-baseline-source-v1",
-  "task": "JY-RECOVERY-002",
-  "meaning": "Inventory of this public development baseline before fix commits; local runtime build and exclusions recorded separately.",
-  "localFrozenBuild": "1395b819338ca22c7d6376876dff1a9f57cff29a18cedc7b6f61160f39143d56",
+  "format": "threadline-public-source-v1",
+  "task": "JY-RECOVERY-004",
+  "meaning": "Every tree file except this manifest; local frozen private candidate is mapped separately in docs/recovery-004/ACCEPTANCE.json.",
+  "localFrozenBuild": "dd392ea23d01edfe1d1953f4500238e03692b8fb1f6fdb8054c784184409f040",
   "files": [
     {
       "file": ".env.example",
@@ -45,6 +45,14 @@
       "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
     },
     {
+      "file": "docs/ADR-RECOVERY-004-BUDGET.md",
+      "sha256": "acdfa1afee9d93ae319be45892b7551906009fec966c549969afd322384564e1"
+    },
+    {
+      "file": "docs/ADR-RECOVERY-004-ISOLATION.md",
+      "sha256": "d4e43fd8a0ed5b5ac4262c3fcd36655cfdd56b260db69b58bda501110fefdfbd"
+    },
+    {
       "file": "docs/ARCHITECTURE.md",
       "sha256": "dee35b90c051f00dd34650cdacfad32aaa920df512f954194fd54d24a7e93629"
     },
@@ -65,12 +73,20 @@
       "sha256": "9860ac456f0f9cb89ff9bd236c0729bc90477082b61d10da521d71fa90dfff04"
     },
     {
+      "file": "docs/recovery-002/ACCEPTANCE.json",
+      "sha256": "292a9b135a14d32a560ff7867ede0469e47330f88c0bd7c4e84c8414f43a5d05"
+    },
+    {
       "file": "docs/recovery-002/README.md",
       "sha256": "39c0fc5a06f42368edc8e44c5594f76064143e26589aa2317e4a641330dfacca"
     },
     {
       "file": "docs/recovery-002/SOURCE-PROVENANCE.json",
       "sha256": "754ea96df4596a18536fd9171d25066e0fb8732e3bf7dc2835cbab0e2b954b31"
+    },
+    {
+      "file": "docs/recovery-004/ACCEPTANCE.json",
+      "sha256": "411936a42f15ed16bbbb12802bd645f59f319bc8fa07c0ef9eb91bec2520e610"
     },
     {
       "file": "evaluation/focus-study_2026-11-05/27c5f6eca7d93a9fe8fe9e2c35fb7836ba883cba51d7bcc16f12b4060ca94f93/f01/r0/call/wire.json",
@@ -394,7 +410,7 @@
     },
     {
       "file": "src/cognition.mjs",
-      "sha256": "b3531b8a112d9e339dd00b039205843894e42627d4ac2d209a19f2b03b54c00d"
+      "sha256": "3a2a3e829fac7bc3b452b812713b74c5ad4a7e36eddb85ae7abc7ead1761e107"
     },
     {
       "file": "src/conditional-combination.mjs",
@@ -426,7 +442,7 @@
     },
     {
       "file": "src/continuity-session.mjs",
-      "sha256": "275dda91f67d77c65c8467731af40f632a2b785821118f47f27221096bf69da8"
+      "sha256": "4e6710be4bdd69d73e0e4a37ae4f61613a864af959c708e3245dc87cb1f39932"
     },
     {
       "file": "src/continuity.mjs",
@@ -526,7 +542,7 @@
     },
     {
       "file": "src/maintenance.mjs",
-      "sha256": "b6570adbf90533c676ac34bb03b9a91fa5f36e03ef381271c3bcb04e2c83a6a7"
+      "sha256": "0d2973802a5ae41e08edd3d2c727132b6e0edc855d979a9638aed0d0b3c4c8b9"
     },
     {
       "file": "src/message.mjs",
@@ -546,7 +562,7 @@
     },
     {
       "file": "src/model-client.mjs",
-      "sha256": "b3daf828c798abe8c170c1f5df5f84c4e3978aaf8b17d0c47defdb8a625dc360"
+      "sha256": "8d0e4887ccf129a4ce17f6f4d6962142a29c0065b270edf690de66932aeb366d"
     },
     {
       "file": "src/model-credential.mjs",
@@ -554,11 +570,11 @@
     },
     {
       "file": "src/model-output-recovery.mjs",
-      "sha256": "347abe39a6c880ae31cf865959df87e1ab6dee59c04035362a1bf78801b15339"
+      "sha256": "034837d652ac082c1925d486db1e81ad0f3e1181740f9dcb9b4c310a4f9ce029"
     },
     {
       "file": "src/model-transport.mjs",
-      "sha256": "eddfc44fb8739c31f3a99dd2ac88ebc4c24df7b289b419999fa09f0caf1cc0c6"
+      "sha256": "885008409dba32fea337a842e1a831a221f99853d343cd9d4edcbb73dee9a79c"
     },
     {
       "file": "src/monitor-flow.mjs",
@@ -614,7 +630,7 @@
     },
     {
       "file": "src/request-journal.mjs",
-      "sha256": "e783b2b008d3dc7b73f7a3a879706d95fc64e8d60f3333ada9a8037e892143bd"
+      "sha256": "6fd111d28d36cd65f93bcd5eb16e131eabb3985419ef2daf03da3d692992fe6c"
     },
     {
       "file": "src/retrieval-association.mjs",
@@ -678,7 +694,7 @@
     },
     {
       "file": "src/turn-driver.mjs",
-      "sha256": "1d39ece4252750479d671e71f77f94715e59dc38ca3afe1198b8fbb807252838"
+      "sha256": "1f78bb5811a3ecadb28f981535d6a81622b92be21275eaf82ccb32960a13dffa"
     },
     {
       "file": "src/url-open.mjs",
@@ -758,7 +774,7 @@
     },
     {
       "file": "test/commit-recovery-boundaries.test.mjs",
-      "sha256": "0ba4619c0efbcd24ba7a4696f022d7fc24e1e2d4fb18cbf0dd1425692b0424ca"
+      "sha256": "8e8f9e30dd769d2b4869a0e0becf5ac4aca4f3b5d1573bac1b251e870b5769c3"
     },
     {
       "file": "test/context-budget-projection.test.mjs",
@@ -814,7 +830,7 @@
     },
     {
       "file": "test/full-runtime-profile.test.mjs",
-      "sha256": "0d7f56b9cae0cd429f1bdaf494cf1f29cd92741d9f285fe77701c5924e7fd6ef"
+      "sha256": "f206374a279a777f985c14c077d5ba724fefacbc3ba0eef373c0ad43dc196414"
     },
     {
       "file": "test/helpers.mjs",
@@ -862,7 +878,7 @@
     },
     {
       "file": "test/model-transport.test.mjs",
-      "sha256": "fc3cf17373ec91386eccf780d3ecd1e3ef7b3775ef1d16176bd69436d26a9ae3"
+      "sha256": "84e5bbe0b4c9bdb78f6e448b27ec7a496afe6ceeed39d46964174b9f1919cf51"
     },
     {
       "file": "test/no-reply-scheduler.test.mjs",
@@ -870,7 +886,7 @@
     },
     {
       "file": "test/official-dashboard.test.mjs",
-      "sha256": "9f76892089c75f86e5ef39e32574c250a9f6b53be95a094cdb9c440f45233bfa"
+      "sha256": "ae7a8318f518c0eebbd74238bea52e4250a589f4a0ea827c5a90735e897c5dad"
     },
     {
       "file": "test/official-usage.test.mjs",
@@ -910,7 +926,7 @@
     },
     {
       "file": "test/qq-recovery-host.test.mjs",
-      "sha256": "87bdab8218ae50747cfdee4be485d0ce3d73603eba647e0eebd807073bcf7f14"
+      "sha256": "dff53a65dca41a8bacd7fe79b89479a9955814ffe46813a0f6c6f61bc4a6985c"
     },
     {
       "file": "test/qq-recovery-local-stop.test.mjs",
@@ -966,7 +982,7 @@
     },
     {
       "file": "test/release-hardening.test.mjs",
-      "sha256": "568039090c76fb4b6e8459a7df306bbb7934c58bd8b0658d606ed102a6fda24c"
+      "sha256": "7756e0ce9b54124f9090f3c8692c759c8c4d9eaa42c19b12067945dbb15dfd5b"
     },
     {
       "file": "test/release-process.test.mjs",
@@ -978,7 +994,7 @@
     },
     {
       "file": "test/runtime-boundaries.test.mjs",
-      "sha256": "1e421a42be309b07698ad6090d02254fd76e7d966c9c4680aa78e641be14da55"
+      "sha256": "a7fecec0ebea6efa6144c6517dff5965993a0765192ae32f56327e657470eb8a"
     },
     {
       "file": "test/standing-daily-budget.test.mjs",
@@ -1006,7 +1022,7 @@
     },
     {
       "file": "test/thin-focus-contract.test.mjs",
-      "sha256": "7c8bc7a40e3577a7d97d307df2779e47c9a4aee99f6c5615896f70f2fb028210"
+      "sha256": "a0cdf28cb23711ab5d9f39848cbb3320d63278f68a68f21cd073b32841826fea"
     },
     {
       "file": "test/tool-receipt-page.test.mjs",
@@ -1102,7 +1118,7 @@
     },
     {
       "file": "tools/affect-integrated/session.mjs",
-      "sha256": "c3ef24cef6c11d2b844865bae02265a59ddc4aad152692e1ce55f4695aa63fc3"
+      "sha256": "9064f59f6a1538cfee66bc0bdeb2b664dc77060dac0474c3e41f3351346c876e"
     },
     {
       "file": "tools/affect-shadow/FROZEN.json",
@@ -1242,7 +1258,7 @@
     },
     {
       "file": "tools/brain-service/bootstrap.mjs",
-      "sha256": "8ba3c2ee0497adf7b81d0a782be6ec9619cd8df38aadf2b6797e3ba4e638f10b"
+      "sha256": "f0ba96b4b443c2f51e116a29d3c309d26609c46f739ea828dee87ec193d7f547"
     },
     {
       "file": "tools/brain-service/instance-guard.mjs",
@@ -1254,11 +1270,11 @@
     },
     {
       "file": "tools/brain-service/runtime-config.mjs",
-      "sha256": "91cf27b27a2eb60985c66caa98dfc64bc419e0a41ee07053892b7b7279d3cb8c"
+      "sha256": "ad141c19d5ad32871b6c6dcdced4cea5b09a7ddf645efdcdfe644c332256e978"
     },
     {
       "file": "tools/brain-service/server.mjs",
-      "sha256": "4e9d9067419370765888e8718dcdf6144c07ff2d3c3212f53ca4ffe5d1489df0"
+      "sha256": "2611893e5355232654a1f00737aea7eec0e0e312b7a89e1ae6615dfb119b62e4"
     },
     {
       "file": "tools/brain-service/typed-state-contract.mjs",

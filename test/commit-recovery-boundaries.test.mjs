@@ -45,12 +45,34 @@ test('错误名称不能代替发送证据：未确认的预算错误仍保留 u
   assert.equal(s.store.read(affectTurnId(p)).status,'uncertain');
 });
 
-test('已捕获但不合法的输出不会在下一次 prepare 中被自动忽略',async t=>{
+test('非法捕获保留原文并隔离同源，无关来源仍可提交',async t=>{
   const s=setup(t),p=await s.session.prepare(s.args),raw=await s.session.invoke(p,()=>'{');
   await assert.rejects(s.session.commit(commitArgs(p,raw)),e=>e.code==='OUTPUT_JSON');
   const [other]=put(s.store,'other',event('other'));
-  await assert.rejects(s.session.prepare({...s.args,currentEvent:ref(other)}),e=>e.code==='AFFECT_TURN_STOPPED');
+  await assert.rejects(s.session.prepare({...s.args,now:T+1}),e=>e.code==='AFFECT_TURN_STOPPED');
+  const next=await s.session.prepare({...s.args,currentEvent:ref(other),now:T+1});
   assert.equal(s.store.read('d'),null);
+  const nextRaw=await s.session.invoke(next,()=>output(next));
+  await s.session.commit({...commitArgs(next,nextRaw),decisionId:'d-other',requestId:'commit-other'});
+  assert.equal(s.store.read(affectTurnId(p)).status,'failed');
+  assert.equal(s.store.read(affectTurnId(p)).rawOutput,'{');
+  assert.ok(s.store.read('d-other'));
+});
+
+test('两个事先 prepared 的上下文不能并行 invoke，同一来源也不能借 now 再调用',async t=>{
+  const s=setup(t),p=await s.session.prepare(s.args);
+  const [other]=put(s.store,'parallel-other',event('parallel-other'));
+  const q=await s.session.prepare({...s.args,currentEvent:ref(other),now:T+1});
+  let finish,calls=0;
+  const pending=s.session.invoke(p,()=>{calls++;return new Promise(r=>finish=r);});
+  await assert.rejects(s.session.invoke(q,()=>{calls++;return output(q);}),e=>e.code==='AFFECT_TURN_STOPPED');
+  finish('{');await pending;
+  await assert.rejects(s.session.commit(commitArgs(p,'{')),e=>e.code==='OUTPUT_JSON');
+  assert.equal(calls,1);
+  const reopened=new AffectSession({store:s.store,subjectId:'p',worker,clock:()=>T+2});
+  await assert.rejects(reopened.prepare({...s.args,now:T+2}),e=>e.code==='AFFECT_TURN_STOPPED');
+  const next=await reopened.prepare({...s.args,currentEvent:ref(other),now:T+2});
+  assert.ok(next.packetId);
 });
 
 test('相同已提交情感提案可以恢复返回，不重算也不产生第二次状态更新',async t=>{

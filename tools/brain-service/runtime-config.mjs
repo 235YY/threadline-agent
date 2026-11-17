@@ -23,7 +23,7 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
  root=resolve(root);
  for(const name of ['BRAIN_STORE','BRAIN_STATE','BRAIN_STYLE_DIR','BRAIN_IDENTITY_FILE','BRAIN_LEDGER','JY_BUDGET_DIR'])if(env[name]!==undefined)ensure(typeof env[name]==='string'&&env[name].trim(),'RUNTIME_CONFIG',`${name} must be a nonempty path`);
  const live=flag(env,'BRAIN_LIVE');
- if(live){ensure(env.JY_LIVE_CONFIRM==='YES','LIVE_CONFIRM_REQUIRED','live start requires explicit confirmation');for(const name of ['BRAIN_LEDGER','BRAIN_MAX_CALLS','BRAIN_MAX_MICROS'])ensure(typeof env[name]==='string'&&env[name].trim(),'LIVE_BUDGET_REQUIRED',`live start requires ${name}`);}
+ if(live){ensure(env.JY_LIVE_CONFIRM==='YES','LIVE_CONFIRM_REQUIRED','live start requires explicit confirmation');ensure(typeof env.BRAIN_LEDGER==='string'&&env.BRAIN_LEDGER.trim(),'LIVE_BUDGET_REQUIRED','live start requires its existing request journal path');}
  if(env.JY_AFFECT!==undefined)flag(env,'JY_AFFECT');
  const isolatedStore=live?env.BRAIN_STORE:env.BRAIN_STORE??'_local/dry-run/subject.sqlite';
  const affect=affectRuntimeConfig({root,env:{...env,...(isolatedStore!==undefined?{BRAIN_STORE:isolatedStore}:{})}});
@@ -34,7 +34,7 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
  const callLimit=env.BRAIN_MAX_CALLS==='unlimited'?null:integer(env,'BRAIN_MAX_CALLS',96,1,1000);
  const reasoning=env.BRAIN_REASONING===undefined?'low':env.BRAIN_REASONING;
  ensure(['low','high','off'].includes(reasoning),'RUNTIME_CONFIG','BRAIN_REASONING must be low, high or off');
- const rhythm={dailyCallCap:callLimit};
+ const rhythm={dailyCallCap:live?null:callLimit};
  if(env.JY_QUIET_FROM!==undefined)rhythm.quietFromHour=integer(env,'JY_QUIET_FROM',0,0,23);
  if(env.JY_QUIET_TO!==undefined)rhythm.quietToHour=integer(env,'JY_QUIET_TO',0,0,23);
  const config={root,mode:live?'live':'dry-run',live,port:integer(env,'BRAIN_PORT',8787,0,65535),

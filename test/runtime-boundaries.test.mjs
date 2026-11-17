@@ -9,17 +9,43 @@ import {claimBrainInstance} from '../tools/brain-service/instance-guard.mjs';
 import {launchBrain} from '../tools/brain-service/bootstrap.mjs';
 import {createBrainService} from '../tools/brain-service/server.mjs';
 import {MaintenanceSession,startMaintenanceHeartbeat} from '../src/maintenance.mjs';
+import {createModelDecision} from '../src/model-transport.mjs';
+import {RequestJournal} from '../src/request-journal.mjs';
+import {officialDashboard,officialDay} from '../src/official-dashboard.mjs';
+import {keepAttention} from '../src/attention.mjs';
 
 const temp=()=>mkdtempSync(join(tmpdir(),'jingyang-runtime-boundary-'));
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 function fixture(){const root=temp();writeFileSync(join(root,'persona.txt'),'离线合成身份');return {root,env:{BRAIN_PORT:'0',BRAIN_STATE:'state',BRAIN_STORE:':memory:',BRAIN_STYLE_DIR:'style',BRAIN_IDENTITY_FILE:'persona.txt',JY_AFFECT:'0'}};}
 function fakeDependencies(extra={}){
  const calls={model:0,closed:0,serviceClosed:0,starts:[],audit:0};let options;
- const deps={auditBudgets:()=>{calls.audit++;return {within:true,unknownCalls:0,conflictCount:0};},createModelDecision:()=>{calls.model++;return {decide:()=>{throw Error('must not invoke model');},close:()=>calls.closed++};},tools:{TOOL_NAMES:[],executeTool:()=>{throw Error('external tool');}},
+ const deps={officialSpend:{gate:()=>({known:true,allow:true})},auditBudgets:()=>{calls.audit++;return {within:true,unknownCalls:0,conflictCount:0};},createModelDecision:()=>{calls.model++;return {decide:()=>{throw Error('must not invoke model');},close:()=>calls.closed++};},tools:{TOOL_NAMES:[],executeTool:()=>{throw Error('external tool');}},
   core:{READ_ONLY_HOST_TOOLS:[],startBrainService:async value=>{options=value;return {server:{listening:false},port:1,url:'http://127.0.0.1:1',health:()=>({cognitionBusy:false}),close:()=>calls.serviceClosed++,stopScheduling:()=>{},startScheduling:n=>calls.starts.push(n)};}},...extra};
  return {deps,calls,options:()=>options};
 }
 const liveEnv=env=>({...env,BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',BRAIN_LEDGER:'budget.json',BRAIN_MAX_CALLS:'3',BRAIN_MAX_MICROS:'100000',BRAIN_MAINTENANCE:'0'});
+
+test('standard live startup injects the official gate and RequestJournal, without old financial or daily call halt',async()=>{
+ const f=fixture(),token='o'.repeat(40),monitor=officialDashboard({file:join(f.root,'official.json'),token});
+ let options,calls=0,p;const dependencies={officialSpend:monitor,auditBudgets:()=>{throw Error('legacy audit must not run');},
+  tools:{TOOL_NAMES:[],executeTool:()=>{throw Error('no external tool');}},
+  createModelDecision:value=>{
+   options=value;const model=createModelDecision({...value,getKey:()=> 'sk-offlineabcdefghijkl',networkCheck:async()=>({ok:true}),transport:async()=>{
+    calls++;const content=JSON.stringify({packetId:p.packetId,options:[{id:'w',kind:'wait',payload:{}}],selected:'w',summary:'offline standard startup',used:[],continuity:{changes:[],residency:{add:[],remove:[]},expressionChoice:null,observationDisposition:'handled',attention:keepAttention()}});
+    return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content}}],usage:{prompt_tokens:10,completion_tokens:10,prompt_cache_hit_tokens:0,prompt_cache_miss_tokens:10}}),{status:200});
+   }});const invoke=model.decide;model.decide=(packet,context)=>{p=packet;return invoke(packet,context);};return model;
+  }};
+ const env={...liveEnv(f.env),BRAIN_STATE:join(f.root,'state'),BRAIN_STYLE_DIR:join(f.root,'style'),BRAIN_IDENTITY_FILE:join(f.root,'persona.txt'),BRAIN_LEDGER:join(f.root,'requests.json'),BRAIN_HEARTBEAT_MS:'0'};
+ delete env.BRAIN_MAX_CALLS;delete env.BRAIN_MAX_MICROS;
+ const brain=await launchBrain({root:process.cwd(),env,dependencies});
+ try{
+  assert.ok(options.requestJournal instanceof RequestJournal);assert.equal(options.officialSpend,monitor);assert.equal(brain.config.rhythm.dailyCallCap,null);
+  const paused=await brain.service.reply({source:'fixture',key:'paused',scene:'synthetic',message_id:'one',messages:[{role:'user',content:'offline message'}]});
+  assert.equal(paused.silent,true);assert.equal((await brain.service.turn()).budgetPaused,true);assert.equal(calls,0);
+  const now=Date.now();monitor.accept({source:'https://platform.deepseek.com/usage',keyLabel:'新版鲸漾系统',period:'today',timeZone:'Asia/Shanghai',currency:'CNY',day:officialDay(now),spendMicros:1000,requestCount:0,capturedAt:now},token);
+  await brain.service.turn();assert.equal(calls,1);assert.equal(options.requestJournal.data.requests[0].validation.status,'accepted');
+ }finally{await brain.stop();}
+});
 
 test('dry defaults use isolated storage and cannot enable live model or QQ implicitly',()=>{
  const root=temp(),c=resolveBrainConfig({root,env:{}});
@@ -31,16 +57,16 @@ for(const [key,value] of [['BRAIN_PORT','NaN'],['BRAIN_MAX_CALLS','-1'],['BRAIN_
  assert.equal(fake.calls.model,0);assert.equal(existsSync(join(f.root,'state')),false);
 });
 
-test('live requires explicit confirmation and all budget fields before any state write',async()=>{
- for(const missing of ['JY_LIVE_CONFIRM','BRAIN_LEDGER','BRAIN_MAX_CALLS','BRAIN_MAX_MICROS']){
+test('live requires explicit confirmation and request journal path before any state write',async()=>{
+ for(const missing of ['JY_LIVE_CONFIRM','BRAIN_LEDGER']){
   const f=fixture(),env=liveEnv(f.env),fake=fakeDependencies();delete env[missing];await assert.rejects(launchBrain({...f,env,dependencies:fake.deps}));assert.equal(fake.calls.audit,0);assert.equal(fake.calls.model,0);assert.equal(existsSync(join(f.root,'state')),false);
  }
 });
 
-test('audit refusal does not publish instance files or change a foreign ledger lock',async()=>{
+test('foreign request journal lock is retained; legacy financial audit is not a second authority',async()=>{
  const f=fixture(),foreign=join(f.root,'budget.json.lock');writeFileSync(foreign,'foreign-owner');const fake=fakeDependencies({auditBudgets:()=>({within:false,unknownCalls:1})});
- await assert.rejects(launchBrain({...f,env:liveEnv(f.env),dependencies:fake.deps}),{code:'BUDGET_AUDIT'});
- assert.equal(readFileSync(foreign,'utf8'),'foreign-owner');assert.equal(existsSync(join(f.root,'state')),false);assert.equal(fake.calls.model,0);
+ await assert.rejects(launchBrain({...f,env:liveEnv(f.env),dependencies:fake.deps}),{code:'EEXIST'});
+ assert.equal(readFileSync(foreign,'utf8'),'foreign-owner');assert.equal(existsSync(join(f.root,'state','brain.instance.json')),false);assert.equal(fake.calls.model,0);assert.equal(fake.calls.audit,0);
 });
 
 test('invalid or oversized identity is rejected without silent truncation',async()=>{

@@ -8,15 +8,16 @@ import {normalizeAndRecord} from './proposal-normalization.mjs';
 // One request in, one decision out. The injected client owns metering and provider configuration.
 // There is no default provider, key loader, automatic retry, autonomous loop, or QQ sender here.
 export class ContinuitySession {
-  #store; #subjectId; #pending=new Map();
-  constructor({store,subjectId,maxForeground=8,attention=false}) {
+  #store; #subjectId; #pending=new Map(); #requestJournal;
+  constructor({store,subjectId,maxForeground=8,attention=false,requestJournal=null}) {
     text(subjectId,'subject id');this.#store=store;this.#subjectId=subjectId;
+    this.#requestJournal=requestJournal;
     initializeSubject({store,subjectId,maxForeground,requestId:`subject-session:${subjectId}`});
     ensure(typeof attention==='boolean','INVALID_INPUT','attention must be explicit boolean');
     if(attention)store.execute({requestId:`initialize:${attentionId(subjectId)}`,commands:[{op:'initialize_attention',subjectId}]});
   }
   invoke(packet,fn){return fn(packet);}
-  sourceBlocked(){return false;}
+  sourceBlocked(eventId){const event=this.#store.read(eventId);return !!event&&this.#requestJournal?.blocks({subject:this.#subjectId,kind:'event',event:{id:event.id,revision:event.revision}})===true;}
   prepareReflection(args){return prepareReflection({...args,store:this.#store,subjectId:this.#subjectId});}
   prepare(args) {
     ensure(args&&args.subjectId===undefined,'SUBJECT_FIXED','session subject cannot be changed per activity');
@@ -28,18 +29,21 @@ export class ContinuitySession {
   }
   commit(args) {
     ensure(['decisionContinuity','decisionInformation','decisionWorkbench','decisionAttention','decisionMind','decisionGraph','reflection'].includes(args.packet?.stage)&&args.packet.payload.continuity.subject.id===this.#subjectId,'SUBJECT_FIXED','input belongs to another subject/session');
-    const output=normalizeAndRecord({store:this.#store,packet:args.packet,output:args.output});
-    try{return commitDecision({...args,output,store:this.#store});}
+    let output,d;
+    try{const attempt=this.#requestJournal?.packetRequest(args.packet.packetId);ensure(!attempt||attempt.status==='settled'&&attempt.validation?.status!=='rejected','REQUEST_VALIDATION_CONFLICT','request must have a settled, unrejected output before adoption');output=normalizeAndRecord({store:this.#store,packet:args.packet,output:args.output});d=commitDecision({...args,output,store:this.#store});}
     catch(error){
+      if(error.name==='ContractError'&&!this.#requestJournal?.packetRequest(args.packet.packetId)?.validation)this.#requestJournal?.recordValidation(args.packet.packetId,{status:'rejected',error:error.code});
       if(['STATE_CONFLICT','UNDELIVERED_REFERENCE'].includes(error.code)){
         const id='extension:'+this.#subjectId+':runtime:validation:'+digest({packet:args.packet.packetId,output,code:error.code});
         if(!this.#store.read(id))this.#store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'validation',sourceEvent:args.packet.payload.current?.id??null,packetId:args.packet.packetId,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',next:'上次提案未提交。按当前交付目录自主重新判断；不自动重放，不替你修订内容。'}}]});
       }
       throw error;
     }
+    this.#requestJournal?.recordValidation(args.packet.packetId,{status:'accepted',decision:{id:d.id,revision:d.revision}});
+    return d;
   }
   closeRejected({packet,error,journal}){
-    if(error.name!=='ContractError')return false;
+    if(error.name!=='ContractError'&&this.#requestJournal?.packetRequest(packet.packetId)?.validation?.status!=='rejected')return false;
     const commands=[];
     if(packet.payload.current)commands.push({op:'quarantine_source',subject:{id:this.#subjectId,revision:this.#store.read(this.#subjectId).revision},event:{id:packet.payload.current.id,revision:packet.payload.current.revision},reason:error.code});
     commands.push(journal);

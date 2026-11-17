@@ -5,20 +5,18 @@ import {ensure} from '../../src/contracts.mjs';
 import {resolveBrainConfig,launchIdentity,assertSupportedNode} from './runtime-config.mjs';
 import {claimBrainInstance,runtimeSourceIdentity} from './instance-guard.mjs';
 import {withTypedStateContract} from './typed-state-contract.mjs';
+import {officialDashboard} from '../../src/official-dashboard.mjs';
+import {RequestJournal} from '../../src/request-journal.mjs';
 
 // Configuration and authorization precede resource acquisition. No key is loaded here.
 export async function launchBrain({root=process.cwd(),env=process.env,dependencies={}}={}){
  assertSupportedNode();
  const config=resolveBrainConfig({root,env});
  ensure(dependencies.core||existsSync(join(config.root,'src/store.mjs'))&&existsSync(join(config.root,'package.json')),'PROJECT_ROOT','launch from the actual project directory');
- if(config.live&&!dependencies.officialSpend){
-  const auditFn=dependencies.auditBudgets??(await import('../ops/budget-audit.mjs')).auditBudgets;
-  const audit=auditFn(config.budgetDirectory);
-  ensure(audit.within===true&&(audit.conflictCount??0)===0,'BUDGET_AUDIT','live budget audit has not established authorization and confirmed costs');
- }
+ const officialSpend=config.live?(dependencies.officialSpend??officialDashboard({file:join(config.stateDirectory,'official-usage.json'),token:env.JY_OFFICIAL_USAGE_TOKEN})):null;
  const guard=claimBrainInstance({stateDirectory:config.stateDirectory});
  const shutdownToken=randomUUID();
- let model=null,service=null,maintenanceHeartbeat=null,stopping=null,drainRetry=null;
+ let model=null,requestJournal=null,service=null,maintenanceHeartbeat=null,stopping=null,drainRetry=null;
  async function stop(){
   if(stopping)return stopping;
   stopping=(async()=>{
@@ -27,7 +25,7 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
    while(service?.health?.().cognitionBusy&&Date.now()<deadline)await new Promise(r=>setTimeout(r,50));
    ensure(!service?.health?.().cognitionBusy,'SHUTDOWN_BUSY','in-flight cognitive work remains; preserve ownership, retry after it finishes');
    if(service?.server?.listening)await new Promise((resolve,reject)=>service.server.close(error=>error?reject(error):resolve()));
-   if(drainRetry){clearTimeout(drainRetry);drainRetry=null;}service?.close();model?.close();guard.close();
+   if(drainRetry){clearTimeout(drainRetry);drainRetry=null;}service?.close();model?.close();requestJournal?.close();guard.close();
   })().catch(error=>{stopping=null;if(error.code==='SHUTDOWN_BUSY'&&!drainRetry){drainRetry=setTimeout(()=>{drainRetry=null;stop().then(()=>dependencies.onStopped?.()).catch(()=>{});},500);drainRetry.unref();}throw error;});
   return stopping;
  }
@@ -39,7 +37,8 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
   if(config.affect.enabled){affectAdapter=dependencies.affect??await import('../affect-integrated/session.mjs');await affectAdapter.probeAffect();sessionFactory=affectAdapter.affectFactory({fusion:config.affect.fusion});}
   if(config.live){
    const makeModel=dependencies.createModelDecision??(await import('../../src/model-transport.mjs')).createModelDecision;
-   model=makeModel({ledgerPath:config.ledgerPath,blobDirectory:join(config.stateDirectory,'blobs'),profile:{...config.profile,formatRecovery:true}});decide=model.decide;
+   requestJournal=dependencies.requestJournal??new RequestJournal(config.ledgerPath);
+   model=makeModel({ledgerPath:config.ledgerPath,blobDirectory:join(config.stateDirectory,'blobs'),profile:{...config.profile,formatRecovery:true},requestJournal,officialSpend});decide=model.decide;decide.requestJournal=requestJournal;
   }
   let registeredToolNames=[],agentTools={},effectiveHostTools=[],adapter={send:async()=>({delivered:false,mode:'dry-run'}),act:async()=>{ensure(false,'DRY_RUN_TOOL_DISABLED','dry-run cannot execute external tools');}};
   if(config.live){
@@ -68,7 +67,7 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
    heartbeatMs:0,decide,identity,rhythm:config.rhythm,cognition:config.cognition,runtimeInfo,shutdownControl:{token:shutdownToken,stop:async()=>{await stop();dependencies.onStopped?.();}},global:config.global,subjectTask:true,idleIntervalMs:config.idleIntervalMs,rhythmReset:config.rhythmReset,
    sessionFactory,theoryStatus:()=>config.affect.enabled?{enabled:true,available:true,version:'limbic-v1',fusion:config.affect.fusion}:{enabled:false,available:false,version:null},
    capabilities:['remember','open','relate','say','do','wait',...allowed],
-   officialSpend:dependencies.officialSpend??null,agentTools,hostAllowedTools:effectiveHostTools,lifePolicy:config.openLife?dependencies.lifePolicy:null,allowedActionTools:allowed,adapter});
+   officialSpend,agentTools,hostAllowedTools:effectiveHostTools,lifePolicy:config.openLife?dependencies.lifePolicy:null,allowedActionTools:allowed,adapter});
   if(affectAdapter)affectAdapter.verifyStoredAffect({store:service.store,subjectId:'jingyang'});
   ensure(runtimeSourceIdentity(config.root).fingerprint===build.fingerprint,'SOURCE_CHANGED_DURING_BOOT','startup inventory changed; no ready instance published');
   const instance=guard.publish({format:'jingyang-brain-instance-v1',status:'ready',mode:config.mode,affect:config.affect.enabled,fusion:config.affect.fusion,
@@ -78,7 +77,7 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
    const maintenance=dependencies.maintenance??await import('../../src/maintenance.mjs');
    const session=new maintenance.MaintenanceSession({store:service.store,subjectId:'jingyang',identity});
    maintenanceHeartbeat=maintenance.startMaintenanceHeartbeat({session,isBusy:()=>{const h=service.health();return h.cognitionBusy===true||h.active!==null||(h.pending?.length??0)>0;},
-    runExclusive:fn=>service.runCognitionExclusive(fn),invoke:model.invokeMaintenance,authorize:async()=>true,
+    runExclusive:fn=>service.runCognitionExclusive(fn),invoke:model.invokeMaintenance,authorize:async()=>officialSpend.gate().allow,
     onResult:r=>console.error('[maintenance]',r.status??'unknown'),onError:e=>console.error('[maintenance]',e.code??'MAINTENANCE_ERROR')});
   }
   service.startScheduling(config.heartbeatMs);
