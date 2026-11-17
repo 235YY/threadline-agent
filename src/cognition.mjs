@@ -142,7 +142,7 @@ function pageCurrentReceipt(data){
     fullBodyDelivered:false,meaning:'complete list entries from pinned receipt; omitted entries were not delivered; full original receipt remains stored; read tools may provide subsequent pages'}};
   return data;
 }
-function seal(stage,payload,budgetBytes,instructionSuffix=null) {
+function seal(stage,payload,budgetBytes,instructionSuffix=null,{operationContract=true}={}) {
   bound(budgetBytes,'input budget');
   const focused=payload.continuity?.attention?.focusSupport?.enabled===true;
   let baseInstruction=focused?PROMPTS[stage].replace('continuity在原四字段以外还必须有attention，严格为：','continuity在原四字段以外还必须有attention；基本字段如下，另可含focus：'):PROMPTS[stage];
@@ -151,7 +151,7 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null) {
     baseInstruction=baseInstruction.replace(/(kind\s*为\s*)(feeling(?:\/[a-z_]+)+)/g,
       (_,prefix,kinds)=>prefix+[...new Set([...kinds.split('/'),'impression'])].join('/'));
   if(payload.continuity?.attention?.eventProcessSupport?.enabled)payload=clone(payload),payload.continuity.attention.eventProcessSupport.events=eventProcessEvents(payload);
-  if(payload.continuity){
+  if(payload.continuity&&operationContract){
     payload=clone(payload);
     const c=payload.continuity,states=[...c.foreground,...c.recalled,...(c.shortTerm?.items??[]),...(c.subjectiveMemory?.recent?.items??[]),...(c.subjectiveMemory?.compressed?.items??[]),...(c.subjectiveMemory?.maintenance?.olderRecent??[])];
     payload.operationContract={format:'operation-contract-v1',processes:(c.attention?.processes??[]).map(p=>({type:'process',id:p.id,revision:p.revision,updatePath:'continuity.attention.processes'})),personalStates:uniqueRefs(states.map(s=>s.ref)).map(ref=>({type:'personal_state',ref,updatePath:'continuity.changes'})),usedMaterials:payload.materials.map(m=>({ref:m.ref,aspects:m.aspects})),recentContext:'可用于理解对话；不是used材料目录。used仅可引用usedMaterials的精确ref与aspect，没有用则[]。'};
@@ -184,8 +184,12 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null) {
 }
 function verify(packet,stage) {
   ensure(packet?.stage===stage,'PACKET_STAGE','wrong packet stage');
-  const rebuilt=seal(stage,packet.payload,packet.budgetBytes,packet.instructionSuffix??null);
-  ensure(rebuilt.packetId===packet.packetId && canonical(rebuilt.messages)===canonical(packet.messages)
+  // New preparation includes the contract. Verification preserves an archived
+  // envelope's original profile instead of upgrading its payload/instructions.
+  const rebuilt=seal(stage,packet.payload,packet.budgetBytes,packet.instructionSuffix??null,
+    {operationContract:Object.hasOwn(packet.payload,'operationContract')});
+  ensure(canonical(rebuilt.payload)===canonical(packet.payload)
+    && rebuilt.packetId===packet.packetId && canonical(rebuilt.messages)===canonical(packet.messages)
     && packet.instruction===rebuilt.instruction && packet.bytes===rebuilt.bytes,'PACKET_CHANGED','use the exact host-prepared packet');
 }
 function parse(output,maxOutputBytes) {
