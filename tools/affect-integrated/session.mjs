@@ -9,6 +9,7 @@ const FUSION_PROMPT=readFileSync(new URL('../../prompts/decision-affect-fusion.z
 const AFFECT_PROMPT=readFileSync(new URL('../../prompts/decision-affect.zh.md',import.meta.url),'utf8');
 const ref=x=>({id:x.id,revision:x.revision});
 const copy=x=>JSON.parse(canonical(x));
+const requestSource=(subject,p)=>p.task?{subject,kind:'task',taskId:p.task.id,step:p.task.stepCount}:(p.currentEvent??p.current)?{subject,kind:'event',event:ref(p.currentEvent??p.current)}:p.requestSource??null;
 
 function verifyProfile(snapshot,config){
  validateSnapshot(snapshot);ensure(snapshot.config.timezoneMinutes===(config.timezoneMinutes??480)&&canonical(snapshot.config.parameters)===canonical(config.parameters??{}),'AFFECT_PROFILE','explicit new phase required to change profile');
@@ -25,8 +26,16 @@ export async function probeAffect({worker=callWorker,config={timezoneMinutes:480
 
 // Complete opt-in session. The worker never receives the store/database path.
 export class AffectSession {
- constructor({store,subjectId,attention=true,maxForeground=16,worker=callWorker,config={timezoneMinutes:480,parameters:{}},clock=()=>store.clockNow(),fusion=false}={}){
-  ensure(typeof fusion==='boolean','AFFECT_CONFIG','explicit fusion boolean');Object.assign(this,{store,subjectId,worker,config,clock,fusion});this.core=new ContinuitySession({store,subjectId,attention,maxForeground});
+ constructor({store,subjectId,attention=true,maxForeground=16,worker=callWorker,config={timezoneMinutes:480,parameters:{}},clock=()=>store.clockNow(),fusion=false,requestJournal=null}={}){
+  ensure(typeof fusion==='boolean','AFFECT_CONFIG','explicit fusion boolean');Object.assign(this,{store,subjectId,worker,config,clock,fusion,requestJournal});this.core=new ContinuitySession({store,subjectId,attention,maxForeground,requestJournal});
+  if(requestJournal)for(const t of store.all('affect_turn')){
+   if(t.subject!==subjectId||t.status!=='dispatched')continue;
+   const request=requestJournal.packetRequest(t.packet.packetId)??requestJournal.tryFind('turn:'+t.packet.packetId);
+   // The bound Journal alone proves a genuinely active model request. Missing
+   // or already-ended request facts never prove that this orphan turn succeeded.
+   if(request?.status!=='dispatched')
+    store.execute({requestId:'affect-interrupted:'+t.id+':'+t.revision,commands:[{op:'affect_turn',id:t.id,expectedRevision:t.revision,status:'uncertain',error:'INTERRUPTED_DISPATCH',failurePhase:'journal-recovery',transportInvoked:null}]});
+  }
  }
  async initialize(nowMs=this.clock()){
   const old=this.store.read(motivationId(this.subjectId));
@@ -40,13 +49,18 @@ export class AffectSession {
   const keyArgs=copy(Object.fromEntries(Object.entries(args).filter(([k])=>!['store','subjectId','now'].includes(k))));
   const argsKey=digest({reflection,args:keyArgs,...(this.fusion?{fusion:true}:{})});
   const turns=[...this.store.all('affect_turn')].filter(t=>t.subject===this.subjectId);
-  ensure(!args.currentEvent||!turns.some(t=>t.status==='closed-incomplete'&&t.packet.payload.current?.id===args.currentEvent.id),'AFFECT_SOURCE_STOPPED','closed incomplete source stays in history; do not automatically retry it');
+  const source=requestSource(this.subjectId,args),request=source?this.requestJournal?.sourceRequest(source):null;
+  const admitted=request&&(request.status==='reserved'&&request.fingerprint===null||request.status==='settled'&&request.validation?.status==='accepted');
+  const same=t=>source&&canonical(t.requestSource??requestSource(this.subjectId,t.packet.payload))===canonical(source);
+  ensure(admitted||!turns.some(t=>t.status==='closed-incomplete'&&same(t)),'AFFECT_SOURCE_STOPPED','closed source requires explicit request readmission');
+  ensure(admitted||!turns.some(t=>['failed','uncertain'].includes(t.status)&&same(t)),'AFFECT_TURN_STOPPED','same failed source cannot revive by changing time');
   const pending=turns.filter(t=>!['committed','closed-incomplete','superseded'].includes(t.status));
   ensure(!pending.some(t=>t.status==='dispatched'),'AFFECT_TURN_STOPPED','an in-flight model turn still owns the affect slot; do not overlap it');
   const captured=pending.find(t=>t.status==='captured');
   if(captured){ensure(captured.argsKey===argsKey,'AFFECT_CAPTURE_PENDING','finish the captured turn before another task');return captured.packet;}
   const prepared=pending.find(t=>t.status==='prepared'&&t.argsKey===argsKey);
   if(prepared)return prepared.packet;
+  ensure(!request||admitted,'AFFECT_SOURCE_STOPPED','request journal has not admitted this source');
   const old=this.store.read(motivationId(this.subjectId));
   const operation={id:'preview:'+digest({ref:ref(old),now}),kind:'advance',expectedRevision:old.snapshot.revision,nowMs:now};
   const advanced=await this.worker({action:'transition',state:old.snapshot,operation});
@@ -59,7 +73,7 @@ export class AffectSession {
   if(this.fusion){motivation.projection=completeEmotionProjection(advanced.state);const context=fusionContext({store:this.store,subjectId:this.subjectId,motivation,currentEvent:args.currentEvent,materials:args.materials,stateRefs:args.stateRefs});motivation=context.motivation;internalSources=context.internalSources;}
   const preparedArgs={...coreArgs,motivationProjection:motivation,...(this.fusion?{internalSources,apperceptionV1:true}:{}),instructionSuffix:[args.instructionSuffix,this.fusion?FUSION_PROMPT:AFFECT_PROMPT].filter(Boolean).join('\n\n')};
   const packet=reflection?prepareReflection({...preparedArgs,store:this.store,subjectId:this.subjectId}):this.core.prepare(preparedArgs);
-  const value={subject:this.subjectId,status:'prepared',argsKey,packet,preview,hostActivity:hostActivity??null,rawOutput:null};
+  const value={subject:this.subjectId,status:'prepared',argsKey,packet,preview,hostActivity:hostActivity??null,rawOutput:null,...(source?{requestSource:source}:{})};
   this.store.execute({requestId:'affect-prepare:'+packet.packetId,commands:[{op:'affect_turn',id:affectTurnId(packet),expectedRevision:0,value}]});return packet;
  }
  prepare(args){return this.#prepare(args,false);}
@@ -74,6 +88,12 @@ export class AffectSession {
   ensure(canonical(packet)===canonical(turn.packet),'AFFECT_PACKET_CHANGED','use the exact stored input');
   if(turn.status==='captured')return turn.rawOutput;
   ensure(turn.status==='prepared','AFFECT_TURN_STOPPED','never automatically resend a dispatched turn');
+  const others=[...this.store.all('affect_turn')].filter(t=>t.subject===this.subjectId&&t.id!==turn.id);
+  ensure(!others.some(t=>['dispatched','captured'].includes(t.status)),'AFFECT_TURN_STOPPED','another actual invocation/capture owns the subject slot');
+  const source=turn.requestSource??requestSource(this.subjectId,packet.payload),request=source?this.requestJournal?.sourceRequest(source):null;
+  const admitted=request&&(request.status==='reserved'&&request.fingerprint===null||request.status==='settled'&&request.validation?.status==='accepted');
+  ensure(admitted||!others.some(t=>['failed','uncertain','closed-incomplete'].includes(t.status)&&source&&canonical(t.requestSource??requestSource(this.subjectId,t.packet.payload))===canonical(source)),'AFFECT_TURN_STOPPED','original source is still stopped');
+  ensure(!request||admitted,'AFFECT_SOURCE_STOPPED','request identity is already claimed');
   ensure(this.store.read(this.subjectId)?.revision===packet.payload.continuity.subject.revision,'STALE_SUBJECT','subject changed before invocation');
   const base=this.store.read(motivationId(this.subjectId));
   ensure(base&&canonical(ref(base))===canonical(turn.preview.baseRef)&&digest(base.snapshot)===turn.preview.baseHash,'STALE_MOTIVATION','motivation changed before invocation');
@@ -146,11 +166,16 @@ export class AffectSession {
    const all=completeEmotionProjection(record.snapshot).emotions.sort((a,b)=>canonical(a).localeCompare(canonical(b)));
    return {baseRef:ref(record),asOf:record.snapshot.wallAt,total:all.length,offset,items:all.slice(offset,offset+limit),next:offset+limit<all.length?offset+limit:null};
   }
-  sourceBlocked(eventId){return [...this.store.all('affect_turn')].some(t=>t.subject===this.subjectId&&t.status==='closed-incomplete'&&t.packet.payload.current?.id===eventId);}
+  sourceBlocked(eventId){const event=this.store.read(eventId),source=event?{subject:this.subjectId,kind:'event',event:ref(event)}:null;if(source&&this.requestJournal?.sourceRequest(source))return this.requestJournal.blocks(source);return [...this.store.all('affect_turn')].some(t=>t.subject===this.subjectId&&['failed','uncertain','closed-incomplete'].includes(t.status)&&t.packet.payload.current?.id===eventId);}
+ closeRejected(args){
+  if(this.store.read(affectTurnId(args.packet))?.status!=='failed')return false;
+  return this.core.closeRejected(args);
+ }
  #fail(turn,error){
   const current=this.store.read(turn.id);if(current?.status!=='captured')return;
   try{this.store.execute({requestId:'affect-fail:'+turn.id+':'+current.revision,commands:[{op:'affect_turn',id:turn.id,expectedRevision:current.revision,status:'failed',error:error.code??'DECISION_REJECTED',failurePhase:'output-validation'}]});}
   catch(recording){error.affectFailureRecording='failed';error.affectFailureError=recording.code??'PERSISTENCE_ERROR';}
+  this.requestJournal?.recordValidation(turn.packet.packetId,{status:'rejected',error:error.code??'DECISION_REJECTED'});
  }
  async run({invoke,requestId,decisionId,...args}){
   const key=digest({requestId,decisionId,args,...(this.fusion?{fusion:true}:{})}),existing=this.store.read(decisionId);

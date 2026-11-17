@@ -1,17 +1,63 @@
 import {readFileSync,existsSync,openSync,closeSync,unlinkSync,mkdirSync} from 'node:fs';import {dirname} from 'node:path';import {writeLedgerAtomically} from './ledger-io.mjs';
+import {ensure,digest,canonical} from './contracts.mjs';
 // Execution identity and captured output only; no spending authority or aggregate reserves.
 export class RequestJournal {
- constructor(file,{history}={}){this.path=file;this.lock=file+'.lock';mkdirSync(dirname(file),{recursive:true});this.fd=openSync(this.lock,'wx');try{this.data=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{format:'jingyang-request-journal-v1',requests:[]};if(this.data.format!=='jingyang-request-journal-v1'||!Array.isArray(this.data.requests))throw Error('REQUEST_JOURNAL_FORMAT');this.history=new Map((history?JSON.parse(readFileSync(history,'utf8')).requests:[]).map(r=>[r.id,r]));}catch(e){this.close();throw e;}}
- save(){writeLedgerAtomically(this.path,this.data);}
+ constructor(file,{history}={}){this.path=file;this.lock=file+'.lock';mkdirSync(dirname(file),{recursive:true});this.fd=openSync(this.lock,'wx');try{this.data=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{format:'jingyang-request-journal-v1',requests:[]};if(this.data.format!=='jingyang-request-journal-v1'||!Array.isArray(this.data.requests))throw Error('REQUEST_JOURNAL_FORMAT');this.history=new Map((history?JSON.parse(readFileSync(history,'utf8')).requests:[]).map(r=>[r.id,r]));
+  let changed=false;for(const r of this.data.requests){
+   if(r.status==='dispatched'){r.recovery={from:r.status,reason:'reopened-exclusive-journal; prior transport outcome unknown',at:Date.now()};r.status='uncertain';changed=true;}
+   else if(r.status==='reserved'&&r.fingerprint!==null){r.recovery={from:r.status,reason:'reopened-exclusive-journal; dispatch was not registered',at:Date.now()};r.status='released';r.transportInvoked=false;changed=true;}
+  }if(changed)this.save();
+ }catch(e){this.close();throw e;}}
+ save(){ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','closed or failed request journal');try{writeLedgerAtomically(this.path,this.data);}catch(e){this.poisoned=true;throw e;}}
  tryFind(id){return this.data.requests.find(r=>r.id===id)??this.history.get(id)??null;}
  find(id){const r=this.data.requests.find(r=>r.id===id);if(!r)throw Error('REQUEST_NOT_REGISTERED');return r;}
- reserve(id,fingerprint){if(this.tryFind(id))throw Object.assign(Error('request already attempted; no automatic resend'),{code:'ALREADY_REQUESTED',transportInvoked:false});this.data.requests.push({id,fingerprint,status:'reserved',recordedAt:Date.now()});this.save();}
- dispatch(id){const r=this.find(id);if(r.status!=='reserved')throw Error('REQUEST_STATE');r.status='dispatched';this.save();}
- release(id){const r=this.find(id);if(r.status!=='reserved')throw Error('REQUEST_STATE');r.status='released';this.save();}
+ sourceRequest(source){return this.data.requests.filter(r=>!r.parentRequestId&&r.source&&canonical(r.source)===canonical(source)).at(-1)??null;}
+ packetRequest(packetId){return this.data.requests.find(r=>!r.parentRequestId&&r.packetId===packetId)??null;}
+ bindSource(packetId,source,evidence){
+  const r=this.data.requests.find(r=>r.id==='turn:'+packetId);if(!r||r.source)return;
+  ensure(evidence?.ref?.id&&Number.isSafeInteger(evidence.ref.revision)&&typeof evidence.packetHash==='string','REQUEST_EVIDENCE','persisted exact packet evidence required');
+  r.source=structuredClone(source);r.packetId=packetId;r.sourceEvidence=structuredClone(evidence);this.save();
+ }
+ blocks(source){const related=this.data.requests.filter(r=>r.source&&canonical(r.source)===canonical(source));if(related.some(r=>r.parentRequestId&&['reserved','dispatched','uncertain'].includes(r.status)))return true;const r=this.sourceRequest(source);return !!r&&!(r.status==='settled'&&r.validation?.status==='accepted')&&!(r.status==='reserved'&&r.fingerprint===null);}
+ reserve(id,fingerprint,_quote=null,{source=null,packetId=null,parentRequestId=null}={}){
+  const old=this.tryFind(id),same=old?.source&&source&&canonical(old.source)===canonical(source);
+  if(old){ensure(old.status==='reserved'&&old.fingerprint===null&&same&&!parentRequestId,'ALREADY_REQUESTED','request already attempted; explicit readmission required');old.fingerprint=fingerprint;old.packetId=packetId;old.boundAt=Date.now();this.save();return;}
+  if(source){
+   ensure(typeof source.subject==='string'&&typeof source.kind==='string','REQUEST_SOURCE','stable subject and source required');
+   const prior=this.sourceRequest(source);
+   if(parentRequestId){const parent=this.find(parentRequestId);ensure(parent.status==='settled'&&canonical(parent.source)===canonical(source)&&packetId===parent.packetId&&id===parent.proposalRecovery?.attemptId&&id===`repair:${packetId}:1`&&!this.data.requests.some(r=>r.parentRequestId===parent.id),'REQUEST_SOURCE','only the existing single format-recovery child is allowed');}
+   else ensure(!prior||!this.blocks(source),'SOURCE_REQUEST_BLOCKED','source already has an unresolved, unadmitted or rejected request',{requestId:prior?.id,source});
+  }
+  this.data.requests.push({id,fingerprint,status:'reserved',recordedAt:Date.now(),...(source?{source,packetId,parentRequestId}: {})});this.save();
+ }
+ dispatch(id){const r=this.find(id);ensure(r.status==='reserved','REQUEST_STATE','reserved request required');ensure(!this.data.requests.some(x=>x.id!==id&&x.status==='dispatched'),'REQUEST_IN_FLIGHT','another request is genuinely in flight');r.status='dispatched';r.dispatchedAt=Date.now();r.transportInvoked=true;this.save();}
+ release(id,error=null){const r=this.find(id);ensure(r.status==='reserved','REQUEST_STATE','only an undispatched request can be released');r.status='released';r.transportInvoked=false;r.error=error;this.save();}
  settle(id,usage){const r=this.find(id);if(r.status!=='dispatched')throw Error('REQUEST_STATE');r.status='settled';r.usage=usage;r.actualMicros=usage.upperMicros;r.accountingMeaning='legacy compatibility field is token-rate estimate, NOT official deduction or budget authority';this.save();}
  uncertain(id,error){const r=this.find(id);if(r.status!=='dispatched')throw Error('REQUEST_STATE');r.status='uncertain';r.error=error;this.save();}
  attachOutput(id,output){this.find(id).output=output;this.save();}
  attachProviderResult(id,response){this.find(id).providerResult={complete:response.complete===true,finishReason:response.finishReason,output:response.output,providerResponseId:response.providerResponseId};this.save();}
+ recordValidation(packetId,{status,error=null,decision=null}){
+  const r=this.packetRequest(packetId);if(!r||r.status!=='settled')return null;
+  ensure(['accepted','rejected'].includes(status),'REQUEST_VALIDATION','explicit adoption or rejection required');
+  if(r.validation){ensure(r.validation.status===status,'REQUEST_VALIDATION_CONFLICT','cannot replace prior adoption facts');return r;}
+  r.validation={status,error,decision,recordedAt:Date.now()};this.save();return r;
+ }
+ reconcile(id,{evidence,verify}){
+  const r=this.find(id);ensure(['dispatched','uncertain'].includes(r.status),'REQUEST_STATE','only an unresolved request can be reconciled');
+  ensure(evidence?.requestId===id&&evidence.fingerprint===r.fingerprint&&typeof verify==='function'&&verify(evidence,structuredClone(r))===true,'REQUEST_EVIDENCE','trusted verification bound to the original request required');
+  ensure(['not-sent','settled'].includes(evidence.outcome),'REQUEST_EVIDENCE','known outcome required');
+  if(evidence.outcome==='settled')ensure(Number.isSafeInteger(evidence.usage?.upperMicros)&&evidence.usage.upperMicros>=0,'REQUEST_EVIDENCE','settlement evidence requires usage');
+  r.resolution={evidence:structuredClone(evidence),evidenceHash:digest(evidence),previousStatus:r.status,verifiedAt:Date.now()};
+  if(evidence.outcome==='not-sent'){r.status='released';r.transportInvoked=false;}
+  else{r.status='settled';r.usage=evidence.usage;r.actualMicros=evidence.usage.upperMicros;if(evidence.providerResult)r.providerResult=structuredClone(evidence.providerResult);}
+  this.save();return r;
+ }
+ readmit(id,{evidence,verify}){
+  const r=this.find(id);ensure(!r.parentRequestId&&r.status==='released'&&r.transportInvoked===false,'REQUEST_STATE','explicitly unexecuted primary request required');
+  ensure(evidence?.requestId===id&&typeof verify==='function'&&verify(evidence,structuredClone(r))===true,'REQUEST_EVIDENCE','explicit trusted readmission required');
+  const {attempts,...prior}=r;r.attempts=[...(attempts??[]),prior];
+  Object.assign(r,{status:'reserved',fingerprint:null,packetId:null,error:null,providerResult:null,output:null,validation:null,proposalRecovery:null,resolution:null,readmission:{evidence:structuredClone(evidence),recordedAt:Date.now()}});this.save();return r;
+ }
  state(){return {source:'request-identity-journal; official page controls spending',calls:this.data.requests.length,uncertain:this.data.requests.filter(r=>r.status==='uncertain').length,halted:null};}
  refreshDay(){}
  close(){if(this.fd===undefined)return;closeSync(this.fd);this.fd=undefined;unlinkSync(this.lock);}

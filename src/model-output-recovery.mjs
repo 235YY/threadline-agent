@@ -16,7 +16,7 @@ export function selectedModelOutput(rows,primary){
  if(recovery){const attempt=rows.find(r=>r.id===recovery.attemptId);ensure(!attempt||attempt.status==='settled','UNCERTAIN_REQUEST','corrective attempt is not confirmed; preserve reservation and never resend');}
  if(recovery?.selected){
   const attempt=rows.find(r=>r.id===recovery.attemptId);
-  ensure(recovery.attemptId===`repair:${primary.id.slice(5)}:1`&&attempt?.status==='settled'&&attempt.providerResult?.complete===true&&typeof attempt.output==='string'&&digest(attempt.output)===recovery.outputHash,'MODEL_CAPTURE_MISSING','selected corrective attempt is not durably verified; never resend');
+  ensure(recovery.attemptId===`repair:${primary.packetId??primary.id.slice(5)}:1`&&attempt?.status==='settled'&&attempt.providerResult?.complete===true&&typeof attempt.output==='string'&&digest(attempt.output)===recovery.outputHash,'MODEL_CAPTURE_MISSING','selected corrective attempt is not durably verified; never resend');
   return {output:attempt.output,attemptId:attempt.id,primaryId:primary.id,corrected:true};
  }
  ensure(typeof primary.output==='string','MODEL_CAPTURE_MISSING','captured output missing');
@@ -39,7 +39,7 @@ export async function recoverOutputOnce({packet,primary,ledger,client,verified,p
   ensure(attempt.status==='settled'&&attempt.providerResult,'TRANSPORT_REPLAY','corrective attempt already entered; do not resend');
   if(typeof attempt.output!=='string'&&typeof attempt.providerResult.output==='string')ledger.attachOutput(attemptId,attempt.providerResult.output);
  }else{
-  try{await beforeCorrection?.();const r=await client.call({id:attemptId,packet:{...verified,packetId:packet.packetId,payload:packet.payload,messages,bytes},signal:AbortSignal.timeout(Math.max(1,Math.min(timeoutMs-(Date.now()-startedAt),60000)))});ledger.attachProviderResult(attemptId,r);ledger.attachOutput(attemptId,r.output);attempt=ledger.find(attemptId);}
+  try{await beforeCorrection?.();const r=await client.call({id:attemptId,packet:{...verified,packetId:packet.packetId,payload:packet.payload,messages,bytes},requestContext:primary.source?{source:primary.source,packetId:packet.packetId,parentRequestId:primary.id}:null,signal:AbortSignal.timeout(Math.max(1,Math.min(timeoutMs-(Date.now()-startedAt),60000)))});ledger.attachProviderResult(attemptId,r);ledger.attachOutput(attemptId,r.output);attempt=ledger.find(attemptId);}
   catch(error){if(!ledger.tryFind(attemptId)&&['SPEND_LIMIT','CALL_LIMIT','TASK_CALL_BUDGET','AGENT_CONTROL_CHANGED','AGENT_LEASE_LOST','INTENT_TASK_REVIEW_REQUIRED','NETWORK_PREFLIGHT_FAILED','CANCELLED'].includes(error.code))return close(error.code);throw error;}
  }
  if(!attempt.providerResult.complete||!attempt.output?.trim())return close('CORRECTION_INCOMPLETE');

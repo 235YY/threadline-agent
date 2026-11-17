@@ -138,7 +138,7 @@ export class MaintenanceSession {
     this.#store.captureDebugPacket(dispatched.packet);
     const debugContext=packetContext(dispatched.packet,{subjectId:this.#subjectId,jobId:dispatched.id}),debugStart=performance.now();
     this.#store.recordDiagnostic({stage:'maintenance.model-started',status:'started',context:debugContext,data:{modelCalled:true,bytes:dispatched.packet.bytes}});
-    try{raw=await invoke(maintenanceModelInput(dispatched.packet,dispatched.policy),{category:'autonomous-maintenance',maxOutputTokens:job.policy.maxOutputTokens,automaticRetries:0});}
+    try{raw=await invoke({...maintenanceModelInput(dispatched.packet,dispatched.policy),source:{subject:this.#subjectId,kind:'maintenance',jobId:dispatched.id}},{category:'autonomous-maintenance',maxOutputTokens:job.policy.maxOutputTokens,automaticRetries:0});}
     catch(error){this.#store.recordDiagnostic({stage:'maintenance.model-failed',status:'uncertain',context:debugContext,data:{...failureMetadata(error,{client:true}),durationMs:Math.round(performance.now()-debugStart)}});
       const uncertain=this.#finish(dispatched,'uncertain','client-error');return {status:'uncertain',job:uncertain,modelCalled:true};}
     this.#store.recordDiagnostic({stage:'maintenance.model-completed',status:'completed',context:debugContext,data:{...outputMetrics(raw),durationMs:Math.round(performance.now()-debugStart)}});

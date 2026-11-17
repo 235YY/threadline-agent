@@ -15,7 +15,7 @@ import {DeepSeekStudyClient,RATES,requireStudyNetwork} from './model-client.mjs'
 import {writeLedgerAtomically} from './ledger-io.mjs';
 import {studyKey} from './model-credential.mjs';
 import {resetAuthorization,verifyResetLedger} from '../tools/ops/reset-budget-contract.mjs';
-import {recoverOutputOnce,selectedModelOutput} from './model-output-recovery.mjs';
+import {recoverOutputOnce,selectedModelOutput,proposalFormatIssue} from './model-output-recovery.mjs';
 
 export function toProviderMessages(messages,{blobDirectory=null,packet=null}={}){
   const marker=/\[\[image:(https?:\/\/[^\]\s]+|data:image\/[^\]\s]+)\]\]/g;
@@ -86,7 +86,7 @@ export class DailyBudgetLedger {
   }
   reserve(id,fingerprint,reserveMicros){
     ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','ledger unavailable');
-    if(this.enforce){const autoHalt=this.data.halted==='request cost not confirmed; do not auto-retry'||this.data.halted==='recovered unconfirmed request; reservation retained; explicit reconciliation required';ensure(!this.data.halted||autoHalt,'BUDGET_HALTED','daily budget halted; do not auto-resend');}
+    if(this.enforce)ensure(!this.data.halted,'BUDGET_HALTED','legacy budget halted; official runtime uses RequestJournal');
     this.refreshDay();
     if(this.daily)ensure(!this.daily.history.has(id),'ALREADY_REQUESTED','historical requests cannot be resent');
     ensure(this.reset?.validUntil===undefined||Date.now()<this.reset.validUntil,'BUDGET_EXPIRED','today authorization expired; no automatic renewal');
@@ -110,7 +110,7 @@ export class DailyBudgetLedger {
     r.status='settled';r.usage=usage;r.actualMicros=usage.upperMicros;
     if(this.daily&&r.billingRates)r.accounting={method:'raw-token-usage-times-frozen-published-rate',calculatedMicros:tokenCharge(usage,r.billingRates)??usage.upperMicros,providerDeduction:null,legacyActualMicrosIsPeakUpper:true};
     if(r.actualMicros>r.reserveMicros)this.data.halted='provider usage exceeded conservative reservation';this.save();
-    ensure(!this.data.halted,'RESERVATION_OVERRUN','settled usage exceeded reservation; stop');
+    ensure(r.actualMicros<=r.reserveMicros,'RESERVATION_OVERRUN','settled usage exceeded reservation; stop');
   }
   uncertain(id,code){const r=this.find(id);if(r.status==='uncertain')return;ensure(r.status==='dispatched','REQUEST_STATE','only dispatched requests can become cost-unknown');r.status='uncertain';r.error=code;this.data.halted='request cost not confirmed; do not auto-retry';this.save();}
   attachOutput(id,output){const r=this.find(id);ensure(r.status==='settled','REQUEST_STATE','only settled requests keep output');r.output=output;this.save();}
@@ -126,19 +126,33 @@ function textPath(path){ensure(typeof path==='string'&&path.length>0,'TRANSPORT_
 function mkdirIfNeeded(dir){ensure(typeof dir==='string','TRANSPORT_CONFIG','invalid ledger directory');if(!existsSync(dir))mkdirSync(dir,{recursive:true});}
 
 // 默认：专用 key、真实网络预检、json 输出、low 思考、日预算 3 元/96 次。
-export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyKey,transport=fetch,networkCheck=requireStudyNetwork,profile={},dayKey=null,timeoutMs=120000,enforceBudget=true,requestJournal=null}={}){
+export function modelRequestSource(packet,provided=null){
+  const p=packet.payload??{},subject=p.continuity?.subject?.id;
+  ensure(typeof subject==='string','REQUEST_SOURCE','fixed subject required');
+  if(p.task)return {subject,kind:'task',taskId:p.task.id,step:p.task.stepCount};
+  if(p.current)return {subject,kind:'event',event:{id:p.current.id,revision:p.current.revision}};
+  ensure(provided?.subject===subject&&provided.kind==='reflection'&&typeof provided.opportunity?.id==='string'&&Number.isSafeInteger(provided.opportunity.revision),'REQUEST_SOURCE','reflection requires its existing durable opportunity reference');
+  return {subject,kind:'reflection',opportunity:{id:provided.opportunity.id,revision:provided.opportunity.revision}};
+}
+export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyKey,transport=fetch,networkCheck=requireStudyNetwork,profile={},dayKey=null,timeoutMs=120000,enforceBudget=true,requestJournal=null,officialSpend=null}={}){
   ensure(typeof ledgerPath==='string'&&ledgerPath.length>0,'TRANSPORT_CONFIG','ledger path required');
   const limits={...(dayKey?{dayKey}:{}),...(Number.isSafeInteger(profile.dailyMicros)?{dailyMicros:profile.dailyMicros}:{}),
     ...(profile.dailyCalls===null||Number.isSafeInteger(profile.dailyCalls)?{dailyCalls:profile.dailyCalls}:{})};
   const ledger=requestJournal??new DailyBudgetLedger(ledgerPath,{...limits,enforce:enforceBudget});
+  const journalled=typeof ledger.sourceRequest==='function';
+  const admitRequest=officialSpend?()=>{const g=officialSpend.gate();ensure(g.allow,g.known?'OFFICIAL_BUDGET_LIMIT':'OFFICIAL_USAGE_UNAVAILABLE','official usage must be fresh and below 5 yuan');}:null;
   const client=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
-    outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet});
+    outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet,admitRequest});
   const maintenanceClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
-    outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet});
-  async function decide(packet,{beforeCorrection=null}={}){
+    outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet,admitRequest});
+  async function decide(packet,{beforeCorrection=null,source:providedSource=null}={}){
     const startedAt=Date.now();
-    const id=`turn:${packet?.packetId}`;
+    const source=journalled?modelRequestSource(packet,providedSource):null,prior=source?ledger.sourceRequest(source):null;
+    const bound=journalled?ledger.packetRequest(packet?.packetId):null;
+    const id=bound?.id??(prior?.status==='reserved'&&prior.fingerprint===null?prior.id:`turn:${packet?.packetId}`);
+    if(prior&&prior.id!==id)ensure(!ledger.blocks(source),'SOURCE_REQUEST_BLOCKED','original source remains unresolved or rejected',{requestId:prior.id,source});
     const existing=ledger.tryFind(id);
+    ensure(existing?.validation?.status!=='rejected','SOURCE_OUTPUT_REJECTED','original output was rejected; do not resubmit its source');
     if(existing?.status==='settled'&&typeof existing.output==='string'){
       if(existing.proposalRecovery){
         if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});}
@@ -146,9 +160,9 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
       }
       return existing.output;
     }
-    ensure(!existing,'TRANSPORT_REPLAY','request already attempted; never auto-resend');
+    ensure(!existing||journalled&&existing.status==='reserved'&&existing.fingerprint===null,'TRANSPORT_REPLAY','request already attempted; never auto-resend');
     const verified=verifiedBeforeTransport(packet);
-    let response=await client.call({id,packet:{...verified,payload:packet.payload,messages:toProviderMessages(verified.messages,{blobDirectory,packet})}});
+    let response=await client.call({id,packet:{...verified,payload:packet.payload,messages:toProviderMessages(verified.messages,{blobDirectory,packet})},requestContext:source?{source,packetId:packet.packetId}:null});
     ledger.attachProviderResult(id,response);
     // JSON mode can replace an unrecognized JSON answer with spaces even with
     // finish_reason=stop (documented provider behavior). Treat this narrow,
@@ -157,7 +171,7 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(blankJson||response.complete===true&&typeof response.output==='string'&&response.output.trim().length>0,
       'MODEL_INCOMPLETE','provider returned no final text; recorded without retry');
     ledger.attachOutput(id,response.output);
-    if(profile.formatRecovery===true)return recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});
+    if(profile.formatRecovery===true){const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});if(journalled&&proposalFormatIssue(raw,packet))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
     return response.output;
   }
   async function invokeMaintenance(input){
@@ -165,12 +179,15 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     const existing=ledger.tryFind(id);
     if(existing?.status==='settled'&&typeof existing.output==='string')return existing.output;
     ensure(!existing,'TRANSPORT_REPLAY','maintenance request already attempted; never auto-resend');
-    const response=await maintenanceClient.call({id,packet:{messages:toProviderMessages(input.messages,{blobDirectory})}});
+    if(journalled)ensure(input.source?.kind==='maintenance','REQUEST_SOURCE','persisted maintenance job required');
+    const response=await maintenanceClient.call({id,packet:{messages:toProviderMessages(input.messages,{blobDirectory})},requestContext:journalled?{source:input.source,packetId:input.packetId}:null});
     ensure(response.complete===true&&typeof response.output==='string'&&response.output.trim().length>0,
       'MODEL_INCOMPLETE','provider returned no final maintenance text; recorded without retry');
     ledger.attachOutput(id,response.output);
     return response.output;
   }
+  decide.requestJournal=journalled?ledger:null;
+  decide.recordValidation=(packet,value)=>journalled?ledger.recordValidation(packet.packetId,value):null;
   return {decide,invokeMaintenance,ledger,state:()=>ledger.state(),close:()=>ledger.close()};
 }
 

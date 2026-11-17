@@ -13,6 +13,7 @@ import {recordEpisodes} from './tendency.mjs';
 import {observeAssociation} from './association-observe.mjs';
 import {readActivity,saveActivity,activityWrite} from './turn-activity.mjs';
 import {runtimeFeedback} from './runtime-feedback.mjs';
+import {modelRequestSource} from './model-transport.mjs';
 
 const ref=r=>({id:r.id,revision:r.revision});
 const TASK_STEP_SUFFIX='这是 AgentTask 单步执行，不是新的对话轮。continuity.attention.frame 只是输入，不得原样写回输出。若本轮不修改 attention 就完全省略 attention；若修改，attention 必须是增量 {processes,relations,residency,questions}，可选 focus，绝不能包含 frame。准备好结果时使用 task_finish。';
@@ -45,11 +46,22 @@ export class TurnDriver {
     this.#subjectiveMemoryV2=subjectiveMemoryV2===true;
     this.#taskThreads=taskThreads===true;
     this.#anchorDirectory=anchorDirectory===true;this.#memoryScopeV1=memoryScopeV1===true;this.#experienceLearningV1=experienceLearningV1===true;this.#investigationContinuityV1=investigationContinuityV1===true||this.#experienceLearningV1;
-    this.#session=sessionFactory?sessionFactory({store,subjectId,attention:true,maxForeground}):new ContinuitySession({store,subjectId,attention:true,maxForeground});
+    const sessionArgs={store,subjectId,attention:true,maxForeground,requestJournal:decide.requestJournal??null};
+    this.#session=sessionFactory?sessionFactory(sessionArgs):new ContinuitySession(sessionArgs);
     this.#lookup=new LocalLookupSession({store,subjectId,policy:lookupPolicy});
     this.#config=rhythmConfig(rhythm);
     this.#state={lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null};
     this.#outbox=[];
+    // Older request journals lacked source metadata. Only exact stored packets
+    // can supply it; no matching by text, sender, Intent or changing clocks.
+    const journal=decide.requestJournal;
+    if(journal)for(const r of [...store.all('extension_record'),...store.all('affect_turn')]){
+      const value=r.type==='affect_turn'?r:r.owner===subjectId&&r.stateType==='turn-activity'?r.value:null;
+      const p=value?.packet;
+      if(!p||p.payload.continuity?.subject?.id!==subjectId)continue;
+      const source=modelRequestSource(p,value.requestSource??{subject:subjectId,kind:'reflection',opportunity:ref(r)});
+      journal.bindSource(p.packetId,source,{ref:ref(r),packetHash:digest(p)});
+    }
   }
   #priorDecisions({task=null,event=null}={}){
     if(!this.#investigationContinuityV1)return [];
@@ -101,7 +113,12 @@ export class TurnDriver {
     }
     if(followup)return this.#runReflection({now,reason:'followup',followup});
     const blocked=new Set([...this.#store.all('extension_record')].filter(r=>r.owner===this.#subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&r.value?.invocationStopped===true).map(r=>r.value.sourceEvent));
-    const pending=this.#store.subjectInbox({subjectId:this.#subjectId,limit:64,pendingOnly:true}).items.filter(o=>!blocked.has(o.eventId)&&!(this.#session.sourceBlocked?.(o.eventId)));
+    const pending=this.#store.subjectInbox({subjectId:this.#subjectId,limit:64,pendingOnly:true}).items.filter(o=>{
+      const event=this.#store.read(o.eventId),source={subject:this.#subjectId,kind:'event',event:ref(event)},j=this.#decide.requestJournal;
+      return j?.sourceRequest(source)?!j.blocks(source):!blocked.has(o.eventId)&&!(this.#session.sourceBlocked?.(o.eventId));
+    });
+    if(isolated&&pendingActivity.context.kind==='reflection'&&pending.length===0)
+      return {wake:false,reason:'source-stopped',pending:0};
     if(isolated&&pendingActivity.failure.outcome==='uncertain'&&pending.length===0&&!followup)
       throw Object.assign(new Error('unresolved invocation; do not resend its source'),{code:'TURN_OUTCOME_UNKNOWN'});
     // A subject-deferred source stays pending, but must not hide a new receipt
@@ -210,7 +227,7 @@ export class TurnDriver {
     }
     return {decision:null,choice,packet,taskRef:{id:task.id},lookupExhausted:true,calls};
   }
-  async #runDecision({now,observation,reason,resume=null}){
+  async #runDecision({now,observation,reason,resume=null,admission=null}){
     const event=this.#store.read(observation.eventId);
     ensure(event?.type==='event','TURN_DRIVER','pending observation must be an existing event');
     const context={kind:'decision',now,observation,reason},current=ref(event),lookups=[...(resume?.context.lookups??[])],outbox=[];
@@ -224,7 +241,7 @@ export class TurnDriver {
     for(let c=resume?.context.step??0;c<this.#maxCalls;c++){
       const taskResult=event.origin==='tool_receipt'&&event.source?.system==='agent-runtime';
       const allowedForDecision=taskResult?this.#allowed.filter(t=>!['task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'].includes(t)):this.#allowed;
-      const packet=resume?.packet??await this.#session.prepare({instructionSuffix:this.#instructions(taskResult?TASK_RESULT_SUFFIX:null),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
+      const packet=resume?.packet??await this.#session.prepare({instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
         mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,
         subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,
         localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities});
@@ -252,7 +269,12 @@ export class TurnDriver {
     if(!row||['complete','ready'].includes(row.value.phase)||['uncertain','not-executed'].includes(row.value.failure?.outcome))save({phase:'prepared',context,packet});
     ensure(row.value.packet?.packetId===packet.packetId,'TURN_ACTIVITY_CHANGED','finish the exact pending turn before starting another');
     const decisionId='decision:'+packet.packetId,requestId='commit:'+packet.packetId;
-    if(row.value.phase==='committed')return this.#store.read(row.value.decision.id,row.value.decision.revision);
+    if(row.value.phase==='committed'){
+      const d=this.#store.read(row.value.decision.id,row.value.decision.revision);
+      ensure(d?.type==='decision'&&d.input.packetId===packet.packetId&&d.input.payload.continuity.subject.id===this.#subjectId,'TURN_ACTIVITY_CHANGED','fixed committed Decision required');
+      this.#decide.requestJournal?.recordValidation(packet.packetId,{status:'accepted',decision:ref(d)});
+      return d;
+    }
     let output=row.value.output;
     if(row.value.phase==='dispatched'){
       output=this.#session.capturedOutput?.(packet);
@@ -266,7 +288,8 @@ export class TurnDriver {
       // The journal is durable before entering any model callback.
       try{
         output=await this.#session.invoke(packet,p=>{
-          save({...row.value,phase:'dispatched'});this.#state.callsToday++;return this.#decide(p,{beforeCorrection:()=>{ensure(this.#config.dailyCallCap===null||this.#state.callsToday<this.#config.dailyCallCap,'TASK_CALL_BUDGET','no remaining cognitive call budget for correction');this.#state.callsToday++;}});
+          const source=row.value.requestSource??(!p.payload.current&&!p.payload.task?{subject:this.#subjectId,kind:'reflection',opportunity:ref(row)}:null);
+          save({...row.value,phase:'dispatched',...(source?{requestSource:source}:{})});this.#state.callsToday++;return this.#decide(p,{source,beforeCorrection:()=>{ensure(this.#config.dailyCallCap===null||this.#state.callsToday<this.#config.dailyCallCap,'TASK_CALL_BUDGET','no remaining cognitive call budget for correction');this.#state.callsToday++;}});
         });
       }catch(error){
         this.#isolateInvocation(row,error);
@@ -317,6 +340,14 @@ export class TurnDriver {
   #finishActivity(next=null){
     const row=readActivity(this.#store,this.#subjectId,this.#workspace);if(!row)return;
     saveActivity(this.#store,row,{subject:this.#subjectId,workspace:this.#workspace,value:next?{phase:'ready',context:next}:{phase:'complete',decision:row.value.decision??null}});
+  }
+  readmitRequest({requestId,evidence,verify,now=Date.now()}){
+    const j=this.#decide.requestJournal,r=j?.find(requestId),source=r?.source;
+    ensure(source?.subject===this.#subjectId&&source.kind==='event','REQUEST_SOURCE','own original event request required');
+    const event=this.#store.read(source.event.id,source.event.revision),observation=this.#store.subjectObservation(this.#subjectId,event?.id);
+    ensure(event?.type==='event'&&observation,'REQUEST_SOURCE','original admitted event must remain available');
+    const admitted=j.readmit(requestId,{evidence,verify});
+    return this.#runDecision({now,observation,reason:'explicit-readmission',admission:{requestId,evidenceHash:digest(admitted.readmission.evidence)}});
   }
   takeOutbox(){const out=this.#outbox;this.#outbox=[];return out;}
 

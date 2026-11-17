@@ -122,7 +122,7 @@ export class StudyLedger {
 }
 
 export class DeepSeekStudyClient {
-  constructor({ledger,getKey,transport=fetch,maxTokens=6000,timeoutMs=120000,outputFormat='json',reasoning='high',inputVerifier=verifiedModelInput,monitor=null,requireMonitor=false,
+  constructor({ledger,getKey,transport=fetch,maxTokens=6000,timeoutMs=120000,outputFormat='json',reasoning='high',inputVerifier=verifiedModelInput,monitor=null,requireMonitor=false,admitRequest=null,
     networkCheck=transport===fetch?requireStudyNetwork:async()=>({ok:true,classification:'explicitly-injected-transport'})}={}) {
     ensure(Number.isSafeInteger(maxTokens)&&maxTokens>0&&maxTokens<=6000,'OUTPUT_LIMIT','bounded model output required');
     ensure(typeof inputVerifier==='function','INPUT_VERIFIER','explicit packet verifier required');
@@ -132,16 +132,18 @@ export class DeepSeekStudyClient {
     ensure(monitor===null||typeof monitor.start==='function','MONITOR_CONFIG','optional explicit local monitor required');
     ensure(typeof requireMonitor==='boolean'&&(!requireMonitor||monitor!==null),'MONITOR_CONFIG','mandatory recording requires an explicit monitor');
     ensure(!requireMonitor||typeof ledger?.recordUnsentMonitorStop==='function','LEDGER_CONFIG','mandatory recording requires unsent-stop ledger support');
-    Object.assign(this,{ledger,getKey,transport,maxTokens,timeoutMs,outputFormat,reasoning,inputVerifier,networkCheck,monitor,requireMonitor});
+    ensure(admitRequest===null||typeof admitRequest==='function','ADMISSION_CONFIG','optional synchronous admission gate required');
+    Object.assign(this,{ledger,getKey,transport,maxTokens,timeoutMs,outputFormat,reasoning,inputVerifier,networkCheck,monitor,requireMonitor,admitRequest});
   }
-  async call({id,packet,signal,expectedRequestFingerprint=null}) {
+  async call({id,packet,signal,expectedRequestFingerprint=null,requestContext=null}) {
     const input=this.inputVerifier(packet);
     ensure(!signal?.aborted,'CANCELLED','cancelled before preflight, credentials or reservation');
     const request=buildStudyRequest(input.messages,{maxTokens:this.maxTokens,outputFormat:this.outputFormat,reasoning:this.reasoning});
     ensure(expectedRequestFingerprint===null||typeof expectedRequestFingerprint==='string'&&/^[a-f0-9]{64}$/.test(expectedRequestFingerprint)
       &&digest(request)===expectedRequestFingerprint,'REQUEST_FINGERPRINT','actual request differs from frozen configuration; nothing sent');
     const trace=this.monitor?.start({id,packet,request});
-    let transportInvoked=false,monitorStopPhase=null;
+    let transportInvoked=false,monitorStopPhase=null,registered=false;
+    const journalled=typeof this.ledger.sourceRequest==='function',reserveMicros=Math.ceil((input.bytes+4096)*RATES.miss+this.maxTokens*RATES.output);
     const requireTrace=phase=>{
       if(!this.requireMonitor)return;
       const state=trace?.summary?.();
@@ -150,6 +152,8 @@ export class DeepSeekStudyClient {
         'mandatory trace is unavailable before transport; no inference may be sent',{phase});
     };
     try {
+    if(journalled){ensure(requestContext?.source,'REQUEST_SOURCE','source binding is required before request preflight');this.ledger.reserve(id,digest(request),reserveMicros,requestContext);registered=true;}
+    this.admitRequest?.();
     requireTrace('startup');
     trace?.record('network.preflight.started');
     const network=await this.networkCheck({signal});
@@ -159,12 +163,12 @@ export class DeepSeekStudyClient {
     requireTrace('before-credentials');
     const key=this.getKey();
     ensure(typeof key==='string'&&/^sk-[A-Za-z0-9_-]{12,}$/.test(key),'MISSING_CREDENTIAL','existing credential unavailable');
-    const reserveMicros=Math.ceil((input.bytes+4096)*RATES.miss+this.maxTokens*RATES.output);
     requireTrace('before-reserve');
-    this.ledger.reserve(id,digest(request),reserveMicros);
+    if(!journalled)this.ledger.reserve(id,digest(request),reserveMicros);
     trace?.record('budget.reserved',{reserveMicros});
     if(signal?.aborted){this.ledger.release(id);ensure(false,'CANCELLED','cancelled before dispatch');}
     requireTrace('before-dispatch');
+    this.admitRequest?.();
     this.ledger.dispatch(id);const started=performance.now(),startedAt=new Date().toISOString();let accounted=false;
     trace?.record('request.dispatch-registered',{status:'local-registration-not-confirmed-remote-execution'});
     try {
@@ -202,6 +206,7 @@ export class DeepSeekStudyClient {
       const safe=new Error(accounted?'provider response unusable after accounting':'request outcome/cost uncertain; stopped without retry');
       safe.code=accounted?(error.code??'PROVIDER_OUTPUT'):'UNCERTAIN_REQUEST';throw safe;}
     }catch(error){
+      if(journalled&&registered&&!transportInvoked&&this.ledger.tryFind(id)?.status==='reserved')this.ledger.release(id,error.code??'BEFORE_TRANSPORT');
       if(this.requireMonitor&&!transportInvoked&&monitorStopPhase
         &&this.ledger.data.requests.some(r=>r.id===id&&['reserved','dispatched'].includes(r.status))){
         // A separate ledger write may itself fail. Keep the original stop and expose that gap;
