@@ -1,12 +1,13 @@
 {
   "format": "threadline-public-source-v1",
-  "task": "JY-RECOVERY-004",
-  "meaning": "Every tree file except this manifest; local frozen private candidate is mapped separately in docs/recovery-004/ACCEPTANCE.json.",
+  "task": "JY-RECOVERY-006",
+  "meaning": "Every tracked source file except this manifest; no private runtime data. Exact PR HEAD is the commit containing this tree.",
   "localFrozenBuild": "dd392ea23d01edfe1d1953f4500238e03692b8fb1f6fdb8054c784184409f040",
+  "publicRuntimeBuild": "5d81afb8e668ced21a901d72837c630283d6429c66dd0315c4dbdb8e016ed6af",
   "files": [
     {
       "file": ".env.example",
-      "sha256": "ff4c9e6abe3f7ba7cab62a78f07cb2a4bd0ca5d053cbc4072fd6abf95f1f3a9b"
+      "sha256": "ae6b182e1ee7e26ed44e3f14f032629fba9eb6a365fa91931678c11668e76c54"
     },
     {
       "file": ".gitignore",
@@ -22,7 +23,7 @@
     },
     {
       "file": "README.md",
-      "sha256": "3528b2af877f75c292e6ee8ce96c9bb6548eb32d9a1659ebf52f3fd18c24c4e7"
+      "sha256": "847152fc09de946b1f5a8e099f92868d3694fcd67681fc51b2b47f0aff22c540"
     },
     {
       "file": "RELEASE-VALIDATION.json",
@@ -58,7 +59,7 @@
     },
     {
       "file": "docs/CONFIGURATION.md",
-      "sha256": "3783aba91439c687fcc4768c3a734baedf5c0e3f7eba65f37ff6cbbd071c93c8"
+      "sha256": "f2ef6d4ac22ca017f23504110f045d60786ac7454728139b926c7c5f5e63a045"
     },
     {
       "file": "docs/INTEGRATIONS.md",
@@ -70,7 +71,7 @@
     },
     {
       "file": "docs/VALIDATION.md",
-      "sha256": "9860ac456f0f9cb89ff9bd236c0729bc90477082b61d10da521d71fa90dfff04"
+      "sha256": "4716c940173603eb20415ca182bac9e9df94eccecc1ebde0aca47aab9c20b226"
     },
     {
       "file": "docs/recovery-002/ACCEPTANCE.json",
@@ -87,6 +88,10 @@
     {
       "file": "docs/recovery-004/ACCEPTANCE.json",
       "sha256": "411936a42f15ed16bbbb12802bd645f59f319bc8fa07c0ef9eb91bec2520e610"
+    },
+    {
+      "file": "docs/recovery-006/SOURCE-CORRESPONDENCE.json",
+      "sha256": "5d8377b0d7e72ba772f3ba83029fb3b10fb1cbec4fbe08278fca545dd3b36f39"
     },
     {
       "file": "evaluation/focus-study_2026-11-05/27c5f6eca7d93a9fe8fe9e2c35fb7836ba883cba51d7bcc16f12b4060ca94f93/f01/r0/call/wire.json",
@@ -222,7 +227,7 @@
     },
     {
       "file": "package.json",
-      "sha256": "aca39bfc918914ced3252cda21e6abe8e4b7723e2772a2ebab7701e1add02500"
+      "sha256": "1cd3d53158c3908544b8ba0feba1c235cbd1f4af49b4d2ce49b5c7f0adee0143"
     },
     {
       "file": "prompts/agent-runtime.zh.md",
@@ -342,7 +347,7 @@
     },
     {
       "file": "scripts/current-test-files.json",
-      "sha256": "4711fc4c4afb1b270efaa6b926cd8c2ad66341b28b3be3a66600d4e7994976f5"
+      "sha256": "16288f792d43cd59e56878d00b8bca34932f50838871d3f728d8302102ad348b"
     },
     {
       "file": "scripts/study-key.ps1",
@@ -850,7 +855,7 @@
     },
     {
       "file": "test/investigation-confirmation.test.mjs",
-      "sha256": "3d496670058611662a1489f347b4ab9b7e595ebac49f075a05fe07b0ca994ff9"
+      "sha256": "aa0d24bf319d69bb3b990e6a0fc7d82f39a02697925376aa371df0d350f72c33"
     },
     {
       "file": "test/investigation-continuity.test.mjs",
@@ -913,8 +918,16 @@
       "sha256": "4ef295f08b3583f98dca8e996ecd408c58cc25aebb5768fdabab4685dacdde41"
     },
     {
+      "file": "test/private/investigation-history.test.mjs",
+      "sha256": "ec2abc382232e99c853507c9a53fe7dea8c8d739fc7f9d0f4a6363e31d0c6659"
+    },
+    {
       "file": "test/production-model-client.test.mjs",
       "sha256": "38a16a5e49e5fd20f240c5627bf869b1f072e6d82205972283c2bcbd96d58857"
+    },
+    {
+      "file": "test/public-release-contract.test.mjs",
+      "sha256": "9f328099a601c768493ca0c5eedcfc45ece8e5d51274a64ff3a4c201397d7a02"
     },
     {
       "file": "test/qq-message-isolation.test.mjs",
@@ -1442,7 +1455,7 @@
     },
     {
       "file": "tools/ops/start.ps1",
-      "sha256": "a72d00892fc066d1627a19450288a68459dfdad9b96ddda58ef55e7b69b43cda"
+      "sha256": "839d9e556a14afd950a48b2a2c2493bfc779a106d2460e8e2a8fadc0ddaafae4"
     },
     {
       "file": "tools/ops/stop-owned.mjs",
@@ -1490,7 +1503,7 @@
     },
     {
       "file": "tools/qq-connect/tools.mjs",
-      "sha256": "05f95d3e9ddc07f76beb69c2d21d56cfe3c0ce475b07017bb996291f5de48dd8"
+      "sha256": "92034284e987ee9397dbe2211c421253886a3a27094f5f9755fbe54f675ecaec"
     }
   ]
 }

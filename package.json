@@ -49,6 +49,7 @@
     "test:system-integrity": "node --test test/system-integrity.test.mjs test/agent-runtime.test.mjs test/agent-server.test.mjs test/agent-recovery.test.mjs test/agent-shell.test.mjs test/intent-task.test.mjs test/idle-autonomy.test.mjs test/model-transport.test.mjs",
     "test:current": "node scripts/test-current.mjs",
     "verify:release": "node scripts/verify-release.mjs",
-    "test:runtime": "node --test test/runtime-boundaries.test.mjs test/maintenance.test.mjs"
+    "test:runtime": "node --test test/runtime-boundaries.test.mjs test/maintenance.test.mjs",
+    "test:private-history": "node --test test/private/investigation-history.test.mjs"
   }
 }

@@ -2,6 +2,9 @@ param(
   [switch]$Live,
   [switch]$QQ
 )
+# LEGACY: compatibility only, NOT the standard live/production entry.
+# This script retains old budget-audit behavior. Use run.mjs -> launchBrain;
+# see docs/CONFIGURATION.md. No legacy launcher behavior is changed here.
 # Safe start: default dry-run. Real model/QQ require -Live plus explicit env confirmation
 # and a passing cumulative budget audit. This script never creates/reset a budget ledger.
 $ErrorActionPreference='Stop'

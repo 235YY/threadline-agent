@@ -75,6 +75,7 @@
     "test/qq-recovery-host.test.mjs",
     "test/qq-recovery-local-stop.test.mjs",
     "test/qq-recovery-materials.test.mjs",
-    "test/qq-recovery-recent.test.mjs"
+    "test/qq-recovery-recent.test.mjs",
+    "test/public-release-contract.test.mjs"
   ]
 }

@@ -4,7 +4,7 @@ A continuity-first runtime for persistent AI agents.
 
 Threadline 将版本化记忆、主体认识、注意力、Intent、Decision、AgentTask、工具执行与真实回执接在同一个持续运行循环中。模型负责理解、判断和选择；宿主负责来源、版本、事务、权限、预算与执行事实。
 
-这是从已运行 V14 基线整理出的**空白框架**，不是原主体的克隆。仓库不包含个人资料、角色经历、聊天记录、记忆数据库、密钥、模型响应、生产授权或运行账本。V15 全环境开放尚未实现于本次导出。
+这是不带原主体记忆的**空白框架**。当前统一候选沿已登记来源合入Wire、任务历史、预算接线和单请求隔离修复；QQ工具目录恢复到63项。注册不等于授权或外部环境已接通。仓库不附个人资料、真实聊天、记忆数据库、密钥、生产授权或运行账本；已有合成协议夹具仅用于测试。
 
 ## 快速启动：默认离线
 
@@ -29,9 +29,9 @@ npm test
 npm run demo
 ```
 
-完整回归包含情感引擎测试，需要Python >=3.10（建议3.13）。默认Windows使用python，其他平台使用python3；也可通过JY_AFFECT_PYTHON指定解释器绝对路径。引擎源代码已按固定MIT版本附带，不需要Limbic模型服务或独立数据库。
+完整回归包含情感引擎测试，需要Python >=3.10（建议3.13）。当前Worker默认寻找项目内隔离Python路径；干净克隆请用JY_AFFECT_PYTHON显式指定已安装解释器。引擎源码已按固定MIT版本附带，不需要Limbic模型服务或独立数据库。
 
-测试使用合成数据和临时数据库，不调用真实模型或QQ。原始私有真实实验的数据库/请求不公开；对应历史回放被替换为不含真实资料的合成反例，不能将公开测试称为原始真实实验复现。详见[验证说明](docs/VALIDATION.md)。
+公共默认测试使用合成数据和临时数据库，不调用真实模型或QQ，不需要私人历史档案。原始回放保留为独立本地入口npm run test:private-history，必须显式提供JY_PRIVATE_REPLAY_ROOT；它不在公共默认测试中。不能将合成测试称为原始历史复现。详见[验证说明](docs/VALIDATION.md)。
 
 ## 主要目录
 
@@ -49,9 +49,11 @@ npm run demo
 
 ## 接入真实模型和环境
 
-这不是自动接管本机QQ或电脑的安装包。启用真实模型需要显式BRAIN_LIVE=1、JY_LIVE_CONFIRM=YES、模型密钥、预算上限和通过的预算审计；空目录不冒充已批准的真实费用授权。
+标准入口始终为run.mjs → launchBrain。启用真实模型需要单独授权、显式BRAIN_LIVE=1和JY_LIVE_CONFIRM=YES、RequestJournal路径及有效官方消费上报。标准live仅依据专用Key的官方已显示当日消费控制每日5元门槛；数据失效时不发新请求，UNKNOWN只隔离原来源。官方账单延迟已纳入边界，这不是瞬时精确扣费硬上限。
 
-可使用DEEPSEEK_API_KEY环境变量，或自行创建Windows本地DPAPI密钥存储。不要把密钥写入源码、Issue或Git。分发包没有可复用的生产密钥/账本/授权，也不自动批准任何付费请求。默认费率是基线中的冻结配置，使用真实API前须核验所选模型及最新价格。
+当前标准凭据实现仅通过Windows DPAPI helper读取专用密文，不从环境变量加载API Key。需要时由运营方使用scripts/study-key.ps1的本地密码界面配置；不要运行ReadForWorker开关来显示密钥，不要将密钥写入源码、Issue或Git。分发包没有生产密钥、账本或授权，也不自动批准付费调用。完整条件见[配置说明](docs/CONFIGURATION.md)。
+
+tools/ops/start.ps1保留为Legacy兼容脚本，仍有旧预算审计逻辑，**不是本版本标准生产启动入口**。不要用它代替上述Node入口或据此重置历史账本。
 
 QQ适配还需独立安装和配置OneBot/SnowLuma、QQ_UIN、QQ_OWNER、SNOWLUMA_HOME及可用的QQ_SDK_MODULE。这份代码不附QQ登录会话。Office、网页搜索、语音、Minecraft、桌面等外部运行时也不随包附带；缺依赖时必须明确不可用，不能把注册当作真实接通。参见[可选集成](docs/INTEGRATIONS.md)。
 

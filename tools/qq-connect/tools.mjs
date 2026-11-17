@@ -8,6 +8,7 @@ import {readAccount} from './account.mjs';
 import {validateToolArguments} from '../../src/tool-contracts.mjs';
 
 const PROJECT=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
+export const oneBotCall=(action,params)=>call(action,params);
 const SNOW=process.env.SNOWLUMA_HOME??resolve(PROJECT,'../SnowLuma/dist');
 function legacyBridge(){if(!process.env.JY_LEGACY_BRIDGE_ROOT)throw Object.assign(Error('Optional integration adapter is not configured; set JY_LEGACY_BRIDGE_ROOT after reviewing and installing it'),{code:'TOOL_DEPENDENCY_MISSING',transportInvoked:false});return resolve(process.env.JY_LEGACY_BRIDGE_ROOT);}
 const STICKERS=process.env.QQ_STICKERS_FILE??resolve(PROJECT,'config/stickers.example.json');
@@ -60,11 +61,14 @@ function plainMessage(m){
   const segs=Array.isArray(m?.message)?m.message:[];
   return segs.map(s=>s?.type==='text'?s.data?.text??'':s?.type==='image'?'[图片]':s?.type==='face'?'[表情]':s?.type==='record'?'[语音]':s?.type==='at'?`@${s.data?.qq??''}`:'').join('').trim()||String(m?.raw_message??'');
 }
-export const TOOL_NAMES=Object.freeze([
+export const BASE_TOOL_NAMES=Object.freeze([
   'qq_send_message','qq_send_private_message','qq_send_group_message',
   'qq_get_group_history','qq_get_friend_history','qq_get_group_members','qq_list_groups','qq_list_friends',
   'qq_list_stickers','qq_send_sticker','qq_send_voice','qq_send_poke','qq_get_forward_msg','qq_necklace','qq_watch_video','qq_pet','qq_minecraft','qq_speak','qq_list_voices','qq_sticker_note','attention_mute','attention_unmute','attention_load','attention_status','anchor_recall','style_status','style_update','style_delete','web_search','web_fetch','office_status','office_list','office_read','office_search','office_audit','github_status','github_repo','github_issues','github_issue','github_pulls','github_branches','office_write','office_edit','office_run','office_npm','office_plugin_list','office_plugin_run','office_plugin_install','github_create_branch','github_put_file','github_create_pr',
 ]);
+
+export const UNAVAILABLE_TOOLS=Object.freeze(['qq_speak',...(!process.env.JY_MINECRAFT_WORLD?['qq_minecraft']:[]),...(!process.env.JY_VOICE_DIRECTORY?['qq_send_voice','qq_list_voices']:[])]);
+export const TOOL_NAMES=Object.freeze([...BASE_TOOL_NAMES,'tool_contract','qq_send_image','qq_get_group_info','bilibili_search','bilibili_video_meta','bilibili_comments','bilibili_column_text','github_search','github_repo_readme','github_repo_tree','github_issue_read','github_release_read']);
 
 async function speak(args={}){
   const legacy=legacyBridge();
@@ -130,8 +134,11 @@ export function readStickerPage(path,args={}){
  if(!existsSync(path))throw Object.assign(Error('本地表情库文件缺失；没有完成查询，不能据此判断没有匹配表情'),{code:'STICKER_LIBRARY_MISSING',transportInvoked:false});
  return stickerPage(JSON.parse(readFileSync(path,'utf8')),args);
 }
-export async function executeTool(tool,args={}){
+export async function executeTool(tool,args={},context={}){
+  if(process.env.JY_OPEN_LIFE==='1'){const life=await import('../open-life/tools.mjs');const result=await life.handleLifeTool(tool,args,context);if(result.handled)return result.value;}
   validateToolArguments(tool,args);
+  if(TOOL_NAMES.includes(tool)&&!BASE_TOOL_NAMES.includes(tool))
+    throw Object.assign(Error('Open Life extension is registered but not configured; enable JY_OPEN_LIFE with reviewed host policy and adapters'),{code:'LIFE_NOT_READY',transportInvoked:false});
   switch(tool){
     case 'qq_send_message':return send(args);
     case 'qq_send_private_message':return send({...args,target:'private'});
