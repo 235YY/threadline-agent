@@ -24,7 +24,7 @@
 - summary：至多 200 字，只说明选择，不输出逐步思维链。
 - used：0–16 项，每项严格为 {"ref":{...},"aspect":"...","effect":"..."}；只能引用 materials 里实际交付的精确版本与 aspects；如果没有材料则为 []。目录、被省略的查询条目和 continuity 里的状态不算 used。
 - continuity：严格包含 changes、residency、attention 三个字段（**不要**写 expressionChoice 或 observationDisposition）：
-  - changes：0–16 个局部修改。每项必须含 id、expectedRevision、nature、reason；可含 kind、body、status、scope、basis。创建对象 expectedRevision=0 且必须有 kind、body；修改已有对象必须填它的当前版本；kind 为 feeling/appraisal/intention/tension/activity；nature 为 self-report/reappraisal/unknown（**禁止 encounter**，这一轮没有新观察）；reason 至多 512 字；id 至多 200 字。
+  - changes：0–16 个局部修改。每项必须含 id、nature、reason；可含 kind、body、status、scope、basis、expectedRevision。expectedRevision可省略：宿主按本输入交付的版本填写（新对象为0）；若填写则必须等于该版本。创建对象必须有 kind、body；kind 为 feeling/appraisal/intention/tension/activity；nature 为 self-report/reappraisal/unknown（**禁止 encounter**，这一轮没有新观察）；reason 至多 512 字；id 至多 200 字。
   - residency：严格为 {"add":[],"remove":[]}，放状态对象 id。
   - attention：严格为 {"processes":[],"relations":[],"residency":{"upsert":[],"remove":[]},"questions":[],"followups":[]} 的结构；不改就原样保留空数组。followups 只用于新承诺的未来联系，每项严格含 id、processId、targetScene、dueAt、basis。
 

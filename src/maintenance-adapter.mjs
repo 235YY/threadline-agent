@@ -1,7 +1,7 @@
 import {canonical,digest,ensure,refKey} from './contracts.mjs';
 import {maintenanceModelInput,maintenanceOutput,exact} from './maintenance-protocol.mjs';
 import {keepAttention} from './attention.mjs';
-import {withMindInstructions} from './mind-prompt.mjs';
+import {withMindInstructions,MIND_EXTENSIONS} from './mind-prompt.mjs';
 import {referenceMenu,referenceTargetMenu,resolveReferenceKey} from './reference-menu.mjs';
 const clone=x=>JSON.parse(canonical(x)),pin=r=>({id:r.id,revision:r.revision});
 const modes=['experience','appraisal','cleanup'];
@@ -19,7 +19,7 @@ function modeFor(p,requested,rotation){
  ensure(Number.isSafeInteger(rotation)&&rotation>=0,'FOCUS_MODE','host rotation must be nonnegative');
  return available[rotation%available.length];
 }
-export function focusedMaintenancePacket(packet,policy,{focusMode='auto',rotation=0}={}) {
+export function focusedMaintenancePacket(packet,policy,{focusMode='auto',rotation=0,mindExtension=MIND_EXTENSIONS.current}={}) {
  maintenanceModelInput(packet,policy);const p=packet.payload,focus=modeFor(p,focusMode,rotation),table=[];
  const register=r=>{const existing=table.find(x=>refKey(x.ref)===refKey(r));if(existing)return existing.key;
   const entry={key:'R'+(table.length+1),ref:pin(r),type:r.type};table.push(entry);return entry.key;};
@@ -35,15 +35,15 @@ export function focusedMaintenancePacket(packet,policy,{focusMode='auto',rotatio
    statesNotDelivered:focus==='experience'?p.continuity.recalled.length:0,attentionNotDelivered:focus!=='cleanup'}};
  let instruction='你在回顾自己的既有材料。维护机会不是新经历，交付的实际工具回执仍是其合成世界中的经历。只能修改本轮读到的版本，保留否定、范围、未知及事实/计划区别。只输出JSON，必须含packetId、summary(≤400字简短说明，不展示逐步思维)。无变化可省略全部操作，不必凑出认识。可选handled:["R1"]表示已理解该pending观察，requests:["尚缺的信息或能力"]不表示已经查询，defer:true仅限无修改。程序负责事务类型，不输出disposition。禁止输出未列明字段。'+rules[focus];
  instruction+=' references中的每项必须逐字复制referenceUsage.allowedValues里的本轮短名（如R1）；禁止填写ref.id或自造别名。referenceUsage.example仅是语法示例，不要求采用那条材料。已有对象的target必须逐字复制targetUsage.allowedExistingTargets，按existingExample写；target禁止填写record.id或ref.id。新对象才使用target={id:"新ID",expectedRevision:0}，按createExample写。修改已有笔记时references不得包含target自身，应列支撑本次变化的其他交付来源。';
- if(focus==='appraisal'&&payload.mind)instruction=withMindInstructions(instruction);
+ if(focus==='appraisal'&&payload.mind)instruction=withMindInstructions(instruction,mindExtension);
  const stage='focusedMaintenance-v1',packetId=digest({stage,base:packet.packetId,instruction,payload});
  const messages=[{role:'system',content:instruction},{role:'user',content:canonical({packetId,...payload})}],bytes=Buffer.byteLength(canonical(messages));
  ensure(bytes<=policy.maxInputBytes,'MAINTENANCE_OVERFLOW','complete focused input exceeds budget');
  return {stage,packetId,basePacket:packet,policy,focus,payload,instruction,messages,bytes};
 }
 export function focusedMaintenanceInput(packet){
- const actual=focusedMaintenancePacket(packet.basePacket,packet.policy,{focusMode:packet.focus});
- ensure(canonical(packet)===canonical(actual),'PACKET_CHANGED','focused input changed');
+ // Accept a packet sealed by any known prompt generation; never reseal it.
+ ensure(MIND_EXTENSIONS.all().some(mindExtension=>canonical(packet)===canonical(focusedMaintenancePacket(packet.basePacket,packet.policy,{focusMode:packet.focus,mindExtension}))),'PACKET_CHANGED','focused input changed');
  return {packetId:packet.packetId,messages:clone(packet.messages),bytes:packet.bytes};
 }
 export function expandFocusedMaintenance(wire,raw){

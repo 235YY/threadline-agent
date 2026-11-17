@@ -7,6 +7,7 @@
     "node": ">=26.8.0"
   },
   "scripts": {
+    "doctor": "node tools/brain-service/doctor.mjs",
     "test": "node scripts/test-current.mjs",
     "demo:learning": "node experiments/conditional-learning/run.mjs",
     "demo": "node scripts/demo.mjs",

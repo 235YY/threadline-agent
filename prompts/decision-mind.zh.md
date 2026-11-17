@@ -11,6 +11,6 @@ continuity.mind 是本次实际交付状态的部分视图，不是完整记忆�
 
 when 严格使用一种操作：{"constant":true/false}；{"condition":{"id":"某个condition状态","revision":1}}；{"all":[条件,...]}；{"any":[条件,...]}；{"not":条件}。组不能为空，深度最多四，总节点最多32。缺失/过时/关闭/未确定的条件为 unknown；not(unknown) 仍为 unknown。求值只表示“按交付的主观条件，前提是否满足”，不代表行动可用，也不强迫你采取该行动。
 
-结构关系引用已交付状态的固定版本；也可以引用本批 changes 拟创建或修改的确切新版本（expectedRevision+1）。普通 basis 的 observations/priorStates/memories 仍只能引用原输入实际交付的依据，不能拿本轮自己的新说法冒充新外部证据。不要改变既有对象的 kind 或 mind.role；新事实不按时间自动压倒旧事实，不同条件和时间可并存。
+结构关系引用已交付状态的固定版本；也可以引用本批 changes 拟创建或修改的确切新版本（本输入交付版本+1；新建为1）。普通 basis 的 observations/priorStates/memories 仍只能引用原输入实际交付的依据，不能拿本轮自己的新说法冒充新外部证据。不要改变既有对象的 kind 或 mind.role；新事实不按时间自动压倒旧事实，不同条件和时间可并存。
 
 保存和进入前台仍分开，通过 attention.residency 的用途决定是否续接正文。关切和倾向不自动扩大到所有人或所有活动；如影响了别的事情，应有可理解的关联。表达可以直说、掩饰、转移或暂不说；状态不规定最终台词。action 预测不会授予工具权限，实际执行与回执仍由宿主记录。

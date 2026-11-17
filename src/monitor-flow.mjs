@@ -5,7 +5,7 @@ const kinds={respond:'回复',lookup:'查阅资料',act:'提出行动',continue:
 const routes={grounds:'沿依据追溯',impact:'查看影响',context:'查相关情境',versions:'查历史版本',related:'查关联资料'};
 const captureLabels={'not-collected':'这次未采集正文',missing:'接口没有提供这段内容',empty:'接口返回了空文本','invalid-type':'接口返回的内容类型异常',truncated:'正文超过记录上限，以下只有已保存部分'};
 export const flowErrorLabels={OUTPUT_SHAPE:'输出格式不符合要求，程序没有采用',OUTPUT_JSON:'输出不是合法JSON，程序没有采用',
-  UNDELIVERED_REFERENCE:'引用了本轮未交付的材料',UNDELIVERED_BASIS:'依据包含本轮没读到的内容',STATE_CONFLICT:'要修改的认识已经有新版本',
+  UNDELIVERED_REFERENCE:'引用了本轮未交付的材料',UNDELIVERED_BASIS:'依据包含本轮没读到的内容',STATE_CONFLICT:'要修改的认识已经有新版本',WRONG_OBJECT_KIND:'把另一类对象（如Process）的编号当成了个人状态',ID_COLLISION:'这个编号已属于另一类记录',UNREAD_STATE:'要修改的认识本轮没有读到',
   STALE_SUBJECT:'主体状态已经更新，旧提案不能覆盖',STALE_ATTENTION:'工作台已经更新，旧提案不能覆盖',
   UNCERTAIN_REQUEST:'请求结果或费用尚未确认，已停止且不会自动重发',NETWORK_PREFLIGHT_FAILED:'联网检查未通过，没有发送模型请求',
   CALL_LIMIT:'已到授权调用次数上限',SPEND_LIMIT:'剩余授权预算不足',TOOL_NOT_GRANTED:'这个工具没有获得本轮授权'};

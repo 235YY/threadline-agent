@@ -33,11 +33,32 @@ test('typed catalog separates Process, personal state and used materials; seal s
  assert.equal(p.payload.operationContract.processes[0].type,'process');assert.equal(p.payload.operationContract.processes[0].updatePath,'continuity.attention.processes');
  assert.deepEqual(p.payload.operationContract.personalStates,[]);assert.deepEqual(p.payload.operationContract.usedMaterials,[]);assert.doesNotThrow(()=>verifiedModelInput(p));
 });
-test('STATE_CONFLICT gives precise personal-state revision and next-opportunity feedback without adopting',t=>{
- const s=setup(t);commit(s,delta([proc('A')]));next(s);const p=prepare(s);
- assert.throws(()=>commit(s,keepAttention(),{p,id:'bad-state',changes:[{id:'A',expectedRevision:1,kind:'activity',body:'x',status:'open',nature:'self-report'}]}),e=>e.code==='STATE_CONFLICT'&&e.details.actualPersonalStateRevision===0&&e.details.path==='continuity.changes');
- assert.equal(s.store.read('bad-state'),null);assert.equal(s.store.read('A'),null);
- const feedback=runtimeFeedback({store:s.store,subjectId:'S',now:2000}).recentFeedback.find(x=>x.error==='STATE_CONFLICT');assert.ok(feedback);assert.equal(feedback.adopted,false);assert.equal(feedback.execution,'not-started');
+test('Process id in continuity.changes is a precise WRONG_OBJECT_KIND, never a silent shadow state',t=>{
+ // Real-run failure: two Process ids were copied into personal_state updates.
+ for(const [label,extra] of [['process revision',{expectedRevision:1}],['zero revision',{expectedRevision:0}],['omitted revision',{}]]){
+  const s=setup(t);commit(s,delta([proc('A')]));next(s);const p=prepare(s),id='bad-'+label.replace(' ','-');
+  assert.throws(()=>commit(s,keepAttention(),{p,id,changes:[{id:'A',...extra,kind:'activity',body:'x',status:'open',nature:'self-report'}]}),
+   e=>e.code==='WRONG_OBJECT_KIND'&&e.details.updatePath==='continuity.attention.processes'&&e.details.id==='A',label);
+  assert.equal(s.store.read(id),null,label);assert.equal(s.store.read('A'),null,label);
+  const feedback=runtimeFeedback({store:s.store,subjectId:'S',now:2000}).recentFeedback.find(x=>x.error==='WRONG_OBJECT_KIND');
+  assert.ok(feedback,label);assert.equal(feedback.adopted,false);assert.equal(feedback.execution,'not-started');
+ }
+});
+test('omitted revisions are derived from this packet only; explicit wrong revisions stay strict',t=>{
+ const s=setup(t);
+ // New personal state and new Process without expectedRevision.
+ commit(s,delta([(({expectedRevision,...p})=>p)(proc('A'))]),{changes:[{id:'state-new',kind:'feeling',body:'curious',status:'open',nature:'self-report'}]});
+ assert.equal(s.store.read('state-new').revision,1);assert.equal(s.store.read(attentionId('S')).processes[0].revision,1);
+ const audit=[...s.store.all('extension_record')].filter(r=>r.stateType==='proposal-normalization').flatMap(r=>r.value.diagnostics).filter(d=>d.code==='EXPECTED_REVISION_DERIVED');
+ assert.deepEqual(audit.map(d=>[d.path,d.value,d.basis]).sort(),[['continuity.attention.processes[0].expectedRevision',0,'new-process'],['continuity.changes[0].expectedRevision',0,'new-state']]);
+ // Update the delivered Process without expectedRevision: derived from the delivered frame.
+ next(s);commit(s,delta([{id:'A',label:'A',body:'A research, second step',status:'active',world:'actual',intervals:[],basis:[]}]));
+ assert.equal(s.store.read(attentionId('S')).processes[0].revision,2);
+ // An explicit stale revision is still a conflict, not silently corrected.
+ next(s);assert.throws(()=>commit(s,delta([proc('A','active',1)])),e=>e.code==='PROCESS_CONFLICT');
+ // Existing but undelivered personal state: reported as unread, not as a revision mismatch.
+ next(s);assert.throws(()=>commit(s,keepAttention(),{changes:[{id:'state-new',body:'changed',nature:'reappraisal'}]}),e=>e.code==='UNREAD_STATE');
+ assert.equal(s.store.read('state-new').revision,1);
 });
 test('used rejection lists exact allowed materials and leaves proposal unadopted',t=>{
  const s=setup(t),p=prepare(s);const out=output(p);out.used=[{ref:ref(s.e),aspect:'knowledge',effect:'context'}];
@@ -47,4 +68,18 @@ test('used rejection lists exact allowed materials and leaves proposal unadopted
 test('legitimate new personal state remains autonomous and accepted without borrowing Process ID',t=>{
  const s=setup(t);commit(s,delta([proc('A')]),{changes:[{id:'state-separate',expectedRevision:0,kind:'feeling',body:'feeling',status:'open',nature:'self-report'}]});
  assert.equal(s.store.read('state-separate').kind,'feeling');assert.equal(s.store.read(attentionId('S')).processes[0].id,'A');
+});
+test('delivered personal state is revised without the model transcribing its revision',t=>{
+ const store=memory(t).store,session=new ContinuitySession({store,subjectId:'P'});
+ let [e,w]=put(store,'init',event('first',{body:'hello'}),frame());
+ const run=(id,changes)=>{const p=session.prepare({currentEvent:ref(e),workspace:ref(w),budgetBytes:131072});
+  return {p,d:session.commit({packet:p,output:{packetId:p.packetId,options:[{id:'wait',kind:'wait',payload:{}}],selected:'wait',summary:'s',used:[],continuity:{changes,residency:{add:[],remove:[]},expressionChoice:null,observationDisposition:'handled'}},decisionId:id,requestId:id})};};
+ run('d1',[{id:'mood',kind:'feeling',body:'calm',status:'open',nature:'self-report'}]);
+ e=put(store,'e2',event('second',{body:'again'})).at(-1);
+ const {p}=run('d2',[{id:'mood',body:'a little tired',nature:'reappraisal'}]);
+ assert.ok(p.payload.continuity.foreground.some(s=>s.ref.id==='mood'&&s.ref.revision===1));
+ const mood=store.read('mood');assert.equal(mood.revision,2);assert.equal(mood.body,'a little tired');assert.deepEqual(mood.predecessor,{id:'mood',revision:1});
+ e=put(store,'e3',event('third',{body:'later'})).at(-1);
+ assert.throws(()=>run('d3',[{id:'mood',expectedRevision:1,body:'stale',nature:'reappraisal'}]),err=>err.code==='STATE_CONFLICT');
+ assert.equal(store.read('mood').revision,2);
 });

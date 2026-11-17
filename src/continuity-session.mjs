@@ -33,7 +33,7 @@ export class ContinuitySession {
     try{const attempt=this.#requestJournal?.packetRequest(args.packet.packetId);ensure(!attempt||attempt.status==='settled'&&attempt.validation?.status!=='rejected','REQUEST_VALIDATION_CONFLICT','request must have a settled, unrejected output before adoption');output=normalizeAndRecord({store:this.#store,packet:args.packet,output:args.output});d=commitDecision({...args,output,store:this.#store});}
     catch(error){
       if(error.name==='ContractError'&&!this.#requestJournal?.packetRequest(args.packet.packetId)?.validation)this.#requestJournal?.recordValidation(args.packet.packetId,{status:'rejected',error:error.code});
-      if(['STATE_CONFLICT','UNDELIVERED_REFERENCE'].includes(error.code)){
+      if(['STATE_CONFLICT','UNDELIVERED_REFERENCE','WRONG_OBJECT_KIND','ID_COLLISION','UNREAD_STATE','INTENT_OPTION'].includes(error.code)){
         const id='extension:'+this.#subjectId+':runtime:validation:'+digest({packet:args.packet.packetId,output,code:error.code});
         if(!this.#store.read(id))this.#store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'validation',sourceEvent:args.packet.payload.current?.id??null,packetId:args.packet.packetId,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',next:'上次提案未提交。按当前交付目录自主重新判断；不自动重放，不替你修订内容。'}}]});
       }

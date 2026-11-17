@@ -1,7 +1,7 @@
 # 配置与标准启动
 
 唯一标准入口是tools/brain-service/run.mjs → launchBrain；由runtime-config.mjs解析配置。
-要求Node >=26.8.0，本轮使用26.12.1。Node不自动加载.env：
+要求Node >=26.8.0（26.12.1与26.13.1上验证过）。Node不自动加载.env：
 
 ~~~sh
 node tools/brain-service/run.mjs
@@ -11,6 +11,18 @@ node --env-file=.env tools/brain-service/run.mjs
 默认dry-run不构造付费模型或QQ发送器，心跳为0，数据落在自己的_local/dry-run。
 默认端口8787；在已有实例的主机上先显式选择空闲测试端口，禁止借样例接管生产。
 相对路径以项目root解析。config/identity.example.txt只是中性示例。
+
+## 启动前诊断（只读）
+
+~~~sh
+node tools/brain-service/doctor.mjs
+node --env-file=.env tools/brain-service/doctor.mjs --qq --json
+~~~
+
+按与标准入口相同的配置解析，逐项列出Node、身份、数据库、实例锁、RequestJournal、
+官方消费令牌、模型凭据（非Windows明确报告不可用）、情感Python、端口及QQ桥依赖。
+它不创建、不删除、不解锁、不读取密钥内容；缺失的数据库会被明确标为"将新建空主体"，
+不会被当作已有主体。有阻断项时退出码为1。
 
 ## 已授权live的必要条件
 

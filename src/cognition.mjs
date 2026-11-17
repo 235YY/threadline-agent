@@ -17,38 +17,50 @@ import {normalizeVerbOption} from './verbs.mjs';
 import {consultationProgress as progressProjection} from './consultation-progress.mjs';
 import {attentionId,attentionView} from './attention.mjs';
 import {eventProcessEvents} from './task-threads.mjs';
+import {generationSets} from './prompt-generations.mjs';
 
-const REFLECTION_PROMPT=readFileSync(new URL('../prompts/decision-reflection.zh.md',import.meta.url),'utf8');
-const PROMPTS={decision:readFileSync(new URL('../prompts/decision.zh.md',import.meta.url),'utf8'),review:readFileSync(new URL('../prompts/review.zh.md',import.meta.url),'utf8'),
-  decisionContinuity:readFileSync(new URL('../prompts/decision-continuity.zh.md',import.meta.url),'utf8'),reflection:REFLECTION_PROMPT};
-PROMPTS.decisionInformation=PROMPTS.decisionContinuity.replace('lookup严格二选一：','lookup的基础读取形式为：')+'\n\n'+readFileSync(new URL('../prompts/decision-local-lookup.zh.md',import.meta.url),'utf8');
-PROMPTS.decisionWorkbench=PROMPTS.decisionInformation.replace('每项必须含id、expectedRevision、nature、reason；可含kind、body、status、scope、basis。',
-  '每项必须含id、expectedRevision、nature；可含kind、body、status、scope、basis、reason。reason可省略或为null，表示未提供修改理由；不必编造理由来完成状态保存。')+
-  '\n\n'+readFileSync(new URL('../prompts/decision-memory-access.zh.md',import.meta.url),'utf8');
-PROMPTS.decisionAttention=PROMPTS.decisionWorkbench.replace('continuity严格包含changes、residency、expressionChoice、observationDisposition。',
-  'continuity严格包含changes、residency、expressionChoice、observationDisposition、attention。').replace(
-  '- residency严格含add和remove两个对象ID数组。修改中的开放对象会进入前台；需要放后台的明确列入remove。退到后台不删内容，不是忘掉。closed对象自动退出前台。前台容量由输入maxForeground给出，不能扩大权限。',
-  '- residency严格为{"add":[],"remove":[]}，本阶段只通过attention.residency修改用途驻留，保存状态不自动加入前台。')+
-  '\n\n'+readFileSync(new URL('../prompts/decision-attention.zh.md',import.meta.url),'utf8');
-PROMPTS.decisionMind=withMindInstructions(PROMPTS.decisionAttention);
-const GRAPH_READ_PROMPT=readFileSync(new URL('../prompts/decision-graph.zh.md',import.meta.url),'utf8');
-PROMPTS.decisionGraph=PROMPTS.decisionMind+'\n\n'+GRAPH_READ_PROMPT;
-const CONSULT_PROMPT=readFileSync(new URL('../prompts/decision-consultation.zh.md',import.meta.url),'utf8');
-const MATERIAL_PROMPT=readFileSync(new URL('../prompts/decision-workbench-materials.zh.md',import.meta.url),'utf8');
-const FOCUS_PROMPT=readFileSync(new URL('../prompts/decision-workbench-focus.zh.md',import.meta.url),'utf8');
-const RECOVERY_PROMPT=readFileSync(new URL('../prompts/decision-workbench-recovery.zh.md',import.meta.url),'utf8');
-const SELF_PROTOCOL=readFileSync(new URL('../prompts/decision-self-protocol.zh.md',import.meta.url),'utf8');
-const MEMORY_PROTOCOL=readFileSync(new URL('../prompts/memory-protocol.zh.md',import.meta.url),'utf8');
-const SILENCE_PROTOCOL=readFileSync(new URL('../prompts/silence-protocol.zh.md',import.meta.url),'utf8');
-const ALGORITHM_V011_PROMPT=readFileSync(new URL('../prompts/algorithm-v011.zh.md',import.meta.url),'utf8');
-const APPERCEPTION_V1_PROMPT=readFileSync(new URL('../prompts/apperception-v1.zh.md',import.meta.url),'utf8');
-const DOMAIN_PROMPT=readFileSync(new URL('../prompts/decision-domains.zh.md',import.meta.url),'utf8');
-const SUBJECTIVE_MEMORY_PROMPT=readFileSync(new URL('../prompts/subjective-memory.zh.md',import.meta.url),'utf8');
-const SUBJECTIVE_MEMORY_V2_PROMPT=readFileSync(new URL('../prompts/subjective-memory-v2.zh.md',import.meta.url),'utf8');
-const TASK_THREADS_PROMPT=readFileSync(new URL('../prompts/task-threads.zh.md',import.meta.url),'utf8');
+// Prompt text is part of each sealed packet. Packets are verified by rebuilding them,
+// so every prompt generation that ever sealed a packet must stay loadable: the current
+// files, plus frozen snapshots under prompts/archive/<generation>/. Before editing a
+// prompt, snapshot the current directory (see prompts/archive/README.md).
+function buildPromptSet(read){
+  const REFLECTION_PROMPT=read('decision-reflection.zh.md');
+  const PROMPTS={decision:read('decision.zh.md'),review:read('review.zh.md'),
+    decisionContinuity:read('decision-continuity.zh.md'),reflection:REFLECTION_PROMPT};
+  PROMPTS.decisionInformation=PROMPTS.decisionContinuity.replace('lookup严格二选一：','lookup的基础读取形式为：')+'\n\n'+read('decision-local-lookup.zh.md');
+  // Each generation's field sentence is rewritten by its own pattern; a non-matching replace is a no-op.
+  PROMPTS.decisionWorkbench=PROMPTS.decisionInformation.replace('每项必须含id、expectedRevision、nature、reason；可含kind、body、status、scope、basis。',
+    '每项必须含id、expectedRevision、nature；可含kind、body、status、scope、basis、reason。reason可省略或为null，表示未提供修改理由；不必编造理由来完成状态保存。').replace('每项必须含id、nature、reason；可含expectedRevision、kind、body、status、scope、basis。',
+    '每项必须含id、nature；可含expectedRevision、kind、body、status、scope、basis、reason。reason可省略或为null，表示未提供修改理由；不必编造理由来完成状态保存。')+
+    '\n\n'+read('decision-memory-access.zh.md');
+  PROMPTS.decisionAttention=PROMPTS.decisionWorkbench.replace('continuity严格包含changes、residency、expressionChoice、observationDisposition。',
+    'continuity严格包含changes、residency、expressionChoice、observationDisposition、attention。').replace(
+    '- residency严格含add和remove两个对象ID数组。修改中的开放对象会进入前台；需要放后台的明确列入remove。退到后台不删内容，不是忘掉。closed对象自动退出前台。前台容量由输入maxForeground给出，不能扩大权限。',
+    '- residency严格为{"add":[],"remove":[]}，本阶段只通过attention.residency修改用途驻留，保存状态不自动加入前台。')+
+    '\n\n'+read('decision-attention.zh.md');
+  PROMPTS.decisionMind=withMindInstructions(PROMPTS.decisionAttention,read('decision-mind.zh.md'));
+  const GRAPH_READ_PROMPT=read('decision-graph.zh.md');
+  PROMPTS.decisionGraph=PROMPTS.decisionMind+'\n\n'+GRAPH_READ_PROMPT;
+  const CONSULT_PROMPT=read('decision-consultation.zh.md');
+  const MATERIAL_PROMPT=read('decision-workbench-materials.zh.md');
+  const FOCUS_PROMPT=read('decision-workbench-focus.zh.md');
+  const RECOVERY_PROMPT=read('decision-workbench-recovery.zh.md');
+  const SELF_PROTOCOL=read('decision-self-protocol.zh.md');
+  const MEMORY_PROTOCOL=read('memory-protocol.zh.md');
+  const SILENCE_PROTOCOL=read('silence-protocol.zh.md');
+  const ALGORITHM_V011_PROMPT=read('algorithm-v011.zh.md');
+  const APPERCEPTION_V1_PROMPT=read('apperception-v1.zh.md');
+  const DOMAIN_PROMPT=read('decision-domains.zh.md');
+  const SUBJECTIVE_MEMORY_PROMPT=read('subjective-memory.zh.md');
+  const SUBJECTIVE_MEMORY_V2_PROMPT=read('subjective-memory-v2.zh.md');
+  const TASK_THREADS_PROMPT=read('task-threads.zh.md');
+  const EXPERIENCE_LEARNING_PROMPT=read('experience-learning-v1.zh.md');
+  const ANTI_ASSISTANT=read('anti-assistant.zh.md');
+  const OPERATION_BOUNDARY=read('operation-boundary.zh.md');
+  return {PROMPTS,OPERATION_BOUNDARY,GRAPH_READ_PROMPT,CONSULT_PROMPT,MATERIAL_PROMPT,FOCUS_PROMPT,RECOVERY_PROMPT,SELF_PROTOCOL,MEMORY_PROTOCOL,SILENCE_PROTOCOL,ALGORITHM_V011_PROMPT,APPERCEPTION_V1_PROMPT,DOMAIN_PROMPT,SUBJECTIVE_MEMORY_PROMPT,SUBJECTIVE_MEMORY_V2_PROMPT,TASK_THREADS_PROMPT,EXPERIENCE_LEARNING_PROMPT,ANTI_ASSISTANT};
+}
+const PROMPT_SETS=generationSets(buildPromptSet),CURRENT_PROMPTS=PROMPT_SETS.current;
 const MEMORY_UPDATE_PROMPT='这段时间有新经历。是否要把值得留下的写成自己的记忆，由你决定：可以用 do("remember_note", {body, kind?, scene?}) 记一笔；不记、跳过也完全可以。不要为了完成任务而编造记忆。';
-const EXPERIENCE_LEARNING_PROMPT=readFileSync(new URL('../prompts/experience-learning-v1.zh.md',import.meta.url),'utf8');
-const ANTI_ASSISTANT=readFileSync(new URL('../prompts/anti-assistant.zh.md',import.meta.url),'utf8');
 const ASPECTS=['experience','feeling','belief','goal','knowledge'];
 const KINDS=['respond','lookup','act','continue','pause','wait','intent','none'];
 const clone=x=>JSON.parse(canonical(x));
@@ -142,8 +154,9 @@ function pageCurrentReceipt(data){
     fullBodyDelivered:false,meaning:'complete list entries from pinned receipt; omitted entries were not delivered; full original receipt remains stored; read tools may provide subsequent pages'}};
   return data;
 }
-function seal(stage,payload,budgetBytes,instructionSuffix=null,{operationContract=true}={}) {
+function seal(stage,payload,budgetBytes,instructionSuffix=null,{operationContract=true,prompts=CURRENT_PROMPTS}={}) {
   bound(budgetBytes,'input budget');
+  const {PROMPTS,OPERATION_BOUNDARY,GRAPH_READ_PROMPT,CONSULT_PROMPT,MATERIAL_PROMPT,FOCUS_PROMPT,RECOVERY_PROMPT,SELF_PROTOCOL,MEMORY_PROTOCOL,SILENCE_PROTOCOL,ALGORITHM_V011_PROMPT,APPERCEPTION_V1_PROMPT,DOMAIN_PROMPT,SUBJECTIVE_MEMORY_PROMPT,SUBJECTIVE_MEMORY_V2_PROMPT,TASK_THREADS_PROMPT,EXPERIENCE_LEARNING_PROMPT,ANTI_ASSISTANT}=prompts;
   const focused=payload.continuity?.attention?.focusSupport?.enabled===true;
   let baseInstruction=focused?PROMPTS[stage].replace('continuity在原四字段以外还必须有attention，严格为：','continuity在原四字段以外还必须有attention；基本字段如下，另可含focus：'):PROMPTS[stage];
   if(payload.continuity?.attention?.recoverySupport?.enabled)baseInstruction=baseInstruction.replace('另可含focus：','另可含focus，residency另可含restore：');
@@ -155,7 +168,7 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null,{operationContrac
     payload=clone(payload);
     const c=payload.continuity,states=[...c.foreground,...c.recalled,...(c.shortTerm?.items??[]),...(c.subjectiveMemory?.recent?.items??[]),...(c.subjectiveMemory?.compressed?.items??[]),...(c.subjectiveMemory?.maintenance?.olderRecent??[])];
     payload.operationContract={format:'operation-contract-v1',processes:(c.attention?.processes??[]).map(p=>({type:'process',id:p.id,revision:p.revision,updatePath:'continuity.attention.processes'})),personalStates:uniqueRefs(states.map(s=>s.ref)).map(ref=>({type:'personal_state',ref,updatePath:'continuity.changes'})),usedMaterials:payload.materials.map(m=>({ref:m.ref,aspects:m.aspects})),recentContext:'可用于理解对话；不是used材料目录。used仅可引用usedMaterials的精确ref与aspect，没有用则[]。'};
-    baseInstruction+='\n操作填写边界：operationContract标注的是不同类型，不能互换。Process用稳定id识别；修改过程在attention.processes填写其已交付revision作为expectedRevision。个人状态只在continuity.changes修改；新状态选择新的独立id且expectedRevision=0，不得拿Process id/revision冒充已存在个人状态。eventProcesses关联的process引用用本输入交付版本，即使同轮修改过程也不要预填revision+1；仅同事务新建过程可引用revision=1。固定Event引用不得改版本。近期对话和Process历史可用于理解，但并不自动进入used材料目录；used只从operationContract.usedMaterials原样复制ref/aspect，目录为空则used:[]。这些目录不扩大任何读取权限。';
+    baseInstruction+='\n'+OPERATION_BOUNDARY;
   }
   const instruction=baseInstruction+(payload.memoryAccess?.historyRecovery?.enabled?'\n\n'+GRAPH_READ_PROMPT:'')+(instructionSuffix?'\n\n'+instructionSuffix:'')+(payload.memoryAccess?.consultation?.enabled?'\n\n'+CONSULT_PROMPT:'')+
     (payload.continuity?.attention?.materialSupport?.enabled&&!focused?'\n\n'+MATERIAL_PROMPT:'')+
@@ -186,11 +199,15 @@ function verify(packet,stage) {
   ensure(packet?.stage===stage,'PACKET_STAGE','wrong packet stage');
   // New preparation includes the contract. Verification preserves an archived
   // envelope's original profile instead of upgrading its payload/instructions.
-  const rebuilt=seal(stage,packet.payload,packet.budgetBytes,packet.instructionSuffix??null,
-    {operationContract:Object.hasOwn(packet.payload,'operationContract')});
-  ensure(canonical(rebuilt.payload)===canonical(packet.payload)
-    && rebuilt.packetId===packet.packetId && canonical(rebuilt.messages)===canonical(packet.messages)
-    && packet.instruction===rebuilt.instruction && packet.bytes===rebuilt.bytes,'PACKET_CHANGED','use the exact host-prepared packet');
+  // A packet passes only if some known host prompt generation rebuilds it exactly.
+  const matches=prompts=>{
+    const rebuilt=seal(stage,packet.payload,packet.budgetBytes,packet.instructionSuffix??null,
+      {operationContract:Object.hasOwn(packet.payload,'operationContract'),prompts});
+    return canonical(rebuilt.payload)===canonical(packet.payload)
+      && rebuilt.packetId===packet.packetId && canonical(rebuilt.messages)===canonical(packet.messages)
+      && packet.instruction===rebuilt.instruction && packet.bytes===rebuilt.bytes;
+  };
+  ensure(PROMPT_SETS.all().some(prompts=>{try{return matches(prompts);}catch{return false;}}),'PACKET_CHANGED','use the exact host-prepared packet');
 }
 function parse(output,maxOutputBytes) {
   bound(maxOutputBytes,'output budget');

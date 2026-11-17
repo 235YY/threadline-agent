@@ -14,8 +14,8 @@ used为0—16项，严格含ref、aspect、effect；ref来自输入materials，a
 
 continuity严格包含changes、residency、expressionChoice、observationDisposition。
 - changes为0—16个局部修改。不变就给[]，不要重写所有状态。
-  每项必须含id、expectedRevision、nature、reason；可含kind、body、status、scope、basis。
-  创建对象expectedRevision=0且必须提供kind、body；修改已有对象必须读到其当前版本，expectedRevision等于该版本。id最多200字，body最多2048字，reason最多512字。
+  每项必须含id、nature、reason；可含expectedRevision、kind、body、status、scope、basis。
+  expectedRevision可省略：宿主按本输入交付的版本填写（新对象为0）；若填写则必须等于该版本。创建对象必须提供kind、body；只能修改本输入已读到的个人状态。id最多200字，body最多2048字，reason最多512字。
   kind为feeling/appraisal/intention/tension/activity，已有对象不能换kind。appraisal是你的理解，不等于外部事实。
   status为open/suspended/closed；scope为至多32个活动/对象标识字符串。省略的字段沿用原值。
   nature为encounter/reappraisal/self-report/wording/unknown。主观重新理解不需要新的外部观察。wording仅改变措辞，不更换作用域、开放状态或依据。

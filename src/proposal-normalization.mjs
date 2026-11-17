@@ -1,5 +1,6 @@
 import {canonical,digest} from './contracts.mjs';
 import {keepAttention} from './attention.mjs';
+import {deriveRevisions} from './revision-derivation.mjs';
 // Structural, lossless-to-audit adaptation only. No guessed beliefs, sources,
 // state versions, tool grants, action choices, or evidence natures.
 export function normalizeProposal(raw,packet){
@@ -36,7 +37,9 @@ export function normalizeProposal(raw,packet){
 }
 export function normalizeAndRecord({store,packet,output}){
   const result=normalizeProposal(output,packet);
-  const value=result.value,selected=Array.isArray(value?.options)?value.options.find(o=>o?.id===value.selected):null;
+  const value=result.value;
+  if(value&&typeof value==='object'&&!Array.isArray(value))result.diagnostics.push(...deriveRevisions({store,packet,value}));
+  const selected=Array.isArray(value?.options)?value.options.find(o=>o?.id===value.selected):null;
   if(['respond','wait','continue','pause','none','lookup'].includes(selected?.kind))for(const [i,c]of (Array.isArray(value.continuity?.changes)?value.continuity.changes:[]).entries()){
     if(c?.kind==='intention'&&c.expectedRevision===0&&typeof c.id==='string'&&c.id.startsWith('intent:')&&!store.read(c.id)){
       const outside={...value,continuity:{...value.continuity,changes:value.continuity.changes.filter((_,n)=>n!==i)}};

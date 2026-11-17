@@ -3,15 +3,14 @@ import {verifiedModelInput} from '../../src/cognition.mjs';
 import {keepAttention} from '../../src/attention.mjs';
 import {readFileSync} from 'node:fs';
 import {withMindInstructions} from '../../src/mind-prompt.mjs';
-const CONSULT_PROMPT=readFileSync(new URL('../../prompts/decision-consultation.zh.md',import.meta.url),'utf8');
-const MATERIAL_PROMPT=readFileSync(new URL('../../prompts/decision-workbench-materials.zh.md',import.meta.url),'utf8');
-const ATTENTION_PROMPT=readFileSync(new URL('../../prompts/decision-attention.zh.md',import.meta.url),'utf8');
-const FOCUS_PROMPT=readFileSync(new URL('../../prompts/decision-workbench-focus.zh.md',import.meta.url),'utf8');
-const RECOVERY_PROMPT=readFileSync(new URL('../../prompts/decision-workbench-recovery.zh.md',import.meta.url),'utf8');
+import {generationSets} from '../../src/prompt-generations.mjs';
+const WIRE_PROMPTS=generationSets(read=>({CONSULT_PROMPT:read('decision-consultation.zh.md'),MATERIAL_PROMPT:read('decision-workbench-materials.zh.md'),
+  ATTENTION_PROMPT:read('decision-attention.zh.md'),FOCUS_PROMPT:read('decision-workbench-focus.zh.md'),RECOVERY_PROMPT:read('decision-workbench-recovery.zh.md'),
+  MIND_PROMPT:read('decision-mind.zh.md')}));
 
 // Keep historical wire profiles reproducible. Only the new opt-in focus profile
 // compiles the extension into the thin envelope; it never repairs a model output.
-function thinAttentionInstructions(){
+function thinAttentionInstructions({ATTENTION_PROMPT}){
   const marker='continuity.attention.frame是此次事件网络版本。',at=ATTENTION_PROMPT.indexOf(marker);
   ensure(at>0&&ATTENTION_PROMPT.slice(0,at).includes('continuity在原四字段以外还必须有attention'),'THIN_PROMPT_BASE','unexpected full attention contract');
   const body=ATTENTION_PROMPT.slice(at);
@@ -27,8 +26,9 @@ choice严格含kind和payload。动作的完整结构是{"kind":"act","payload":
 未填summary由宿主标为未提供；未填used/changes为[]；未填expressionChoice为null；未填observationDisposition为handled；未填attention表示保持原状。宿主只补结构默认值，不补你的想法、理由、引用或执行结果。不输出options、selected、continuity这些完整接口外壳。
 若输入存在waitSupport，wait的payload不再为{}：必须为{mode:"park"}、{mode:"next-event"}、{mode:"until",wakeAt:未来毫秒}，或sources实际存在时用{mode:"feedback",source:"已交付W短名",wakeAt:未来毫秒}。时限不可超过maxWakeAt，提出动作不是已开工，无来源不能声称等执行回执；可以选择暂放、观察、安全尝试或等新消息。`;
 
-export function wirePacket(base, protocol) {
+export function wirePacket(base, protocol, prompts=WIRE_PROMPTS.current) {
   verifiedModelInput(base);
+  const {CONSULT_PROMPT,MATERIAL_PROMPT,ATTENTION_PROMPT,FOCUS_PROMPT,RECOVERY_PROMPT,MIND_PROMPT}=prompts;
   ensure(['full','compact','compact-current','compact-focus'].includes(protocol),'WIRE_PROTOCOL','unknown protocol');
   if(protocol==='full') return base;
   const thinFocus=protocol==='compact-focus',observationMode=protocol==='compact-current'||thinFocus;
@@ -39,8 +39,8 @@ export function wirePacket(base, protocol) {
     '\n本轮used可引用当前current的精确id和revision，aspect须为experience。宿主会把它单列为current-observation来源，不放进记忆材料used，不新增事件、不增加回想权重。其他未交付ID或猜测版本仍拒绝；scope和焦点规则不变。';
   if(payload.continuity?.attention?.materialSupport?.enabled){
     // The thin envelope still needs the actual optional patch contract. No cleanup policy is added.
-    if(payload.continuity.mind)protocolPrompt=withMindInstructions(protocolPrompt.replace('可有kind、body、status、scope、basis、reason。','可含kind、body、status、scope、basis、reason。'));
-    protocolPrompt+='\n\n'+(thinFocus?thinAttentionInstructions():ATTENTION_PROMPT);
+    if(payload.continuity.mind)protocolPrompt=withMindInstructions(protocolPrompt.replace('可有kind、body、status、scope、basis、reason。','可含kind、body、status、scope、basis、reason。'),MIND_PROMPT);
+    protocolPrompt+='\n\n'+(thinFocus?thinAttentionInstructions(prompts):ATTENTION_PROMPT);
   }
   const focused=payload.continuity?.attention?.focusSupport?.enabled===true;
   if(focused)protocolPrompt=protocolPrompt.replace('continuity在原四字段以外还必须有attention，严格为：','continuity在原四字段以外还必须有attention；基本字段如下，另可含focus：');
@@ -55,8 +55,8 @@ export function wirePacket(base, protocol) {
 }
 export function verifiedWire(packet) {
   if(!['study-compact-v1','study-compact-current-v1','study-compact-focus-v2'].includes(packet?.stage)) return verifiedModelInput(packet);
-  const rebuilt=wirePacket(packet.basePacket,packet.stage==='study-compact-focus-v2'?'compact-focus':packet.stage==='study-compact-current-v1'?'compact-current':'compact');
-  ensure(canonical(rebuilt)===canonical(packet),'PACKET_CHANGED','compact packet changed');
+  const protocol=packet.stage==='study-compact-focus-v2'?'compact-focus':packet.stage==='study-compact-current-v1'?'compact-current':'compact';
+  ensure(WIRE_PROMPTS.all().some(prompts=>{try{return canonical(wirePacket(packet.basePacket,protocol,prompts))===canonical(packet);}catch{return false;}}),'PACKET_CHANGED','compact packet changed');
   return {packetId:packet.packetId,messages:packet.messages,bytes:packet.bytes};
 }
 export function expandOutput(wire, raw) {

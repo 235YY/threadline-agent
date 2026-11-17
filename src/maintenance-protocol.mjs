@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {canonical,digest,ensure,text,time,uniqueRefs,refKey,oneOf} from './contracts.mjs';
 import {normalizeStateDelta} from './personal-state.mjs';
 import {attentionDelta} from './attention.mjs';
-import {withMindInstructions} from './mind-prompt.mjs';
+import {withMindInstructions,MIND_EXTENSIONS} from './mind-prompt.mjs';
 import {normalizeAnchor} from './anchor.mjs';
 export const maintenanceScheduleId=subject=>`maintenance-schedule:${digest(subject)}`;
 export const maintenanceJobId=(subject,day)=>`maintenance-job:${digest({subject,day})}`;
@@ -19,16 +19,18 @@ export function maintenancePolicy(value=MAINTENANCE_DEFAULTS){
 }
 export function maintenanceSlot(now,policy){time(now);const p=maintenancePolicy(policy),local=new Date(now+p.utcOffsetMinutes*60000);
   return {day:local.toISOString().slice(0,10),due:p.enabled&&local.getUTCHours()*60+local.getUTCMinutes()>=p.hour*60+p.minute};}
-export function maintenancePacket(payload,policy){
+export function maintenancePacket(payload,policy,mindExtension=MIND_EXTENSIONS.current){
   const base=prompt+(payload.continuity?.attention?.focusSupport?.enabled?'\n\n'+focusPrompt:'');
-  const instruction=payload.continuity?.mind?withMindInstructions(base):base;
+  const instruction=payload.continuity?.mind?withMindInstructions(base,mindExtension):base;
   const p=maintenancePolicy(policy),stage='personalMaintenance',packetId=digest({stage,instruction,payload});
   const messages=[{role:'system',content:instruction},{role:'user',content:canonical({packetId,...payload})}],bytes=Buffer.byteLength(canonical(messages));
   ensure(bytes<=p.maxInputBytes,'MAINTENANCE_OVERFLOW','complete maintenance messages exceed budget',{bytes,budget:p.maxInputBytes});
   return {stage,packetId,payload,instruction,messages,bytes};
 }
-export function verifyMaintenancePacket(packet,policy){const actual=maintenancePacket(packet.payload,policy);
-  ensure(canonical(actual)===canonical(packet),'PACKET_CHANGED','maintenance input changed');return actual;}
+export function verifyMaintenancePacket(packet,policy){
+  // Accept a packet sealed by any known prompt generation; never reseal it.
+  for(const extension of MIND_EXTENSIONS.all()){const actual=maintenancePacket(packet.payload,policy,extension);if(canonical(actual)===canonical(packet))return actual;}
+  ensure(false,'PACKET_CHANGED','maintenance input changed');}
 export function maintenanceModelInput(packet,policy){verifyMaintenancePacket(packet,policy);return {packetId:packet.packetId,messages:JSON.parse(canonical(packet.messages)),bytes:packet.bytes};}
 export function maintenanceOutput(raw,packet,policy){
   const p=maintenancePolicy(policy),encoded=typeof raw==='string'?raw:canonical(raw);

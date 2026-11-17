@@ -1074,7 +1074,14 @@ export class ContinuityStore {
     const fields=[];
     for(const change of delta.changes){
       const previous=this.#read(change.id);
-      ensure(!previous||previous.type==='personal_state','ID_COLLISION','state id belongs to another record type');
+      // A Process lives in the attention frame, not as a top-level record. Without this
+      // check its id would either fail as a misleading revision conflict or, with
+      // expectedRevision=0, silently create a personal state that shadows the Process.
+      ensure(previous||!attention?.processes.some(p=>p.id===change.id),'WRONG_OBJECT_KIND',
+        `“${change.id}”是Process，不是个人状态。修改它请写在continuity.attention.processes；continuity.changes只放个人状态。`,
+        {path:'continuity.changes',id:change.id,actualType:'process',updatePath:'continuity.attention.processes'});
+      ensure(!previous||previous.type==='personal_state','ID_COLLISION','state id belongs to another record type',
+        {path:'continuity.changes',id:change.id,actualType:previous?.type});
       if(Object.hasOwn(change,'mind')||previous?.mind||['concern','condition','expectation','readiness'].includes(change.kind))
         ensure(context.mind?.format==='jingyang-mind-view-v1','MIND_PROTOCOL_REQUIRED','semantic changes need an explicit mind-capable input');
       const next=personalStateChange(change,previous,{subject:subject.id,recordedAt:at,states:delivered,
