@@ -224,3 +224,30 @@ test('旧schema8默认拒绝写入升级；显式副本迁移保留全部原版�
  const check=new DB(path,{readOnly:true});assert.equal(check.prepare('PRAGMA user_version').get().user_version,8);check.close();
  const upgraded=new ContinuityStore(path,{migrateV8:true});try{assert.equal(canonical(upgraded.read('a')),original);assert.equal(SCHEMA_VERSION,11);}finally{upgraded.close();}
 });
+
+const cleanupProc=(id,status='active',expectedRevision=0)=>({...process(status,expectedRevision),id});
+const prepareCleanup=(s,args={})=>prepare(s,{workbenchFocus:true,...args});
+function commitCleanup(s,options={},p=prepareCleanup(s)) { const out=output(p,options);if(options.processes?.some(v=>v.id==='B'&&v.expectedRevision===0))out.continuity.attention.focus={select:[{kind:'process',id:'B',path:[]}]};const id='cleanup-d'+(++s.n);return s.session.commit({packet:p,output:out,decisionId:id,requestId:id});}
+const releaseDone=s=>s.store.execute({requestId:'release:'+ (++s.n),commands:[{op:'release_completed_workbench',subjectId:'synthetic'}]});
+for(const remaining of ['active','paused'])test('shared cleanup keeps one purpose owned by A(done) and B('+remaining+')',t=>{
+ const s=setup(t);commitCleanup(s,{processes:[cleanupProc('A'),cleanupProc('B',remaining)],upsert:[use('shared',ref(s.a),{purposes:[purpose('active-task',{eventIds:['A','B']})]})]},prepareCleanup(s,{materials:[assignment(s.a)]}));
+ commitCleanup(next(s),{processes:[cleanupProc('A','completed',1)]});assert.equal(snapshot(s).residences.length,1);releaseDone(s);
+ assert.equal(snapshot(s).residences.length,1,'host cleanup must keep the surviving purpose');
+ if(remaining==='paused')commitCleanup(next(s),{processes:[cleanupProc('B','active',1)]});
+ const q=prepareCleanup(next(s));assert.equal(q.payload.materials.find(m=>m.ref.id==='a').record.body,s.a.body);
+ const revision=snapshot(s).revision;releaseDone(s);assert.equal(snapshot(s).revision,revision);
+ commitCleanup(next(s),{processes:[cleanupProc('B','completed',remaining==='paused'?2:1)]});releaseDone(s);assert.equal(snapshot(s).residences.length,0);assert.equal(s.store.read('a').revision,1);
+});
+test('shared cleanup retains independent recovery purpose after both processes end',t=>{
+ const s=setup(t);commitCleanup(s,{processes:[cleanupProc('A'),cleanupProc('B')],upsert:[use('shared',ref(s.a),{purposes:[purpose('active-task',{eventIds:['A','B']}),purpose('recovery-point')]})]},prepareCleanup(s,{materials:[assignment(s.a)]}));
+ commitCleanup(next(s),{processes:[cleanupProc('A','completed',1)]});releaseDone(s);assert.equal(snapshot(s).residences.length,1);assert.equal(prepareCleanup(next(s)).payload.materials[0].record.id,'a');
+ commitCleanup(s,{processes:[cleanupProc('B','completed',1)]});releaseDone(s);assert.equal(snapshot(s).residences.length,1);assert.deepEqual(ids(prepareCleanup(next(s))),[]);assert.equal(s.store.read('a').revision,1);
+});
+
+
+test('shared cleanup without focus removes ended binding without undefined fields',t=>{
+ const s=setup(t);
+ commit(s,{processes:[cleanupProc('A')],upsert:[use('only-A',ref(s.a),{purposes:[purpose('active-task',{eventIds:['A']})]})]},prepare(s,{materials:[assignment(s.a)]}));
+ commit(next(s),{processes:[cleanupProc('A','completed',1)]});
+ releaseDone(s);assert.equal(snapshot(s).residences.length,0);assert.equal(s.store.read('a').revision,1);
+});

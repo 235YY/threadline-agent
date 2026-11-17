@@ -2,12 +2,12 @@
 import assert from 'node:assert/strict';
 import {ContinuityStore} from '../src/store.mjs';
 import {ContinuitySession} from '../src/continuity-session.mjs';
-import {prepareDecision} from '../src/cognition.mjs';
+import {prepareDecision,prepareReflection} from '../src/cognition.mjs';
 import {attentionId,keepAttention} from '../src/attention.mjs';
 import {stateCandidates,shortTermView} from '../src/continuity.mjs';
 import {LocalLookupSession} from '../src/local-lookup.mjs';
 import {anchorView} from '../src/anchor.mjs';
-import {put,event,frame,ref,note,memory} from './helpers.mjs';
+import {put,event,frame,ref,note,memory,disk} from './helpers.mjs';
 
 const pin=(id,revision=1)=>({id,revision});
 const mindMeta=role=>({role,confidence:'tentative',unresolved:[],
@@ -26,12 +26,12 @@ function impression(id,body,about,basis,extra={}){
 function setup(t){
   const holder=memory(t),store=holder.store;
   const session=new ContinuitySession({store,subjectId:'p1',attention:true});
-  const [entity]=put(store,'p1-entity',{op:'write_entity',id:'e1',kind:'person',name:'用户'});
-  const [e,w]=put(store,'p1-init',event('p1-e1',{sender:{system:'fixture',id:'sender',name:'用户',entityId:'e1',isOwner:false}}),frame());
+  const [entity]=put(store,'p1-entity',{op:'write_entity',id:'e1',kind:'person',name:'哥哥'});
+  const [e,w]=put(store,'p1-init',event('p1-e1',{sender:{system:'fixture',id:'sender',name:'哥哥',entityId:'e1',isOwner:false}}),frame());
   return {store,session,e,w,entity,holder,seq:0};
 }
 function nextEvent(s){
-  const id=`p1-e${++s.seq+2}`;[s.e]=put(s.store,`p1-event-${id}`,event(id,{sender:{system:'fixture',id:'sender',name:'用户',entityId:'e1',isOwner:false}}));return s.e;
+  const id=`p1-e${++s.seq+2}`;[s.e]=put(s.store,`p1-event-${id}`,event(id,{sender:{system:'fixture',id:'sender',name:'哥哥',entityId:'e1',isOwner:false}}));return s.e;
 }
 function prepare(s,extra={}){
   return s.session.prepare({currentEvent:ref(s.e),workspace:ref(s.w),mind:true,unified:true,workbenchMaterials:true,
@@ -48,7 +48,7 @@ function commit(s,{changes=[],attention=keepAttention(),extra={}}={}){
 
 test('P1 impression 合法创建，无 mind，有 event basis',t=>{
   const s=setup(t);
-  commit(s,{changes:[impression('i1','用户可能只是累了',[{kind:'entity',id:'e1'}],[ref(s.e)])]});
+  commit(s,{changes:[impression('i1','哥哥可能只是累了',[{kind:'entity',id:'e1'}],[ref(s.e)])]});
   const v=s.store.read('i1');
   assert.equal(v.kind,'impression');
   assert.equal(v.mind,undefined);
@@ -221,4 +221,33 @@ test('P1 历史 impression 窗口外目录、正常选择、交付和自主修�
   assert.equal(updated.revision,2);assert.equal(updated.body,'修订后的历史印象');assert.deepEqual(updated.predecessor,{id:'hist-01',revision:1});
   assert.deepEqual(updated.basis.priorStates,[{id:'hist-01',revision:1}]);
   assert.equal(s.store.read('hist-01',1).body,'历史印象 1');
+});
+
+
+for(const flags of [{subjectiveMemory:false,subjectiveMemoryV2:false},{subjectiveMemory:true,subjectiveMemoryV2:false},{subjectiveMemory:false,subjectiveMemoryV2:true},{subjectiveMemory:true,subjectiveMemoryV2:true}])
+for(const stage of ['ordinary','reflection'])test('impression contract enum '+stage+' '+JSON.stringify(flags),t=>{
+  const s=setup(t);
+  const p=stage==='ordinary'?prepare(s,flags):prepareReflection({store:s.store,subjectId:'p1',workspace:ref(s.w),internal:{format:'reflection-frame-v1'},budgetBytes:131072,...flags});
+  const kinds=[...p.instruction.matchAll(/kind\s*为\s*(feeling(?:\/[a-z_]+)+)/g)];
+  assert.ok(kinds.length>0,'main state-kind contract must be present');
+  for(const match of kinds)assert.equal(match[1].split('/').includes('impression'),flags.subjectiveMemory||flags.subjectiveMemoryV2);
+});
+
+test('impression V2 proposal persists and is delivered after database restart',t=>{
+ const file=disk(t);let store=new ContinuityStore(file);
+ try{
+  const session=new ContinuitySession({store,subjectId:'p1',attention:true});
+  put(store,'entity',{op:'write_entity',id:'e1',kind:'person',name:'synthetic person'});
+  const [e,w]=put(store,'init',event('restart-e'),frame());
+  const s={store,session,e,w,seq:0};
+  commit(s,{changes:[impression('restart-impression','可能是在认真考虑',[{kind:'entity',id:'e1'}],[ref(e)])],extra:{subjectiveMemory:false,subjectiveMemoryV2:true}});
+  store.close();store=new ContinuityStore(file);
+  assert.equal(store.read('restart-impression').kind,'impression');
+  assert.deepEqual(store.read('restart-impression').basis.observations,[ref(e)]);
+  const next=put(store,'next',event('restart-next',{sender:{system:'fixture',id:'sender',name:'synthetic person',entityId:'e1',isOwner:false}}))[0];
+  const restored=new ContinuitySession({store,subjectId:'p1',attention:true});
+  const p=prepare({store,session:restored,e:next,w},{subjectiveMemory:false,subjectiveMemoryV2:true});
+  assert.ok(JSON.stringify(p.payload.continuity.subjectiveMemory).includes('restart-impression'));
+  assert.ok(JSON.stringify(p.payload.continuity.subjectiveMemory).includes('可能是在认真考虑'));
+ }finally{store.close();}
 });

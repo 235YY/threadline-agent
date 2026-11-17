@@ -22,11 +22,11 @@ function state(id,role,body,domains,extra={}){
 function setup(t){
   const holder=memory(t),store=holder.store;
   const session=new ContinuitySession({store,subjectId:'p0',attention:true});
-  const [e,w]=put(store,'p0-init',event('p0-e1',{sender:{system:'fixture',id:'sender',name:'用户',entityId:'e1',isOwner:false}}),frame());
+  const [e,w]=put(store,'p0-init',event('p0-e1',{sender:{system:'fixture',id:'sender',name:'哥哥',entityId:'e1',isOwner:false}}),frame());
   return {store,session,e,w,seq:0,holder};
 }
 function nextEvent(s){
-  const id=`p0-e${++s.seq+1}`;[s.e]=put(s.store,`p0-event-${id}`,event(id,{sender:{system:'fixture',id:'sender',name:'用户',entityId:'e1',isOwner:false}}));return s.e;
+  const id=`p0-e${++s.seq+1}`;[s.e]=put(s.store,`p0-event-${id}`,event(id,{sender:{system:'fixture',id:'sender',name:'哥哥',entityId:'e1',isOwner:false}}));return s.e;
 }
 function prepare(s,extra={}){
   return s.session.prepare({currentEvent:ref(s.e),workspace:ref(s.w),mind:true,unified:true,workbenchMaterials:true,

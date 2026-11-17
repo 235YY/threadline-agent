@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {openFocusFixture,SUPPLEMENT_CASES} from '../experiments/focus-study/fixture.mjs';
 import {wirePacket,verifiedWire,expandOutput,declaredEvidence} from '../experiments/automated-study/protocol.mjs';
 import {checkCaseGate} from '../experiments/bounded-study.mjs';
-
+const campaign=new URL('../evaluation/focus-study_2026-11-05/',import.meta.url);
 test('焦点薄接口只有一个输出外壳；保留输入continuity路径和完整语义限制',()=>{
  const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
   const p=f.prepare(),w=wirePacket(p.packet,'compact-focus');verifiedWire(w);
@@ -26,11 +26,13 @@ test('顶层attention能够提交；旧外壳仍拒绝，不静默翻译格式�
   assert.equal(f.snapshot().states.length,4);assert.deepEqual(f.snapshot().requiredByProjection,[]);
  }finally{f.store.close();}
 });
-test('synthetic sealed wire remains verifiable without mutating its serialized input',()=>{
- const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
-  const p=f.prepare(),wire=wirePacket(p.packet,'compact-focus'),before=JSON.stringify(wire),reopened=JSON.parse(before);
-  verifiedWire(reopened);assert.equal(JSON.stringify(reopened),before);assert.deepEqual(reopened.basePacket.payload,p.packet.payload);
- }finally{f.store.close();}
+test('旧两份实际wire仍可原样核验，新profile不重写已付费证据',()=>{
+ for(const pointer of ['current.json','supplement-current.json']){
+  const p=JSON.parse(readFileSync(new URL(pointer,campaign),'utf8')),id=pointer==='current.json'?'f01':'f03';
+  for(const step of ['r0','r1']){const path=fileURLToPath(new URL(`${p.hash}/`,campaign))+'/'+id+'/'+step+'/call/wire.json',before=readFileSync(path,'utf8');
+   const w=JSON.parse(before);verifiedWire(w);assert.equal(readFileSync(path,'utf8'),before);
+  }
+ }
 });
 test('新profile不放宽来源、版本与用途权限',()=>{
  const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{

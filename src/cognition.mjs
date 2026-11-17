@@ -16,6 +16,7 @@ import {capabilityMap} from './capabilities.mjs';
 import {normalizeVerbOption} from './verbs.mjs';
 import {consultationProgress as progressProjection} from './consultation-progress.mjs';
 import {attentionId,attentionView} from './attention.mjs';
+import {eventProcessEvents} from './task-threads.mjs';
 
 const REFLECTION_PROMPT=readFileSync(new URL('../prompts/decision-reflection.zh.md',import.meta.url),'utf8');
 const PROMPTS={decision:readFileSync(new URL('../prompts/decision.zh.md',import.meta.url),'utf8'),review:readFileSync(new URL('../prompts/review.zh.md',import.meta.url),'utf8'),
@@ -100,6 +101,29 @@ export function boundedTimeline(data,instruction,budgetBytes){
   const {text,message,...entry}=item,replacement={...entry,representation:'entry-only-budget',bodyDelivery:{source:item.ref,fullBodyDelivered:false,meaning:'旧时间线正文此次未交付；原固定版本仍保存，可通过现有lookup查阅'}};
   if(Buffer.byteLength(canonical(replacement))<Buffer.byteLength(canonical(item)))recent.items[n]=replacement;
  }
+ // A large chronological directory can itself overflow after its optional
+ // bodies were removed. Keep the newest entries and expose the omission;
+ // current events, selected materials and all pinned evidence remain intact.
+ let omitted=0;const priorOmitted=recent.omitted??0,priorBudgetOmitted=recent.budgetDelivery?.omittedOlderEntries??0;
+ while(recent.items.length>8&&size()>target){
+  recent.items.shift();omitted++;
+  recent.omitted=priorOmitted+omitted;
+  recent.budgetDelivery={omittedOlderEntries:priorBudgetOmitted+omitted,oldestDelivered:recent.items[0]?.ref??null,complete:false,meaning:'older timeline entries not delivered due to input budget; original versions remain retained; recover via context or trace lookup, not an absence finding'};
+ }
+ // Interpretation histories are derived internal sources, not the current
+ // observation. When the timeline is still too large, keep the newest cards
+ // and replace older ones with their persisted refs; never silently invent or
+ // rewrite an interpretation. Current event, selected materials and required
+ // attention state stay intact.
+ const sources=data.continuity.internalSources;
+ if(Array.isArray(sources)&&sources.length>2){
+  const omittedSources=[...(data.continuity.budgetDelivery?.omittedInternalSources??[])];
+  while(sources.length>2&&size()>target){
+   const removed=sources.pop();if(removed?.ref)omittedSources.push(removed.ref);
+   // Include omission metadata in each size check so resealing is idempotent.
+   data.continuity.budgetDelivery={...(data.continuity.budgetDelivery??{}),omittedInternalSources:[...omittedSources],internalSourcesComplete:false,meaning:'older derived internal interpretations omitted from this projection only; full persisted refs remain available through the existing source/read path'};
+  }
+ }
  return data;
 }
 // Large list receipts remain intact in Store. Deliver complete list entries as
@@ -123,6 +147,16 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null) {
   const focused=payload.continuity?.attention?.focusSupport?.enabled===true;
   let baseInstruction=focused?PROMPTS[stage].replace('continuity在原四字段以外还必须有attention，严格为：','continuity在原四字段以外还必须有attention；基本字段如下，另可含focus：'):PROMPTS[stage];
   if(payload.continuity?.attention?.recoverySupport?.enabled)baseInstruction=baseInstruction.replace('另可含focus：','另可含focus，residency另可含restore：');
+  if(payload.subjectiveMemory?.enabled===true||payload.subjectiveMemoryV2?.enabled===true)
+    baseInstruction=baseInstruction.replace(/(kind\s*为\s*)(feeling(?:\/[a-z_]+)+)/g,
+      (_,prefix,kinds)=>prefix+[...new Set([...kinds.split('/'),'impression'])].join('/'));
+  if(payload.continuity?.attention?.eventProcessSupport?.enabled)payload=clone(payload),payload.continuity.attention.eventProcessSupport.events=eventProcessEvents(payload);
+  if(payload.continuity){
+    payload=clone(payload);
+    const c=payload.continuity,states=[...c.foreground,...c.recalled,...(c.shortTerm?.items??[]),...(c.subjectiveMemory?.recent?.items??[]),...(c.subjectiveMemory?.compressed?.items??[]),...(c.subjectiveMemory?.maintenance?.olderRecent??[])];
+    payload.operationContract={format:'operation-contract-v1',processes:(c.attention?.processes??[]).map(p=>({type:'process',id:p.id,revision:p.revision,updatePath:'continuity.attention.processes'})),personalStates:uniqueRefs(states.map(s=>s.ref)).map(ref=>({type:'personal_state',ref,updatePath:'continuity.changes'})),usedMaterials:payload.materials.map(m=>({ref:m.ref,aspects:m.aspects})),recentContext:'可用于理解对话；不是used材料目录。used仅可引用usedMaterials的精确ref与aspect，没有用则[]。'};
+    baseInstruction+='\n操作填写边界：operationContract标注的是不同类型，不能互换。Process用稳定id识别；修改过程在attention.processes填写其已交付revision作为expectedRevision。个人状态只在continuity.changes修改；新状态选择新的独立id且expectedRevision=0，不得拿Process id/revision冒充已存在个人状态。eventProcesses关联的process引用用本输入交付版本，即使同轮修改过程也不要预填revision+1；仅同事务新建过程可引用revision=1。固定Event引用不得改版本。近期对话和Process历史可用于理解，但并不自动进入used材料目录；used只从operationContract.usedMaterials原样复制ref/aspect，目录为空则used:[]。这些目录不扩大任何读取权限。';
+  }
   const instruction=baseInstruction+(payload.memoryAccess?.historyRecovery?.enabled?'\n\n'+GRAPH_READ_PROMPT:'')+(instructionSuffix?'\n\n'+instructionSuffix:'')+(payload.memoryAccess?.consultation?.enabled?'\n\n'+CONSULT_PROMPT:'')+
     (payload.continuity?.attention?.materialSupport?.enabled&&!focused?'\n\n'+MATERIAL_PROMPT:'')+
     (payload.continuity?.attention?.focusSupport?.enabled?'\n\n'+FOCUS_PROMPT:'')+
@@ -141,7 +175,8 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null) {
     (payload.taskThreads?.enabled===true?'\n\n'+TASK_THREADS_PROMPT:'')+
     (payload.task?'\n\n【任务步】当前是主体自己的长链任务。你可以选择工具，或用 task_finish/task_blocked/task_help/task_pause/task_wait/task_replan/task_redirect 这些控制工具；不要声称工具已执行，观察由宿主返回。': '')+
     (payload.style?.text?'\n\n'+ANTI_ASSISTANT+'\n\n【她自己的说话方式】\n'+payload.style.text:'')+
-    (payload.continuity?.capabilities?.enabled?.length?'\n\n'+capabilityMap({enabled:payload.continuity.capabilities.enabled,...([1,2].includes(payload.continuity.capabilities.contractVersion)?{allowedActionTools:payload.allowedActionTools,task:!!payload.task,contractVersion:payload.continuity.capabilities.contractVersion}:{})}).text:''), data=boundedTimeline(linkRepeatedRecentBodies(clone(payload)),instruction,budgetBytes), packetId=digest({stage,instruction,payload:data});
+    (payload.continuity?.capabilities?.enabled?.length?'\n\n'+capabilityMap({enabled:payload.continuity.capabilities.enabled,...([1,2].includes(payload.continuity.capabilities.contractVersion)?{allowedActionTools:payload.allowedActionTools,task:!!payload.task,contractVersion:payload.continuity.capabilities.contractVersion}:{})}).text:''), data=boundedTimeline(linkRepeatedRecentBodies(clone(payload)),instruction,budgetBytes);
+  const packetId=digest({stage,instruction,payload:data});
   const messages=[{role:'system',content:instruction},{role:'user',content:canonical({packetId,...data})}];
   const bytes=Buffer.byteLength(canonical(messages),'utf8');
   ensure(bytes<=budgetBytes,'INPUT_OVERFLOW','complete model messages exceed byte budget',{requiredBytes:bytes,budgetBytes,instructionBytes:Buffer.byteLength(instruction),payloadBytes:Buffer.byteLength(canonical(data))});
@@ -537,7 +572,7 @@ function commitDecisionChecked({store,packet,output,requestId,decisionId,allowed
   ensure(Array.isArray(out.used)&&out.used.length<=16,'OUTPUT_LIMIT','up to sixteen used references');
   const delivered=new Map(packet.payload.materials.map(m=>[refKey(m.ref),m])), uses=new Set();
   for(const u of out.used){exact(u,['ref','aspect','effect'],'used');uniqueRefs([u.ref]);
-    ensure(delivered.get(refKey(u.ref))?.aspects.includes(u.aspect),'UNDELIVERED_REFERENCE','used material or aspect was not in this input');
+    ensure(delivered.get(refKey(u.ref))?.aspects.includes(u.aspect),'UNDELIVERED_REFERENCE','used只能引用本轮materials的精确ref及其aspects；近期对话不是正式材料。',{path:'used',submitted:u,allowedMaterials:packet.payload.materials.map(m=>({ref:m.ref,aspects:m.aspects}))});
     ensure(['support','oppose','context','uncertain'].includes(u.effect),'OUTPUT_SHAPE','invalid use effect');
     const key=canonical([u.ref,u.aspect]);ensure(!uses.has(key),'DUPLICATE_USE','one use declaration per reference/aspect');uses.add(key);
   }

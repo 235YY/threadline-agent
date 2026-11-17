@@ -14,7 +14,7 @@ export function normalizeProposal(raw,packet){
     for(const [key,fallback] of [['changes',[]],['residency',{add:[],remove:[]}],['expressionChoice',null],['attention',keepAttention()]]){
       if(!Object.hasOwn(c,key)&&!(key==='attention'&&!['decisionAttention','decisionMind','decisionGraph','reflection'].includes(packet.stage))&&!(packet.stage==='reflection'&&key==='expressionChoice')){c[key]=fallback;diagnostics.push({path:'continuity.'+key,code:'DEFAULT_NO_OPERATION'});}
     }
-    strip(c.attention,['processes','relations','residency','questions','focus','frame'],'continuity.attention');
+    strip(c.attention,['processes','relations','residency','questions','focus','frame','eventProcesses'],'continuity.attention');
     for(const [i,change]of (Array.isArray(c.changes)?c.changes:[]).entries()){
       strip(change,['id','expectedRevision','kind','body','status','scope','nature','reason','basis','mind','anchor','domains','about','stage'],`continuity.changes[${i}]`);
       if(change?.mind&&Object.hasOwn(change.mind,'basis')&&change.basis&&canonical(change.basis)===canonical(change.mind.basis)){

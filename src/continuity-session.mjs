@@ -29,7 +29,14 @@ export class ContinuitySession {
   commit(args) {
     ensure(['decisionContinuity','decisionInformation','decisionWorkbench','decisionAttention','decisionMind','decisionGraph','reflection'].includes(args.packet?.stage)&&args.packet.payload.continuity.subject.id===this.#subjectId,'SUBJECT_FIXED','input belongs to another subject/session');
     const output=normalizeAndRecord({store:this.#store,packet:args.packet,output:args.output});
-    return commitDecision({...args,output,store:this.#store});
+    try{return commitDecision({...args,output,store:this.#store});}
+    catch(error){
+      if(['STATE_CONFLICT','UNDELIVERED_REFERENCE'].includes(error.code)){
+        const id='extension:'+this.#subjectId+':runtime:validation:'+digest({packet:args.packet.packetId,output,code:error.code});
+        if(!this.#store.read(id))this.#store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'validation',sourceEvent:args.packet.payload.current?.id??null,packetId:args.packet.packetId,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',next:'上次提案未提交。按当前交付目录自主重新判断；不自动重放，不替你修订内容。'}}]});
+      }
+      throw error;
+    }
   }
   closeRejected({packet,error,journal}){
     if(error.name!=='ContractError')return false;

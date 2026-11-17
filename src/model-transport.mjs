@@ -8,6 +8,7 @@ import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {ensure,digest} from './contracts.mjs';
 import {verifiedModelInput} from './cognition.mjs';
+function verifiedBeforeTransport(packet){try{return verifiedModelInput(packet);}catch(error){error.transportInvoked=false;error.failurePhase='host-input-validation';throw error;}}
 import {readBlob} from './blobs.mjs';
 import {messageImageRefs} from './message.mjs';
 import {DeepSeekStudyClient,RATES,requireStudyNetwork} from './model-client.mjs';
@@ -37,11 +38,11 @@ const DAY=/^\d{4}-\d{2}-\d{2}$/;
 const usedMicros=rows=>rows.reduce((sum,r)=>sum+(r.status==='settled'?r.actualMicros:r.status==='released'?0:r.reserveMicros),0);
 
 export class DailyBudgetLedger {
-  constructor(path,{dailyMicros=3000000,dailyCalls=96,dayKey=new Date().toISOString().slice(0,10),clock=Date.now}={}){
+  constructor(path,{dailyMicros=3000000,dailyCalls=96,dayKey=new Date().toISOString().slice(0,10),clock=Date.now,enforce=true}={}){
     textPath(path);
     this.reset=resetAuthorization(path);
     this.continuation=continuationAuthorization(path);
-    this.daily=dailySpendPolicy(path);this.clock=clock;
+    this.daily=dailySpendPolicy(path);this.clock=clock;this.enforce=enforce;
     if(this.daily){ensure(dailyMicros===this.daily.dailyMicros&&dailyCalls===null,'BUDGET_POLICY','standing daily limits must match approval');dayKey=beijingDay(clock());}
     if(this.continuation){ensure(existsSync(path)&&dailyCalls===null&&dailyMicros===this.continuation.activeLimitMicros,'BUDGET_POLICY','continuation limits must match approved carry');dayKey=this.continuation.dayKey;}
     ensure(!this.reset||existsSync(path),'BUDGET_POLICY','reset phase ledger missing; do not recreate it');
@@ -85,7 +86,7 @@ export class DailyBudgetLedger {
   }
   reserve(id,fingerprint,reserveMicros){
     ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','ledger unavailable');
-    ensure(!this.data.halted,'BUDGET_HALTED','daily budget halted; do not auto-resend');
+    if(this.enforce){const autoHalt=this.data.halted==='request cost not confirmed; do not auto-retry'||this.data.halted==='recovered unconfirmed request; reservation retained; explicit reconciliation required';ensure(!this.data.halted||autoHalt,'BUDGET_HALTED','daily budget halted; do not auto-resend');}
     this.refreshDay();
     if(this.daily)ensure(!this.daily.history.has(id),'ALREADY_REQUESTED','historical requests cannot be resent');
     ensure(this.reset?.validUntil===undefined||Date.now()<this.reset.validUntil,'BUDGET_EXPIRED','today authorization expired; no automatic renewal');
@@ -97,7 +98,7 @@ export class DailyBudgetLedger {
     ensure(this.data.dailyCalls===null||this.data.requests.length<this.data.dailyCalls,'CALL_LIMIT','daily call limit reached');
     ensure(Number.isSafeInteger(reserveMicros)&&reserveMicros>0,'RESERVE_AMOUNT','positive integer reservation required');
     const held=this.daily?dailySpendUsage(this.data,this.daily,this.data.dayKey).held:usedMicros(this.data.requests);
-    ensure(held+reserveMicros<=this.data.dailyMicros,'SPEND_LIMIT','daily budget cannot cover this call');
+    if(this.enforce)ensure(held+reserveMicros<=this.data.dailyMicros,'SPEND_LIMIT','daily budget cannot cover this call');
     this.data.requests.push({id,fingerprint,reserveMicros,status:'reserved',...(this.daily?{budgetDay:this.data.dayKey,budgetReservedAt:this.clock(),billingRates:billingRates(this.clock())}:{})});this.save();
   }
   dispatch(id){const r=this.find(id);ensure(r.status==='reserved','REQUEST_STATE','request is not reserved');r.status='dispatched';this.save();}
@@ -125,11 +126,11 @@ function textPath(path){ensure(typeof path==='string'&&path.length>0,'TRANSPORT_
 function mkdirIfNeeded(dir){ensure(typeof dir==='string','TRANSPORT_CONFIG','invalid ledger directory');if(!existsSync(dir))mkdirSync(dir,{recursive:true});}
 
 // 默认：专用 key、真实网络预检、json 输出、low 思考、日预算 3 元/96 次。
-export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyKey,transport=fetch,networkCheck=requireStudyNetwork,profile={},dayKey=null,timeoutMs=120000}={}){
+export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyKey,transport=fetch,networkCheck=requireStudyNetwork,profile={},dayKey=null,timeoutMs=120000,enforceBudget=true,requestJournal=null}={}){
   ensure(typeof ledgerPath==='string'&&ledgerPath.length>0,'TRANSPORT_CONFIG','ledger path required');
   const limits={...(dayKey?{dayKey}:{}),...(Number.isSafeInteger(profile.dailyMicros)?{dailyMicros:profile.dailyMicros}:{}),
     ...(profile.dailyCalls===null||Number.isSafeInteger(profile.dailyCalls)?{dailyCalls:profile.dailyCalls}:{})};
-  const ledger=new DailyBudgetLedger(ledgerPath,limits);
+  const ledger=requestJournal??new DailyBudgetLedger(ledgerPath,{...limits,enforce:enforceBudget});
   const client=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
     outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet});
   const maintenanceClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
@@ -140,13 +141,13 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     const existing=ledger.tryFind(id);
     if(existing?.status==='settled'&&typeof existing.output==='string'){
       if(existing.proposalRecovery){
-        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedModelInput(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});}
+        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});}
         return selectedModelOutput(ledger.data.requests,existing).output;
       }
       return existing.output;
     }
     ensure(!existing,'TRANSPORT_REPLAY','request already attempted; never auto-resend');
-    const verified=verifiedModelInput(packet);
+    const verified=verifiedBeforeTransport(packet);
     let response=await client.call({id,packet:{...verified,payload:packet.payload,messages:toProviderMessages(verified.messages,{blobDirectory,packet})}});
     ledger.attachProviderResult(id,response);
     // JSON mode can replace an unrecognized JSON answer with spaces even with

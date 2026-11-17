@@ -10,7 +10,7 @@ import {memory,event,note,frame,put,ref,disk} from './helpers.mjs';
 function setup(t,store=memory(t).store) {
   const [past,current,feeling,belief,goal,w]=put(store,'setup',
     event('past',{scene:'mc',body:'之前放箱子时朝向没有对齐'}),event('current',{scene:'mc',body:'接着修我们的家吧'}),
-    note('feeling',[{id:'past',revision:1}],{kind:'feeling',body:'刚才有点烦躁，但不是对用户生气'}),
+    note('feeling',[{id:'past',revision:1}],{kind:'feeling',body:'刚才有点烦躁，但不是对哥哥生气'}),
     note('belief',[{id:'past',revision:1}],{kind:'skill',body:'放箱子前先看看朝向'}),
     note('goal',[],{kind:'dream',body:'想把我们的家造完'}),frame({scene:'mc',focus:{id:'villa',label:'一起修家'}}));
   const materials=[{ref:ref(past),aspect:'experience'},{ref:ref(feeling.record),aspect:'feeling'},
@@ -63,7 +63,7 @@ test('个人材料含背景或想象时仍保留性质；它们不能冒充当�
 });
 
 test('身份由宿主明确提供且纳入预算，不从工具提示词另造人格',t=>{
-  const s=setup(t),identity='示例数字主体；用户为合成人物';
+  const s=setup(t),identity='鲸漾，小名鲸鲸，十四岁；用户是哥哥';
   const p=prepareDecision({...s.args,identity});
   assert.equal(p.payload.identity,identity);assert.equal(prepareDecision(s.args).payload.identity,'');
   assert.throws(()=>prepareDecision({...s.args,identity:'字'.repeat(4001)}),{code:'INPUT_LIMIT'});
@@ -133,7 +133,7 @@ test('当前个人材料变化也使旧判断失效；允许明确读旧版本�
 test('等待与内外表达不同合法，不强制所有材料都参与',t=>{
   const s=setup(t),p=prepareDecision(s.args),o=decisionOutput(p,'respond');o.options[0].payload.text='没事，先放着吧';o.used=[];
   const d=commitDecision({store:s.store,packet:p,output:o,requestId:'speak',decisionId:'speak'});
-  assert.equal(d.action,null);assert.equal(s.store.read('feeling').body,'刚才有点烦躁，但不是对用户生气');
+  assert.equal(d.action,null);assert.equal(s.store.read('feeling').body,'刚才有点烦躁，但不是对哥哥生气');
   const w=commit(s,'wait','wait');assert.equal(w.d.action,null);assert.equal(w.d.output.options[0].kind,'wait');
 });
 

@@ -56,7 +56,7 @@ export class AgentRuntime{
     if(typeof goal!=='string'||!goal.trim())throw new Error('goal required');
     const taskId=id??`task:${this.#now()}:${Math.random().toString(36).slice(2,10)}`;
     return {format:'agent-task-v1',id:taskId,goal:goal.trim(),
-      plan:String(plan).slice(0,8000),target,threadId:threadId??processId??originEventRef?.threadId??null,processId,originEventRef,originDecisionRef,
+      plan:String(plan).slice(0,8000),target,threadId:threadId??null,processId,originEventRef,originDecisionRef,
       completionCriteria,subjectId,intentRef,status:'running',stepCount:0,callCount:0,observations:[],observationRefs:[],decisionRefs:[],interrupts:[],interruptCursor:0,
       wakeAt:null,blockedReason:null,result:null,budget,metadata,context,controlRevision:0,createdAt:this.#now(),updatedAt:this.#now()};
   }

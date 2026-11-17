@@ -15,7 +15,17 @@ const pin=x=>uniqueRefs([x])[0];
 const keys=['processes','relations','residency','questions'];
 export function emptyAttention(subject){return {subject,processes:[],relations:[],residences:[],questions:[],followups:[]};}
 export function attentionDelta(value){
-  exact(value,[...keys,...(Object.hasOwn(value??{},'focus')?['focus']:[]),...(Object.hasOwn(value??{},'deferrals')?['deferrals']:[]),...(Object.hasOwn(value??{},'followups')?['followups']:[])],'attention');
+  exact(value,[...keys,...(Object.hasOwn(value??{},'focus')?['focus']:[]),...(Object.hasOwn(value??{},'deferrals')?['deferrals']:[]),...(Object.hasOwn(value??{},'followups')?['followups']:[]),...(Object.hasOwn(value??{},'eventProcesses')?['eventProcesses']:[])],'attention');
+  if(Object.hasOwn(value,'eventProcesses')){
+    exact(value.eventProcesses,['add','remove'],'event-process delta');
+    const pairs=new Map();
+    for(const operation of ['add','remove'])for(const entry of list(value.eventProcesses[operation],operation+' event-process links',16)){
+      exact(entry,['event','process'],'event-process link');
+      for(const field of ['event','process']){exact(entry[field],['id','revision'],field+' ref');pin(entry[field]);}
+      const key=canonical([entry.event,entry.process.id]);
+      ensure(!pairs.has(key)||pairs.get(key)===operation,'EVENT_PROCESS_CONFLICT','cannot add and remove the same event-process pair');pairs.set(key,operation);
+    }
+  }
   if(Object.hasOwn(value,'focus'))exact(value.focus,['select'],'attention focus');
   for(const k of ['processes','relations','questions']){list(value[k],k);distinct(value[k],k);}
   exact(value.residency,['upsert','remove',...(Object.hasOwn(value.residency??{},'restore')?['restore']:[])],'attention residency');list(value.residency.upsert,'residency');distinct(value.residency.upsert,'residency');
@@ -42,7 +52,7 @@ export const keepAttention=()=>({processes:[],relations:[],residency:{upsert:[],
 export function activeRelations(frame){return frame.relations.filter(r=>r.status==='active'&&[r.from,r.to].every(e=>same(e,frame.processes.find(p=>p.id===e.id))));}
 const hasProcessStatus=(frame,ids,statuses)=>ids.some(id=>frame.processes.some(p=>p.id===id&&statuses.includes(p.status)));
 // A purpose may remain recoverable while it is not selected for full delivery.
-function materialPurposeStatus(p,frame,currentEvent){
+export function materialPurposeStatus(p,frame,currentEvent){
   if(p.kind==='self-directed')return 'open';
   if(p.kind==='active-task')return hasProcessStatus(frame,p.eventIds,['active'])?'open':hasProcessStatus(frame,p.eventIds,['proposed','paused'])?'parked':'ended';
   if(p.kind==='awaiting-reply'){

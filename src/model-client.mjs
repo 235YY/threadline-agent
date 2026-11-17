@@ -212,7 +212,8 @@ export class DeepSeekStudyClient {
       trace?.record('call.failed',{errorCode:typeof error.code==='string'?error.code:'CALL_FAILED',
         costStatus:this.ledger.data.requests.find(r=>r.id===id)?.status??'not-reserved'});
       if(trace)error.monitor=trace.summary();
-      if(this.requireMonitor)error.transportInvoked=transportInvoked;
+      error.transportInvoked=transportInvoked;
+      if(!transportInvoked)error.failurePhase='before-transport';
       throw error;
     }
   }

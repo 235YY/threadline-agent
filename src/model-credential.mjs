@@ -6,12 +6,10 @@ import {ensure} from './contracts.mjs';
 
 const script = fileURLToPath(new URL('../scripts/study-key.ps1', import.meta.url));
 export const keyPath = fileURLToPath(new URL('../_local/study-secrets/deepseek-study.dpapi', import.meta.url));
-export const keyConfigured = () => Boolean(process.env.DEEPSEEK_API_KEY)||existsSync(keyPath);
-// Explicit environment configuration or the operator-created local Windows store only.
+export const keyConfigured = () => existsSync(keyPath);
+// No fallback to the pet's credentials, environment or API-key files.
 export function studyKey({spawn = spawnSync, available = keyConfigured} = {}) {
-  const environmentKey=process.env.DEEPSEEK_API_KEY;
-  if(environmentKey){ensure(/^sk-[A-Za-z0-9_-]{12,}$/.test(environmentKey),'STUDY_KEY_REQUIRED','Invalid DEEPSEEK_API_KEY');return environmentKey;}
-  ensure(available(), 'STUDY_KEY_REQUIRED', 'Set DEEPSEEK_API_KEY or configure the optional Windows local key store');
+  ensure(available(), 'STUDY_KEY_REQUIRED', 'Fill the dedicated local key dialog first');
   const result = spawn('powershell.exe', ['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-ReadForWorker'],
     {encoding:'utf8',windowsHide:true,timeout:15000,maxBuffer:16384});
   const key = typeof result.stdout === 'string' ? result.stdout.trim() : '';

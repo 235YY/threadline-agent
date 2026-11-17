@@ -37,7 +37,7 @@ export function claimBrainInstance({stateDirectory,pid=process.pid,isAlive=alive
 
 // A stated, bounded startup inventory, not a claim that all lazy-loaded code is measured.
 export function runtimeSourceIdentity(root){
- const directories=['src','prompts','tools/brain-service','tools/affect-integrated','tools/affect-shadow','tools/qq-connect','tools/ops'];
+ const directories=['src','prompts','tools/brain-service','tools/affect-integrated','tools/affect-shadow','tools/qq-connect','tools/ops','tools/native-capabilities','tools/open-life'];
  const files=[];
  function visit(dir){if(!existsSync(dir))return;for(const e of readdirSync(dir,{withFileTypes:true})){if(e.isSymbolicLink()||e.name==='additions'||e.name==='upstream-tests'||e.name==='__pycache__')continue;const p=join(dir,e.name);if(e.isDirectory())visit(p);else if(/\.(mjs|py|md|json|ps1)$/.test(e.name)&&!e.name.endsWith('.test.mjs'))files.push(p);}}
  for(const d of directories)visit(join(root,d));

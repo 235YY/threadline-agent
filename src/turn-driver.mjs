@@ -183,7 +183,7 @@ export class TurnDriver {
     ensure(Number.isSafeInteger(limit)&&limit>0,'TASK_CALL_BUDGET','positive remaining model attempt budget required');
     for(let c=0;c<limit;c++){
       const deliveredInterruptCount=task.interrupts.length;
-      const taskContext={id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null,interruptCursor:task.interruptCursor??0,goal:task.goal,plan:task.plan,status:task.status,target:task.target,threadId:task.threadId??null,stepCount:task.stepCount,budget:task.budget??null,observations:clean(task.observations.slice(-8)),earlierObservations:earlier,observationRefs:clean(task.observationRefs),interrupts:clean(task.interrupts.slice(task.interruptCursor??0)),controlTools:controls};
+      const taskContext={id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null,interruptCursor:task.interruptCursor??0,goal:task.goal,plan:task.plan,status:task.status,target:task.target,threadId:task.threadId??null,processId:task.processId??null,stepCount:task.stepCount,budget:task.budget??null,observations:clean(task.observations.slice(-8)),earlierObservations:earlier,observationRefs:clean(task.observationRefs),interrupts:clean(task.interrupts.slice(task.interruptCursor??0)),controlTools:controls};
       packet=await this.#session.prepare({instructionSuffix:this.#instructions(TASK_STEP_SUFFIX),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials:[],previousDecisions:this.#investigationContinuityV1?[...previousDecisions,...lookupDecisions.slice(-2)]:previousDecisions,investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,lookupResults,mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,localLookupPolicy:this.#lookupPolicy,allowedActionTools:tools,budgetBytes:131072,now,capabilities:this.#capabilities,task:taskContext});
       const output=await this.#session.invoke(packet,async p=>{
         try{ensure(calls<maxModelCalls,'TASK_CALL_BUDGET','task model attempt budget exhausted');await onModelAttempt?.();}catch(error){error.transportInvoked=false;throw error;}
@@ -246,14 +246,22 @@ export class TurnDriver {
     let output=row.value.output;
     if(row.value.phase==='dispatched'){
       output=this.#session.capturedOutput?.(packet);
-      ensure(typeof output==='string','TURN_OUTCOME_UNKNOWN','interrupted model invocation requires explicit accounting/capture recovery; do not resend');
+      if(typeof output!=='string'){
+        save({...row.value,phase:'complete',failure:{code:'TURN_OUTCOME_UNKNOWN',outcome:'uncertain',reason:'interrupted model invocation; no capture; do not resend'}});
+        throw Object.assign(new Error('interrupted model invocation requires explicit accounting/capture recovery; do not resend'),{code:'TURN_OUTCOME_UNKNOWN'});
+      }
       save({...row.value,phase:'captured',output});
     }
     if(row.value.phase==='prepared'){
       // The journal is durable before entering any model callback.
-      output=await this.#session.invoke(packet,p=>{
-        save({...row.value,phase:'dispatched'});this.#state.callsToday++;return this.#decide(p,{beforeCorrection:()=>{ensure(this.#config.dailyCallCap===null||this.#state.callsToday<this.#config.dailyCallCap,'TASK_CALL_BUDGET','no remaining cognitive call budget for correction');this.#state.callsToday++;}});
-      });
+      try{
+        output=await this.#session.invoke(packet,p=>{
+          save({...row.value,phase:'dispatched'});this.#state.callsToday++;return this.#decide(p,{beforeCorrection:()=>{ensure(this.#config.dailyCallCap===null||this.#state.callsToday<this.#config.dailyCallCap,'TASK_CALL_BUDGET','no remaining cognitive call budget for correction');this.#state.callsToday++;}});
+        });
+      }catch(error){
+        save({...row.value,phase:'complete',failure:{code:error.code??'MODEL_ERROR',outcome:'uncertain',reason:'model invocation failed; no output captured; do not resend'}});
+        throw error;
+      }
       output=typeof output==='string'?output:canonical(output);
       save({...row.value,phase:'captured',output});
     }

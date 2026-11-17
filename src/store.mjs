@@ -7,7 +7,7 @@ import {normalizeAnchor} from './anchor.mjs';
 import {validateMindPatch} from './mind.mjs';
 import {GRAPH_RECORD_TYPES,projectGraphRecord,nodeKey,nodeRef,walkKnowledgeGraph,traceQuery} from './knowledge-graph.mjs';
 import {lookupRoundId,lookupResultId,lookupPolicy,normalizeLookupQuery,sameRef} from './local-query.mjs';
-import {attentionId,emptyAttention,advanceAttention,expandEvents} from './attention.mjs';
+import {attentionId,emptyAttention,advanceAttention,expandEvents,materialPurposeStatus} from './attention.mjs';
 import {maintenancePolicy,maintenanceScheduleId,maintenanceJobId,maintenanceSlot,verifyMaintenancePacket,maintenanceOutput} from './maintenance-protocol.mjs';
 import {diagnostic,transactionContext,debugRef,failureMetadata} from './debug-contract.mjs';
 import {consultationOperation,consultationState,rankConsultation,consultationCandidate} from './consultation.mjs';
@@ -16,6 +16,7 @@ import {recoveryPage,exitedUse} from './workbench-recovery.mjs';
 import {normalizeContent,contentView} from './node-content.mjs';
 import {normalizeMessage,projectText} from './message.mjs';
 import {sourceReplyRoute} from './reply-route.mjs';
+import {EVENT_PROCESS_THEORY,eventProcessId,eventProcessEvents} from './task-threads.mjs';
 
 const Database = sqlite.Database ?? sqlite.DatabaseSync;
 const NOTE_KINDS = ['fact_claim', 'interpretation', 'value', 'preference', 'dream', 'tension', 'feeling', 'skill'];
@@ -321,6 +322,7 @@ export class ContinuityStore {
       case 'put_intent': return this.#putIntent(command);
       case 'put_extension_record': return this.#putExtensionRecord(command);
       case 'quarantine_source': return this.#quarantineSource(command);
+      case 'fail_subject_event': return this.#failSubjectEvent(command);
       case 'mark_deferral_eligible': return this.#markDeferralEligible(command);
       case 'initialize_maintenance': return this.#initializeMaintenance(command);
       case 'foreground_fence': return this.#foregroundFence(command);
@@ -462,6 +464,28 @@ export class ContinuityStore {
       quarantine:{eventRef:asRef(event),reason:c.reason,recordedAt:this.#now()},recordedAt:this.#now()});
     this.#db.prepare("UPDATE subject_inbox SET status='handled',decision_id=?,updated_at=? WHERE subject_id=? AND event_id=?").run(attempt.id,this.#now(),subject.id,event.id);
     return attempt;
+  }
+  // A capacity failure is not a judgment about the event. Mark it deferred,
+  // not handled, so the queue cannot claim it was processed; the source can
+  // be retried after context pressure changes. Schema11 has no failed status,
+  // so the explicit failure identity lives in decision_id/input-failure.
+  #failSubjectEvent(c){
+    const subject=this.#require(c.subject,['subject']),event=this.#require(c.event,['event']);text(c.reason,'failure reason');
+    const inbox=this.subjectObservation(subject.id,event.id);ensure(inbox,'FAILURE_NOT_ADMITTED','source event was not admitted');
+    const id=`input-failure:${subject.id}:${event.id}`,old=this.#read(id);
+    ensure(inbox.status==='received'||(inbox.status==='deferred'&&inbox.decisionId===id),'FAILURE_ALREADY_FINAL','cannot replace a handled or independently deferred event with an input failure');
+    // decision_id is a foreign key to objects(id). The failure identity used
+    // to be referenced without being written, so every retry rolled back and
+    // the source stayed 'received'. Create the durable attempt first.
+    if(old){
+      ensure(old.type==='decision_attempt'&&old.status==='deferred'&&old.input?.currentEvent?.id===event.id,'FAILURE_COLLISION','failure id changed content');
+    }else{
+      this.#write(id,'decision_attempt',0,{decisionId:null,requestKey:`input-failure:${subject.id}:${event.id}`,invocationKey:null,
+        input:{currentEvent:asRef(event)},output:null,fingerprint:digest({subject:subject.id,event:asRef(event),reason:c.reason}),status:'deferred',
+        failure:{reason:c.reason,recordedAt:this.#now()},recordedAt:this.#now()});
+    }
+    this.#db.prepare("UPDATE subject_inbox SET status='deferred',decision_id=?,updated_at=? WHERE subject_id=? AND event_id=?").run(id,this.#now(),subject.id,event.id);
+    return {id,status:'deferred'};
   }
   #updateFollowup(c){
     const frame=this.#read(attentionId(c.subjectId));ensure(frame?.type==='attention_frame','FOLLOWUP_FRAME','attention frame required');
@@ -666,12 +690,19 @@ export class ContinuityStore {
     ensure(frame?.type==='attention_frame'&&frame.subject===subject.id,'ATTENTION_REQUIRED','attention frame required');
     const done=new Set(frame.processes.filter(p=>['completed','abandoned'].includes(p.status)).map(p=>p.id));
     if(!done.size)return {released:0};
-    const removed=frame.residences.filter(r=>r.target?.kind==='process'?done.has(r.target.ref.id):(r.purposes??[]).some(p=>(p.eventIds??[]).some(e=>done.has(e))));
-    if(!removed.length)return {released:0};
+    const residences=frame.residences.flatMap(r=>{
+      if(r.target?.kind==='process')return done.has(r.target.ref.id)?[]:[r];
+      if(r.target?.kind!=='material')return [r];
+      const purposes=(r.purposes??[]).filter(p=>materialPurposeStatus(p,frame,null)!=='ended');
+      return purposes.length?[{...r,purposes}]:[];
+    });
+    if(canonical(residences)===canonical(frame.residences))return {released:0};
+    const retainedIds=new Set(residences.map(r=>r.id));
+    const removed=frame.residences.filter(r=>!retainedIds.has(r.id));
     const removedIds=new Set(removed.map(r=>r.id)),removedTargets=new Set(removed.map(r=>r.target?.ref?.id).filter(Boolean));
     const focus=frame.focus?{...frame.focus,selection:(frame.focus.selection??[]).filter(s=>!(s.kind==='residence'&&removedIds.has(s.id))&&!(s.kind==='material'&&removedTargets.has(s.id)))}:frame.focus;
     const {id:_,type,revision,recordedAt,...fields}=frame;
-    return this.#write(id,'attention_frame',frame.revision,{...fields,residences:frame.residences.filter(r=>!removedIds.has(r.id)),focus,recordedAt:this.#now()});
+    return this.#write(id,'attention_frame',frame.revision,{...fields,residences,...(focus?{focus}:{}),recordedAt:this.#now()});
   }
   #initializeAttention(c) {    const subject=this.#read(c.subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','initialize subject first');
     const id=attentionId(subject.id),old=this.#read(id);
@@ -938,6 +969,7 @@ export class ContinuityStore {
     if(c.status==='closed-incomplete'){
       if(old.status==='uncertain'&&old.error==='NETWORK_PREFLIGHT_FAILED'&&old.transportInvoked==null&&old.rawOutput==null)ensure(c.resolution?.reason==='LEGACY_PREFLIGHT_NOT_DISPATCHED'&&c.resolution?.requestId===null&&c.resolution?.noProviderCall===true&&c.resolution?.ledgerStatus==='not-registered'&&/^[a-f0-9]{64}$/.test(c.resolution?.evidenceHash??'')&&/^[a-f0-9]{64}$/.test(c.resolution?.sourceHash??''),'AFFECT_RESOLUTION','legacy preflight requires reviewed source boundary and complete ledger absence evidence');
       else if(old.status==='uncertain'&&old.error==='MODEL_ERROR'&&old.transportInvoked==null&&old.rawOutput==null&&c.resolution?.reason==='LOCAL_GATE_NOT_DISPATCHED')ensure(c.resolution.requestId===null&&c.resolution.noProviderCall===true&&c.resolution.ledgerStatus==='not-registered'&&['evidenceHash','sourceHash','gateHash','manifestHash'].every(k=>/^[a-f0-9]{64}$/.test(c.resolution[k]??''))&&Number.isSafeInteger(c.resolution.blockedAt)&&c.resolution.blockedAt<=old.recordedAt,'AFFECT_RESOLUTION','reviewed local stop requires source, stop barrier, manifest and complete ledger-absence proof; never use for unknown provider costs');
+      else if(old.status==='uncertain'&&old.error==='PACKET_CHANGED'&&old.transportInvoked==null&&old.rawOutput==null&&c.resolution?.reason==='HOST_INPUT_NOT_DISPATCHED')ensure(c.resolution.validationError==='PACKET_CHANGED'&&c.resolution.requestId===null&&c.resolution.noProviderCall===true&&c.resolution.ledgerStatus==='not-registered'&&['evidenceHash','sourceHash','manifestHash','ledgerHash'].every(k=>/^[a-f0-9]{64}$/.test(c.resolution[k]??''))&&Number.isSafeInteger(c.resolution.sourceFrozenAt)&&c.resolution.sourceFrozenAt<=old.recordedAt,'AFFECT_RESOLUTION','reviewed host input rejection requires frozen-source binding and complete ledger-absence evidence; never use for provider or external-operation uncertainty');
       else if(old.status==='failed'&&old.transportInvoked===false)ensure(c.resolution?.reason===old.error&&c.resolution?.requestId===null&&c.resolution?.noProviderCall===true,'AFFECT_RESOLUTION','unsent turn requires explicit no-provider-call closure');
       else if(old.status==='failed')ensure(old.rawOutput!==null&&typeof old.rawOutput==='string'&&c.resolution?.reason==='OUTPUT_REJECTED'&&c.resolution?.outputHash===digest(old.rawOutput)&&c.resolution?.requestId==='turn:'+old.packet.packetId&&c.resolution?.ledgerStatus==='settled'&&Number.isSafeInteger(c.resolution.actualMicros)&&c.resolution.actualMicros>=0&&/^[a-f0-9]{64}$/.test(c.resolution.evidenceHash??''),'AFFECT_RESOLUTION','rejected output requires explicit settled accounting and captured-output evidence');
       else if(old.error==='BUDGET_EXPIRED'||old.error==='BUDGET_HALTED')ensure(c.resolution?.reason===old.error&&c.resolution?.requestId===null&&c.resolution?.noProviderCall===true,'AFFECT_RESOLUTION','budget-blocked request must be explicitly marked no-provider-call');
@@ -969,8 +1001,9 @@ export class ContinuityStore {
     const at=this.#now(),delta=normalizeStateDelta(decision.output.continuity,{attention:Boolean(context.attention),reflection});
     const attentionPolicy=delta.attentionPolicy??subject.attentionPolicy;
     const choice=decision.output.options.find(o=>o.id===decision.output.selected);
-    const {foreground,fields,attentionFrame}=this.#continuationPatch({subject,input,delta,at,currentEvent,
+    const {foreground,fields,attentionFrame,processRefs}=this.#continuationPatch({subject,input,delta,at,currentEvent,
       currentObservations,observationRefs,responseIntent:choice.kind==='respond'?{id:`${decision.id}:response`,revision:1}:null});
+    this.#applyEventProcesses({subject,decision,input,delta,attentionFrame,processRefs});
     let motivationState=subject.motivationState??null;
     ensure(!c.affectTurn||c.motivationTransition,'AFFECT_BINDING','turn adoption requires its state transition');
     if(c.motivationTransition){
@@ -999,9 +1032,30 @@ export class ContinuityStore {
     for(const write of c.extensionWrites??[])this.#putExtensionRecord(write);
     return next;
   }
+  #applyEventProcesses({subject,decision,input,delta,attentionFrame,processRefs}){
+    const patch=delta.attention?.eventProcesses;if(!patch)return;
+    ensure(input.continuity.attention?.eventProcessSupport?.enabled===true&&attentionFrame,'EVENT_PROCESS_DISABLED','explicit event-process capability required');
+    const events=eventProcessEvents(input),created=delta.attention.processes.filter(p=>p.expectedRevision===0);
+    for(const operation of ['add','remove'])for(const entry of patch[operation]){
+      const event=this.#require(entry.event,['event']);
+      ensure(['observed','reported'].includes(event.origin)&&events.some(r=>sameRef(r,entry.event)),'UNDELIVERED_EVENT','complete fixed-version event must have been delivered');
+      ensure(this.subjectObservation(subject.id,event.id),'EVENT_SUBJECT','event was not admitted for this subject');
+      const process=attentionFrame.processes.find(p=>p.id===entry.process.id);
+      ensure(process,'PROCESS_SUBJECT','process must belong to this subject');
+      const isNew=created.some(p=>p.id===entry.process.id&&entry.process.revision===1);
+      ensure(isNew||(processRefs??[]).some(r=>sameRef(r,entry.process)),'UNREAD_PROCESS','process source version must be delivered or newly created in this transaction');
+      const id=eventProcessId(subject.id,entry.event,process.id),old=this.#read(id),status=operation==='add'?'active':'withdrawn';
+      if(old)ensure(old.type==='extension_record'&&old.owner===subject.id&&old.theory===EVENT_PROCESS_THEORY&&old.value.processId===process.id&&sameRef(old.value.event,entry.event),'EVENT_PROCESS_ID','association identity collision');
+      if(old?.value.status===status||(!old&&operation==='remove'))continue;
+      const source={ref:entry.process,frame:isNew?asRef(attentionFrame):input.continuity.attention.frame};
+      const value=operation==='add'?{event:entry.event,processId:process.id,processSource:source,status,establishedBy:asRef(decision),changedBy:asRef(decision)}:{...old.value,status,changedBy:asRef(decision)};
+      this.#putExtensionRecord({id,owner:subject.id,theory:EVENT_PROCESS_THEORY,stateType:'event-process-link',schemaVersion:'1',expectedRevision:old?.revision??0,value});
+    }
+  }
   #continuationPatch({subject,input,delta,at,currentEvent=null,currentObservations=[],observationRefs=[],responseIntent=null}) {
     ensure(this.#read(subject.id).revision===subject.revision,'STALE_SUBJECT','subject changed during background work');
     const context=input.continuity;
+    ensure(!delta.attention?.eventProcesses||context.attention?.eventProcessSupport?.enabled===true,'EVENT_PROCESS_DISABLED','explicit event-process capability required');
     const attention=this.#read(attentionId(subject.id));
     ensure(Boolean(attention)===Boolean(context.attention),'ATTENTION_REQUIRED','do not bypass the enabled attention protocol');
     if(attention){
@@ -1034,7 +1088,7 @@ export class ContinuityStore {
       const value=this.#write(update.id,'personal_state',update.expectedRevision,update.next);
       if(!attention){if(value.status==='closed')foreground.delete(value.id);else foreground.add(value.id);}
     }
-    let attentionFrame=null;
+    let attentionFrame=null,processRefs=[];
     if(attention){
       const attentionRemove=new Set(delta.attention?.residency?.remove??[]);
       const duplicateRemove=delta.residency.remove.filter(id=>attentionRemove.has(id));
@@ -1044,7 +1098,7 @@ export class ContinuityStore {
       ensure(delta.residency.add.length===0&&delta.residency.remove.length===0,'RESIDENCY_CONFLICT','attention mode uses only purpose residency');
       const results=input.information?.results??[],graphReads=results.filter(r=>r.graph&&sameRef(r.graph.frame,asRef(attention)));
       const deliveredProcesses=(input.knowledge?.cards??[]).filter(c=>c.type==='process'&&!c.historical&&sameRef(c.ref.frame,asRef(attention))).map(c=>c.record);
-      const processRefs=[...context.attention.processes,...graphReads.flatMap(r=>r.graph.nodes),...deliveredProcesses].map(asRef);
+      processRefs=[...context.attention.processes,...graphReads.flatMap(r=>r.graph.nodes),...deliveredProcesses].map(asRef);
       const relationRefs=[...context.attention.relations,...context.attention.staleRelations,...graphReads.flatMap(r=>r.graph.relations)].map(asRef);
       const updated=advanceAttention(attention,delta.attention,{read:(id,rev)=>this.#read(id,rev),at,maxForeground:subject.maxForeground,currentEvent:currentEvent,
         processRefs,relationRefs,questionRefs:context.attention.questions.map(asRef),residenceIds:context.attention.residences.map(r=>r.id),stateRefs:delivered,changedStateIds:fields.map(f=>f.id),
@@ -1061,7 +1115,7 @@ export class ContinuityStore {
     for(const id of delta.residency.add){const value=this.#read(id);ensure(value?.type==='personal_state'&&value.subject===subject.id,'MISSING_STATE','foreground addition must be an own state');ensure(value.status!=='closed','CLOSED_FOREGROUND','closed state cannot be foreground');foreground.add(id);}
     for(const id of delta.residency.remove){const value=this.#read(id);ensure(value?.type==='personal_state'&&value.subject===subject.id,'MISSING_STATE','foreground removal must name an own state');foreground.delete(id);}
     ensure(foreground.size<=subject.maxForeground,'FOREGROUND_CAPACITY','explicitly choose background states; attempted output has been retained');
-    return {foreground,fields,attentionFrame};
+    return {foreground,fields,attentionFrame,processRefs};
   }
   #initializeMaintenance(c) {
     ensure(this.#read(c.subjectId)?.type==='subject'&&this.#read(attentionId(c.subjectId))?.type==='attention_frame','ATTENTION_REQUIRED','maintenance needs explicit attention mode');
@@ -1182,7 +1236,7 @@ export class ContinuityStore {
     const subject=this.#read(subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','unknown subject');
     ensure(Number.isSafeInteger(afterSeq)&&afterSeq>=0&&Number.isSafeInteger(limit)&&limit>0&&limit<=100&&typeof pendingOnly==='boolean','INVALID_INPUT','bounded inbox page required');
     return this.view(()=>{
-      const filter=pendingOnly?" AND status!='handled'":'',rows=this.#db.prepare(`SELECT seq,event_id AS eventId,status,decision_id AS decisionId FROM subject_inbox WHERE subject_id=? AND seq>?${filter} ORDER BY seq LIMIT ?`).all(subjectId,afterSeq,limit+1);
+      const filter=pendingOnly?" AND (status='received' OR (status='deferred' AND decision_id IN (SELECT id FROM objects WHERE type='decision')))":'',rows=this.#db.prepare(`SELECT seq,event_id AS eventId,status,decision_id AS decisionId FROM subject_inbox WHERE subject_id=? AND seq>?${filter} ORDER BY seq LIMIT ?`).all(subjectId,afterSeq,limit+1);
       const items=rows.slice(0,limit).map(row=>({...row}));
       const total=this.#db.prepare(`SELECT count(*) AS n FROM subject_inbox WHERE subject_id=?${filter}`).get(subjectId).n;
       return {items,total,next:rows.length>limit?items.at(-1).seq:null};

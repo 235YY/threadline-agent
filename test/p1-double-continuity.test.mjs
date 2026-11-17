@@ -13,8 +13,8 @@ const pin=(id,revision=1)=>({id,revision});
 const process=(id,label='任务')=>({id,expectedRevision:0,label,body:`${label} 正文`,status:'active',world:'actual',intervals:[],basis:[]});
 function setup(t,{processes=[],eventExtra={}}={}){
   const holder=memory(t),store=holder.store,session=new ContinuitySession({store,subjectId:'p',attention:true});
-  put(store,'entity',{op:'write_entity',id:'e1',kind:'person',name:'用户'});
-  const [initial,w]=put(store,'init',event('p-e1',{sender:{system:'fixture',id:'u',name:'用户',entityId:'e1',isOwner:false},...eventExtra}),frame());
+  put(store,'entity',{op:'write_entity',id:'e1',kind:'person',name:'哥哥'});
+  const [initial,w]=put(store,'init',event('p-e1',{sender:{system:'fixture',id:'u',name:'哥哥',entityId:'e1',isOwner:false},...eventExtra}),frame());
   const s={store,session,e:initial,w,holder,seq:0};
   if(processes.length)s.attention=put(store,'proc',{op:'initialize_attention',subjectId:'p'});
   return s;
@@ -34,7 +34,7 @@ function commit(s,{changes=[],attention=keepAttention(),selected='choice',option
   return s.session.commit({packet:p,output:output(p,{changes,attention,selected,options}),decisionId:id,requestId:id,allowedActionTools:allowed});
 }
 function nextEvent(s,{threadId=null,body=null}={}){
-  const id=`p-e${++s.seq+1}`;s.e=put(s.store,`ev-${id}`,event(id,{sender:{system:'fixture',id:'u',name:'用户',entityId:'e1',isOwner:false},...(threadId?{threadId}:{}),...(body?{body}:{})})).at(-1);return s.e;
+  const id=`p-e${++s.seq+1}`;s.e=put(s.store,`ev-${id}`,event(id,{sender:{system:'fixture',id:'u',name:'哥哥',entityId:'e1',isOwner:false},...(threadId?{threadId}:{}),...(body?{body}:{})})).at(-1);return s.e;
 }
 function attentionWith(s,processes,extra={}){
   return {processes,relations:[],residency:{upsert:[],remove:[]},questions:[],...extra};
@@ -66,7 +66,7 @@ test('P1 final 1/2/3/5 任务的活动工作集最多四个，第5个不改变�
 test('P1 final 30 个交互单元，前台完整、后台不泄漏、31 条可分页',t=>{
   const s=setup(t,{processes:['p1']});createProcesses(s,['p1']);
   const frameRecord=s.store.read(attentionId('p'));
-  for(let i=1;i<=31;i++)put(s.store,`unit-${i}`,event(`unit-e-${i}`,{body:`消息 ${i}`,threadId:'p1',occurredAt:1000+i}));
+  for(let i=1;i<=31;i++)put(s.store,`unit-${i}`,event(`unit-e-${i}`,{body:`消息 ${i}`,threadId:'p1',occurredAt:1000+i}),{op:'admit_subject_event',subjectId:'p',event:pin(`unit-e-${i}`)});
   const view=taskThreads({store:s.store,frame:frameRecord,foregroundId:'p1'});
   assert.equal(view.foreground.history.units.length,30);
   assert.equal(view.foreground.history.units[0].incoming.body,'消息 2');

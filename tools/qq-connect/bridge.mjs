@@ -6,14 +6,14 @@ import {claimConnector} from './connector-guard.mjs';
 import {readFileSync,readdirSync,existsSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-const sdkPath=process.env.QQ_SDK_MODULE??'@snowluma/sdk';
+const sdkPath=process.env.QQ_SDK_MODULE??new URL('../../../整理版_2026-10-16/qq-bridge/node_modules/@snowluma/sdk/dist/index.js',import.meta.url).href;
 const {SnowLumaWebSocketClient}=await import(sdkPath);
 import {buildReplyPayload} from './bridge-payload.mjs';
 import {message as jyMessage,textPart,imagePart,projectText} from '../../src/message.mjs';
 import {safeFetchBuffer} from './safe-fetch.mjs';
-import {acceptsChat,canStopAll} from './scope.mjs';
+import {acceptsChat,canStopAll,noticeScene} from './scope.mjs';
 import {MessageReceiver} from './receive.mjs';
-import {isClosedRejection} from '../../src/processing-outcome.mjs';
+import {shouldStopConnector} from './bridge-policy.mjs';
 
 const here=fileURLToPath(new URL('.',import.meta.url));
 const project=resolve(here,'../..');
@@ -39,7 +39,8 @@ const account=pickAccount();
 const selfId=Number(account.uin);
 if(!/^\d+$/.test(String(ownerQQ??'')))throw Error('QQ_OWNER_REQUIRED');
 const connectorGuard=claimConnector({root:process.env.QQ_CONNECTOR_LOCK_ROOT,botId:account.uin});
-let identityReady=false;
+let identityReady=false;let actualChats=new Set();
+async function refreshAccess(){const [friends,groups]=await Promise.all([onebot('get_friend_list'),onebot('get_group_list')]);actualChats=new Set([...friends.map(x=>'qq/private/'+x.user_id),...groups.map(x=>'qq/group/'+x.group_id)]);}
 async function onebot(action,params={}){
   const base=`http://${account.http?.host||'127.0.0.1'}:${account.http?.port||3000}`;
   const r=await fetch(`${base}/${action}`,{method:'POST',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/json',...(account.http?.accessToken?{authorization:`Bearer ${account.http.accessToken}`}:{})},body:JSON.stringify(params)});
@@ -113,8 +114,7 @@ async function handle(event,ctx){
     body:JSON.stringify(payload)});
   if(!response.ok)throw new Error(`brain ${response.status} ${await response.text()}`);
   const result=await response.json();
-  if(result.error&&!isClosedRejection(result.processingOutcome))throw Object.assign(new Error(`brain ${result.error}: ${result.message??''}`),{code:result.error});
-  if(result.error)log('cognition-failed-closed',JSON.stringify(result.processingOutcome));
+  if(result.error)throw Object.assign(new Error(`brain ${result.error}: ${result.message??''}`),{code:result.error,...(result.processingOutcome?{processingOutcome:result.processingOutcome}:{})});
   // Brain is the sole egress owner, including durable claims and real receipts.
   // The connector only transports incoming messages and acknowledges admission.
   log(privateChat?'private':'group',scene,'in',text.length,'out',result.text?result.text.length:0,'silent',result.silent===true);
@@ -122,12 +122,13 @@ async function handle(event,ctx){
 }
 
 function enqueueIncoming(event,ctx,source='push'){
+  if(chatScope==='all'&&!actualChats.has(event.message_type==='private'?`qq/private/${event.user_id}`:`qq/group/${event.group_id}`))return Promise.resolve({ignored:true,reason:'not-an-actual-friend-or-group'});
   if(!identityReady)return Promise.reject(Object.assign(Error('Bot identity not verified'),{code:'QQ_IDENTITY_NOT_READY'}));
   if(stopping)return Promise.reject(Object.assign(Error('receiver is stopping'),{code:'RECEIVE_STOPPING'}));
   if(process.env.QQ_ACCEPT_SINCE&&Number(event.time)*1000<Number(process.env.QQ_ACCEPT_SINCE))return Promise.resolve({ignored:true,reason:'before-approved-test-window'});
   if(!acceptsChat({privateChat:event.message_type==='private',userId:event.user_id},{scope:chatScope,ownerOnly:process.env.QQ_TEST_ONLY_OWNER}))return Promise.resolve({ignored:true});
   const next=chain.then(()=>receiver?receiver.accept(event,{source,deliver:e=>handle(e,ctx)}):handle(event,ctx));
-  chain=next.catch(error=>{if(error.code==='DAILY_BUDGET_LIMIT'){log('daily-budget-paused',error.message);return;}stopping=true;log('handle-error-stopped',error.code??error.name,error.message);});return next;
+  chain=next.catch(error=>{if(shouldStopConnector(error)){stopping=true;log('connector-stop',error.code??error.name,error.message);return;}log('message-failure-continue',error.code??error.name,error.message);});return next;
 }
 bot.onPrivateMessage((event,ctx)=>enqueueIncoming(event,ctx).catch(()=>{}));
 bot.onGroupMessage((event,ctx)=>enqueueIncoming(event,ctx).catch(()=>{}));
@@ -146,6 +147,7 @@ async function reconcileIncoming(){
       if(acceptsChat({privateChat:kind==='private',userId:id},{scope:chatScope,ownerOnly:process.env.QQ_TEST_ONLY_OWNER}))known.set(`${kind}:${id}`,{kind,id});
     }
     chatCache=[...known.values()].sort((a,b)=>`${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));chatCacheAt=Date.now();
+    if(chatScope==='all')actualChats=new Set(chatCache.map(c=>'qq/'+c.kind+'/'+c.id));
   }
   const count=Math.min(8,chatCache.length);
   for(let i=0;i<count&&!stopping;i++){
@@ -166,8 +168,8 @@ bot.onNotice(async event=>{
   if(!identityReady||stopping)return;
   const type=String(event?.notice_type??'');
   if(!['group_recall','friend_recall','group_poke','friend_poke','notify'].includes(type))return;
-  const privateChat=type.startsWith('friend_');
-  const scene=privateChat?`qq/private/${event.user_id}`:`qq/group/${event.group_id}`;
+  const scene=noticeScene(event);if(!scene||chatScope==='all'&&!actualChats.has(scene))return;
+  const privateChat=scene.startsWith('qq/private/');
   const ownerOnly=process.env.QQ_TEST_ONLY_OWNER;
   if(!acceptsChat({privateChat,userId:event.user_id},{scope:chatScope,ownerOnly}))return;
   const body=type.endsWith('_recall')?`[撤回] ${event.message_id??''}`:type.endsWith('_poke')?`[拍一拍] ${event.target_id??event.user_id??''}`:`[${type}]`;
@@ -182,6 +184,7 @@ for(;;){
 }
 const login=await bot.getLoginInfo();
 if(String(login.user_id)!==account.uin){await bot.close?.();throw Error('QQ_IDENTITY_MISMATCH');}
+if(chatScope==='all')await refreshAccess();
 identityReady=true;
 log('connected',login.user_id,login.nickname,'brain',brainUrl,'scope',chatScope);
 if(receiver&&reconcileMs>0){log('receive-reconciliation','enabled',reconcileMs,'ms','floor',receiver.data.since);pollTimer=setInterval(scheduleReceiveCheck,reconcileMs);scheduleReceiveCheck();}

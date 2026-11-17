@@ -48,7 +48,7 @@ export function personalStateChange(change,previous,{subject,recordedAt,states,o
   short(change.id,'state id',200);
   ensure(!String(change.id).startsWith('intent:'),'INTENT_OPTION','Intent lifecycle must use the intent option, not continuity.changes');
   text(subject,'subject');time(recordedAt);
-  ensure(Number.isSafeInteger(change.expectedRevision)&&change.expectedRevision===(previous?.revision??0),'STATE_CONFLICT','state version changed');
+  ensure(Number.isSafeInteger(change.expectedRevision)&&change.expectedRevision===(previous?.revision??0),'STATE_CONFLICT','个人状态版本不符：不存在的personal_state必须expectedRevision=0；Process版本不能用于个人状态。',{path:'continuity.changes',id:change.id,submittedRevision:change.expectedRevision,actualPersonalStateRevision:previous?.revision??0});
   if(previous)ensure(previous.subject===subject&&inRefs(previous,states),'UNREAD_STATE','read the current own state before revising it');
   oneOf(change.nature,STATE_NATURES,'change nature');
   // An omitted audit explanation is not a semantic state failure. Never invent its contents.

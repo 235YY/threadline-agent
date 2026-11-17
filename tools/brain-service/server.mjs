@@ -10,6 +10,7 @@ import {TurnDriver} from '../../src/turn-driver.mjs';
 import {SceneScheduler} from '../../src/scheduler.mjs';
 import {keepAttention,attentionId} from '../../src/attention.mjs';
 import {AgentRuntime} from '../../src/agent-runtime.mjs';
+import {taskProcessSource} from '../../src/task-threads.mjs';
 import {normalizeInbound} from './adapters.mjs';
 import {normalizeMessage,projectText} from '../../src/message.mjs';
 import {putBlob} from '../../src/blobs.mjs';
@@ -98,7 +99,7 @@ function firstText(messages){
   return last?.content??'';
 }
 
-export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null}={}){
+export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null}={}){
   ensure(typeof storePath==='string'&&storePath.length>0,'BRAIN_SERVICE','store path required');
   const cognitiveKeys=['algorithmV011','apperceptionV1','subjectiveDomains','subjectiveMemory','subjectiveMemoryV2','taskThreads','anchorDirectory','memoryScopeV1','investigationContinuityV1','experienceLearningV1'];
   ensure(cognition&&Object.getPrototypeOf(cognition)===Object.prototype&&Object.entries(cognition).every(([key,value])=>cognitiveKeys.includes(key)&&typeof value==='boolean'),'COGNITION_CONFIG','explicit known boolean cognition flags required');
@@ -246,7 +247,14 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   let agentBusy=false,reflectionBusy=false;
   async function createAgentTask(input={}){
     ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');
-    const task=agentRuntime.createTask({goal:input.goal,plan:input.plan??'',target:input.target??null,threadId:input.threadId??null,processId:input.processId??null,originEventRef:input.originEventRef??null,originDecisionRef:input.originDecisionRef??null,completionCriteria:input.completionCriteria??null,subjectId:input.subjectId??null,intentRef:input.intentRef??null,budget:input.budget??null,metadata:input.metadata??null,id:input.id??null,context:input.context??subjectContext()});
+    ensure(input.subjectId==null||input.subjectId===subjectId,'SUBJECT_MISMATCH','Task belongs to the current service subject');
+    const processId=input.processId??null;
+    if(processId!==null){
+      const source=taskProcessSource({store,subjectId,processId,originDecisionRef:input.originDecisionRef});
+      ensure(source,'UNDELIVERED_PROCESS','Task processId must name a delivered own Process explicitly selected by its source Decision');
+    }
+    const sourceEvent=input.originEventRef?store.read(input.originEventRef.id,input.originEventRef.revision):null;
+    const task=agentRuntime.createTask({goal:input.goal,plan:input.plan??'',target:input.target??null,threadId:input.threadId??sourceEvent?.threadId??null,processId,originEventRef:input.originEventRef??null,originDecisionRef:input.originDecisionRef??null,completionCriteria:input.completionCriteria??null,subjectId,intentRef:input.intentRef??null,budget:input.budget??null,metadata:input.metadata??null,id:input.id??null,context:input.context??subjectContext()});
     saveAgent(task,{before:(input.guardRefs??[]).map(ref=>({op:'assert_current',ref}))});return task;
   }
   async function interruptAgentTask(id,message){
@@ -254,6 +262,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const task=agentRuntime.restore(loadAgent(id));agentRuntime.interrupt(task,message);return {ok:true,id,count:task.interrupts.length};
   }
   async function runAgentStep(id,owner){
+    if(officialSpend&&!officialSpend.gate().allow)return {ok:true,budgetPaused:true,id};
     ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');
     if(draining||agentBusy||reflectionBusy||scheduler.active()!==null)return {ok:false,error:'AGENT_BUSY',skipped:true};
     agentBusy=true;let task,leaseToken,driver;
@@ -300,6 +309,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   async function pauseAgentTask(id,reason){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['running','waiting'].includes(task.status))return {ok:false,id,status:task.status};task.status='paused';task.blockedReason=String(reason??'paused').slice(0,2000);task.controlRevision=(task.controlRevision??0)+1;task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
   async function resumeAgentTask(id,input){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['blocked','paused','waiting'].includes(task.status))return {ok:false,id,status:task.status};if(agentRuntime.pendingToolOperations(task).length)return {ok:false,id,status:task.status,error:'TOOL_OUTCOME_UNKNOWN'};if(!taskIntentCurrent(task))return {ok:false,id,status:task.status,error:'INTENT_TASK_REVIEW_REQUIRED'};const replayCapture=task.status==='blocked'&&!input?.message&&[...store.all('affect_turn')].some(t=>t.subject===subjectId&&t.status==='captured'&&t.packet.payload.task?.id===task.id&&(t.packet.payload.task.controlRevision??0)===(task.controlRevision??0));if(typeof input?.message==='string'&&input.message.trim())task.interrupts.push({at:clock(),message:input.message.trim()});if(!repairAgentObservation(task))return {ok:false,id,status:'blocked',error:'OBSERVATION_REPAIR_FAILED'};task.status='running';task.blockedReason=null;task.controlRevision=(task.controlRevision??0)+(replayCapture?0:1);task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
   async function agentTick(){
+    if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(!agentRuntime||agentBusy||reflectionBusy||scheduler.active()!==null)return {skipped:true};
     for(const task of listAgent())if(resultStatuses.has(task.status)&&task.feedback?.status==='pending')recordAgentResult(task);
     const tasks=listAgent().filter(t=>t.status==='running'||t.status==='waiting').sort((a,b)=>a.updatedAt-b.updatedAt);
@@ -341,6 +351,11 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const queueKey=global?'global':normalized.scene;
     const driver=driverFor(global?'global':normalized.scene);
     const at=normalized.at??clock();
+    if(process.env.JY_GROUP_INGEST==='off'&&String(normalized.scene).startsWith('qq/group/')){
+      driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId,admit:false});
+      saveState();
+      return {queued:false,muted:true,reason:'group-isolated',scene:normalized.scene,pending:scheduler.pending()};
+    }
     if(policy.matches(normalized.scene)){
       const event=driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId,admit:false});
       policy.add({id:event.id,scene:normalized.scene,at});
@@ -349,7 +364,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }
     const ev=driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId});associateTaskInterrupt(normalized.scene,ev,normalized.body);
     cursor={...cursor,lastEventId:`obs:${normalized.key}`,lastAt:at,eventsSince:cursor.eventsSince+1};saveCursor();
-    scheduler.enqueue(queueKey,{key:normalized.key,body:normalized.body,scene:normalized.scene,actor,at,threadId:normalized.threadId});
+    scheduler.enqueue(queueKey,{eventId:ev.id,key:normalized.key,body:normalized.body,scene:normalized.scene,actor,at,threadId:normalized.threadId});
     saveState();
     return {queued:true,scene:normalized.scene,pending:scheduler.pending()};
   }
@@ -360,7 +375,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     for(const entry of entries){
       const event=store.read(entry.id);if(!event)continue;
       store.execute({requestId:`attention:${entry.id}:admit`,commands:[{op:'admit_subject_event',subjectId,event:{id:event.id,revision:event.revision}}]});
-      scheduler.enqueue(global?'global':entry.scene,{key:event.id,body:event.body,scene:entry.scene,actor:event.actor,at:event.occurredAt??event.recordedAt,threadId:event.threadId??null});
+      scheduler.enqueue(global?'global':entry.scene,{eventId:event.id,key:event.id,body:event.body,scene:entry.scene,actor:event.actor,at:event.occurredAt??event.recordedAt,threadId:event.threadId??null});
     }
     saveState();
     return {loaded:entries.length,pending:scheduler.pending()};
@@ -369,7 +384,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const action=store.read(actionRef.id);
     ensure(action?.type==='action','ACTION','existing action required');
     if(action.status!=='proposed')return {replayed:true,action:{id:action.id,revision:action.revision},status:action.status,receipt:action.receipt};
-    try{validateToolArguments(action.tool,action.args??{});}catch(error){error.nativePreflight=true;throw error;}
+    try{lifePolicy?.assertOperationCurrent(action);validateToolArguments(action.tool,action.args??{});}catch(error){error.nativePreflight=true;throw error;}
     if(action.tool==='start_agent_task'){
       const args=action.args??{};
       const parentDecision=[...store.all('decision')].find(d=>d.action?.id===action.id);const originDecisionRef=parentDecision?{id:parentDecision.id,revision:parentDecision.revision}:null;
@@ -378,7 +393,8 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const origin=originEventRef?store.read(originEventRef.id,originEventRef.revision):null;
       const target=args.target??sourceRoute({action:{id:action.id,revision:action.revision}}).scene;
       const threadId=args.threadId??origin?.threadId??null;
-      const processId=parentDecision?.output?.continuity?.attention?.processes?.[0]?.id??parentDecision?.input?.payload?.continuity?.attention?.processes?.[0]?.id??null;const effectiveThreadId=threadId??processId??originEventRef?.threadId??null;
+      const processId=args.processId??null;
+      if(processId!==null)ensure(taskProcessSource({store,subjectId,processId,originDecisionRef}),'UNDELIVERED_PROCESS','Task Process must be explicitly selected from the delivered own directory');
       const plan=Array.isArray(args.plan)?args.plan.join('；'):String(args.plan??'');
       const tools=Array.isArray(args.allowedTools)&&args.allowedTools.length?args.allowedTools:['qq_list_friends','qq_list_groups','qq_list_stickers','anchor_recall','attention_status','web_search'];
       let task=store.read('task:'+action.id),intentRef=null;
@@ -391,7 +407,9 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
         if(!task)ensure(!related.some(t=>t.intentRef.revision!==intentRef.revision&&['running','waiting','paused','blocked'].includes(t.status)),'INTENT_TASK_REVIEW_REQUIRED','an older intent version still has active work; explicitly review it before starting another');
         if(!task&&parentDecision){const pinned=action.intentRef;ensure(pinned?.id===intent.id&&pinned.revision===intent.revision,'STALE_INTENT','task start requires its committed intent version');}
       }
-      if(!task)task=await createAgentTask({id:'task:'+action.id,goal:args.goal,plan,target,threadId:effectiveThreadId,processId,originEventRef,originDecisionRef,subjectId,intentRef,guardRefs:intentRef?[intentRef]:[],metadata:{allowedTools:tools}});
+      if(task)ensure((task.processId??null)===processId,'AGENT_PROCESS_CONFLICT','existing Intent task has a different Process binding; do not infer or overwrite it');
+      if(!task)lifePolicy?.beforeTask({action,decision:parentDecision});
+      if(!task)task=await createAgentTask({id:'task:'+action.id,goal:args.goal,plan,target,threadId,processId,originEventRef,originDecisionRef,subjectId,intentRef,guardRefs:intentRef?[intentRef]:[],metadata:{allowedTools:tools}});
       const eventId=`task-receipt:${action.id}`;
       return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:'succeeded',eventId,body:`task started: ${task.id}`,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});
     }
@@ -435,7 +453,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
             item.delivery={status:'route-unresolved'};sent.push({kind:'respond',delivered:false,status:'pending',error:'RESPONSE_TARGET_UNRESOLVED'});continue;
           }
           const claimed=responseClaim({response:item.response,worker:'brain-host'});let result,outcome='unknown';
-          try{result=await adapter.send({scene:sendScene,text:current.body});outcome=result?.delivered===false?'failed':'sent';}
+          try{result=await adapter.send({scene:sendScene,text:current.body,response:claimed.response});outcome=result?.delivered===false?'failed':'sent';}
           catch(error){result={error:error.code??'SEND_ERROR'};}
           responseDelivered({response:claimed.response,claimId:claimed.claimId,outcome,body:JSON.stringify({...(result??{outcome}),scene:sendScene})});
           item.delivery={status:outcome};sent.push({...result,delivered:outcome==='sent',status:outcome});
@@ -474,7 +492,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
         // Quota refusal is terminal for this source, not an interrupted provider
         // request. Require both durable no-transport proof and no budget row;
         // genuine UNKNOWN reservations must remain blocked and fully retained.
-        const unsentQuota=t.status==='failed'&&t.error==='DAILY_BUDGET_LIMIT'&&t.transportInvoked===false&&!row;
+        const unsentQuota=t.status==='failed'&&['DAILY_BUDGET_LIMIT','NETWORK_PREFLIGHT_FAILED','OFFICIAL_BUDGET_LIMIT','OFFICIAL_USAGE_UNAVAILABLE'].includes(t.error)&&t.transportInvoked===false&&!row;
         if(row?.status==='settled'||unsentQuota){
           closeRecoveryTurn({turnId:t.id,expectedRevision:t.revision,ledgerHash:createHash('sha256').update(bytes).digest('hex')});
           const done=store.read(t.id);if(done.status==='closed-incomplete')closed.push({format:'host-processing-outcome-v1',status:'failed-not-adopted',packetId:t.packet.packetId,sourceEvent:t.packet.payload.current?.id??null,adopted:false,execution:'not-started',accounting:unsentQuota?'not-dispatched':'settled',closure:{id:done.id,revision:done.revision},error:t.error});
@@ -484,6 +502,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     return closed;
   }
   async function turn({preferred=null,deliver=false,execute=false}={}){
+    if(officialSpend&&!officialSpend.gate().allow)return {ok:true,budgetPaused:true,pending:scheduler.pending()};
     if(draining||agentBusy||reflectionBusy)return {ok:true,busy:true,pending:scheduler.pending()};
     syncSchedulerInbox();
     const queueKey=scheduler.next({preferred:global?null:preferred});
@@ -493,20 +512,48 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const item=scheduler.shift(queueKey);
       const scene=item?.scene??queueKey;
       const driver=driverFor(global?'global':scene);
+      const eventId=item?.eventId??(item?.key?.startsWith('obs:')?item.key:null);
+      if(eventId&&process.env.JY_GROUP_INGEST==='off'&&String(scene).startsWith('qq/group/')){
+        const event=store.read(eventId);
+        if(event?.type==='event')try{store.execute({requestId:'isolate-group:'+eventId,commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:event.revision},reason:'GROUP_ISOLATED'}]});}catch{}
+        return {ok:true,skipped:true,silent:true,reason:'group-isolated',pending:scheduler.pending()};
+      }
+      if(eventId){
+        const inbox=store.subjectObservation(subjectId,eventId);
+        const terminal=[...store.all('extension_record')].some(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&r.value?.sourceEvent===eventId)||[...store.all('affect_turn')].some(t=>t.subject===subjectId&&t.status==='failed'&&t.transportInvoked===false&&['PACKET_CHANGED','PACKET_STAGE'].includes(t.error)&&t.packet.payload.current?.id===eventId);
+        const subjectDeferred=inbox?.status==='deferred'&&store.read(inbox.decisionId)?.type==='decision';
+        if(inbox&&inbox.status!=='received'&&!subjectDeferred||terminal){
+          if(inbox&&inbox.status==='received')try{store.execute({requestId:'terminal-skip:'+eventId,commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:eventId,revision:store.read(eventId).revision},reason:'TERMINAL_SKIP'}]});}catch{}
+          return {ok:true,skipped:true,silent:true,reason:'terminal-skip',pending:scheduler.pending()};
+        }
+      }
       let result;
       try{result=await driver.tick({now:clock()});}
       catch(error){
         const closed=recoverSettledRejectedTurns();let processingOutcome=closed.find(c=>c.sourceEvent===item?.key||c.sourceEvent==='obs:'+item?.key);
         // A failed input has no packet/provider call. Quarantine only an exact
         // fresh source with no prior adopted decision and no in-flight journal.
-        if(!processingOutcome&&['INPUT_OVERFLOW','WORKBENCH_REQUIRED_OVERFLOW'].includes(error.code)){
+        if(!processingOutcome&&(['INPUT_OVERFLOW','WORKBENCH_REQUIRED_OVERFLOW'].includes(error.code)||error.transportInvoked===false&&['PACKET_CHANGED','PACKET_STAGE'].includes(error.code))){
+          const id=item?.eventId??(item?.key?.startsWith('obs:')?item.key:'obs:'+item?.key),event=store.read(id);
+          const adopted=[...store.all('decision')].some(d=>d.input?.payload?.continuity?.subject?.id===subjectId&&d.currentEvent?.id===id);
+          const pending=[...store.all('extension_record')].some(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='turn-activity'&&!['complete','ready'].includes(r.value.phase));
+          if(event?.type==='event'&&!adopted&&!pending){
+            const fid='extension:'+subjectId+':runtime:input-failure:'+digest({id,error:error.code}),value={stage:'input',sourceEvent:id,eventId:id,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',accounting:'not-dispatched'};
+            let record=store.read(fid);if(!record)record=store.execute({requestId:fid,commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:event.revision},reason:error.code},{op:'put_extension_record',id:fid,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value}]}).at(-1);
+            processingOutcome={format:'host-processing-outcome-v1',status:'failed-not-adopted',sourceEvent:id,packetId:'input:'+id,packetPrepared:false,adopted:false,execution:'not-started',accounting:'not-dispatched',closure:{id:record.id,revision:record.revision},error:error.code};
+          }
+        }
+        // A message whose model request outcome is unknown must release the
+        // activity slot. The ledger remains uncertain and is never retried;
+        // the source is deferred so the next message can be processed.
+        if(!processingOutcome&&['UNCERTAIN_REQUEST','PROVIDER_HTTP','MODEL_INCOMPLETE','TURN_OUTCOME_UNKNOWN'].includes(error.code)){
           const id=item?.key?.startsWith('obs:')?item.key:'obs:'+item?.key,event=store.read(id);
           const adopted=[...store.all('decision')].some(d=>d.input?.payload?.continuity?.subject?.id===subjectId&&d.currentEvent?.id===id);
           const pending=[...store.all('extension_record')].some(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='turn-activity'&&!['complete','ready'].includes(r.value.phase));
           if(event?.type==='event'&&!adopted&&!pending){
-            const fid='extension:'+subjectId+':runtime:input-failure:'+digest({id,error:error.code}),value={stage:'input',sourceEvent:id,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',accounting:'not-dispatched'};
-            let record=store.read(fid);if(!record)record=store.execute({requestId:fid,commands:[{op:'quarantine_source',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:event.revision},reason:error.code},{op:'put_extension_record',id:fid,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value}]}).at(-1);
-            processingOutcome={format:'host-processing-outcome-v1',status:'failed-not-adopted',sourceEvent:id,packetId:'input:'+id,packetPrepared:false,adopted:false,execution:'not-started',accounting:'not-dispatched',closure:{id:record.id,revision:record.revision},error:error.code};
+            const fid='extension:'+subjectId+':runtime:unknown-outcome:'+digest({id,error:error.code}),value={stage:'model',sourceEvent:id,eventId:id,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'unknown',accounting:'uncertain'};
+            let record=store.read(fid);if(!record)record=store.execute({requestId:fid,commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:event.revision},reason:error.code},{op:'put_extension_record',id:fid,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value}]}).at(-1);
+            processingOutcome={format:'host-processing-outcome-v1',status:'unknown-not-adopted',sourceEvent:id,packetId:'model:'+id,packetPrepared:false,adopted:false,execution:'unknown',accounting:'uncertain',closure:{id:record.id,revision:record.revision},error:error.code};
           }
         }
         if(!processingOutcome)scheduler.enqueue(queueKey,item);driver.persistState();saveState();
@@ -584,7 +631,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const turn=store.read(input.turnId);recoveryTurn(input.turnId);ensure(turn.revision===input.expectedRevision,'AFFECT_TURN_VERSION','turn changed since review');
     ensure(typeof runtimeInfo?.ledgerPath==='string','AFFECT_RESOLUTION','configured accounting ledger required');
     const bytes=readFileSync(runtimeInfo.ledgerPath);const evidenceHash=createHash('sha256').update(bytes).digest('hex');ensure(evidenceHash===input.ledgerHash,'AFFECT_RESOLUTION','accounting file changed since review');
-    const data=JSON.parse(bytes);ensure(data.format==='jingyang-daily-brain-budget-v1'&&Array.isArray(data.requests),'AFFECT_RESOLUTION','configured daily ledger format required');validateBudgetRows(data.requests);const row=data.requests.find(r=>r.id==='turn:'+turn.packet.packetId);let resolution;
+    const data=JSON.parse(bytes);ensure(['jingyang-daily-brain-budget-v1','jingyang-request-journal-v1'].includes(data.format)&&Array.isArray(data.requests),'AFFECT_RESOLUTION','configured daily ledger format required');if(data.format==='jingyang-daily-brain-budget-v1')validateBudgetRows(data.requests);else ensure(new Set(data.requests.map(r=>r.id)).size===data.requests.length&&data.requests.every(r=>typeof r.id==='string'&&['reserved','dispatched','settled','uncertain','released'].includes(r.status)),'AFFECT_RESOLUTION','invalid request journal');const row=data.requests.find(r=>r.id==='turn:'+turn.packet.packetId);let resolution;
     if(turn.status==='failed'&&turn.transportInvoked===false&&!row)resolution={reason:turn.error,requestId:null,noProviderCall:true};
     else if(row?.status==='settled'&&Number.isSafeInteger(row.actualMicros)&&row.actualMicros>=0){
       const selected=row.proposalRecovery?selectedModelOutput(data.requests,row):null;
@@ -617,12 +664,20 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   }
   function health(){const theory=typeof theoryStatus==='function'?theoryStatus():null;return {ok:true,draining,recovery:recoveryStatus(),mode:decide===dryDecide?'dry-run':'custom',subjectId,global,cognitionBusy:agentBusy||reflectionBusy||scheduler.active()!==null||(agentRuntime?.pendingExecutions()??0)>0,externalWorkPending:agentRuntime?.pendingExecutions()??0,active:scheduler.active(),pending:scheduler.pending(),scenes:global?1:drivers.size,attention:policy.status(),...(runtimeInfo?{runtime:runtimeInfo}:{}),scheduling:{enabled:timer!==null,intervalMs:scheduleIntervalMs},...(theory?{theory}: {})};}
   function saveState(){if(!stateFile)return;try{writeFileSync(stateFile,JSON.stringify({scheduler:scheduler.snapshot()}),'utf8');}catch{}}
+  function withEventIdentity(item){
+    if(item?.eventId&&store.read(item.eventId))return item;
+    const keys=[item?.eventId,item?.key,...(item?.key&&!String(item.key).startsWith('obs:')?['obs:'+item.key]:[])].filter(Boolean);
+    for(const key of keys){const event=store.read(key);if(event?.type==='event')return {...item,eventId:event.id};}
+    const event=[...store.all('event')].find(e=>e.source?.key===item?.key);
+    return event?{...item,eventId:event.id}:item;
+  }
   function restoreState(){
     if(!stateFile||!existsSync(stateFile))return;
     try{
       const saved=JSON.parse(readFileSync(stateFile,'utf8')),snap=saved.scheduler;
       if(!snap||!Array.isArray(snap.scenes))return;
-      for(const s of snap.scenes)for(const item of s.queue??[]){
+      for(const s of snap.scenes)for(const raw of s.queue??[]){
+        const item=withEventIdentity(raw);
         driverFor(global?'global':s.key);
         scheduler.enqueue(global?'global':s.key,item);
       }
@@ -642,7 +697,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
         const key=event.source?.key??event.id;
         if(queued.has(key))continue;
         const at=event.occurredAt??event.recordedAt;
-        scheduler.enqueue(global?'global':event.scene,{key,body:event.body,scene:event.scene,actor:event.actor,at,threadId:event.threadId??null});
+        scheduler.enqueue(global?'global':event.scene,{eventId:event.id,key,body:event.body,scene:event.scene,actor:event.actor,at,threadId:event.threadId??null});
         queued.add(key);
       }}
     }catch(error){process.emitWarning(`inbox rehydrate skipped: ${error.message}`);}
@@ -665,7 +720,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
           const key=event.source?.key??event.id;
           valid.add(key);valid.add(event.id);
           if(queued.has(key)||queued.has(event.id))continue;
-          scheduler.enqueue(global?'global':event.scene,{key,body:event.body,scene:event.scene,actor:event.actor,at:event.occurredAt??event.recordedAt,threadId:event.threadId??null});
+          scheduler.enqueue(global?'global':event.scene,{eventId:event.id,key,body:event.body,scene:event.scene,actor:event.actor,at:event.occurredAt??event.recordedAt,threadId:event.threadId??null});
           queued.add(key);added++;
         }
       }
@@ -687,11 +742,14 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   const memoryDue=()=>cursor.eventsSince>=50||clock()-cursor.lastMemoryAt>=2*60*60*1000;
   const idleDue=()=>clock()-cursor.lastIdleAt>=idleIntervalMs;
   async function idleReflect(){
+    if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(draining||!global||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {skipped:true};
     const memory=memoryDue();
+    if(lifePolicy&&!lifePolicy.canReflect(clock()))return {skipped:true,reason:'open-life-reflection-cooldown'};
     if(!memory&&!idleDue())return {skipped:true};
     reflectionBusy=true;try{
     const driver=driverFor('global');
+    lifePolicy?.recordReflection(clock());
     const result=await driver.tick({now:clock(),memoryUpdate:memory,idleReflection:!memory});
     driver.persistState();
     if(result?.wake){
@@ -710,6 +768,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     reflectionBusy=true;try{return await dispatch(pending,{scene:'global',execute:true});}finally{reflectionBusy=false;}
   }
   async function followupTick(){
+    if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(draining||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {skipped:true};
     const frame=store.read(attentionId(subjectId));if(!frame)return {skipped:true};
     const due=(frame.followups??[]).filter(f=>f.status==='scheduled'&&f.dueAt<=clock()).sort((a,b)=>a.dueAt-b.dueAt)[0];
@@ -754,6 +813,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     },intervalMs);timer.unref?.();
   }
   async function runCognitionExclusive(callback){
+    if(officialSpend&&!officialSpend.gate().allow)return {status:'busy',reason:'official-spend-paused',modelCalled:false};
     ensure(typeof callback==='function','COGNITION_CALLBACK','host callback required');
     if(closed||draining||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {status:'busy',modelCalled:false};
     reflectionBusy=true;try{return await callback();}finally{reflectionBusy=false;}
@@ -762,6 +822,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function beginShutdown(){draining=true;stopScheduling();}
   function close(){if(closed)return;stopScheduling();saveState();store.close();closed=true;}
   const server=createServer(async (req,res)=>{
+    if(req.method==='POST'&&req.url==='/v1/official-usage'&&officialSpend){try{return json(res,200,officialSpend.accept(await readBody(req),req.headers['x-usage-token']));}catch(error){return json(res,400,{error:error.code??'OFFICIAL_USAGE_INVALID'});}}
     const token=req.headers['x-brain-token'];
     if(service.token&&token!==service.token){res.writeHead(401,{'content-type':'application/json'});return res.end(JSON.stringify({error:'UNAUTHORIZED'}));}
     try{
@@ -816,6 +877,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }catch(error){return json(res,400,{error:error.code??'ERROR',message:error.message});}
   });
   async function idleTurn(){
+    if(officialSpend&&!officialSpend.gate().allow)return {ok:true,budgetPaused:true};
     if(agentBusy||reflectionBusy||scheduler.active()!==null)return {ok:true,busy:true,skipped:true};
     syncSchedulerInbox();
     if(!global)return turn();

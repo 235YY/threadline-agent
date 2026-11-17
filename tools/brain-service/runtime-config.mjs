@@ -41,10 +41,10 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
   storePath:file(root,isolatedStore??affect.storePath),
   stateDirectory:resolve(root,env.BRAIN_STATE??(live?'_local/brain/state':'_local/dry-run/state')),
   styleDirectory:resolve(root,env.BRAIN_STYLE_DIR??(live?'_local/style':'_local/dry-run/style')),
-  identityFile:resolve(root,env.BRAIN_IDENTITY_FILE??'config/identity.example.txt'),
+  identityFile:resolve(root,env.BRAIN_IDENTITY_FILE??'_local/migrate/persona.txt'),
   ledgerPath:live?resolve(root,env.BRAIN_LEDGER):null,budgetDirectory:resolve(root,env.JY_BUDGET_DIR??'_local/brain'),
   heartbeatMs:integer(env,'BRAIN_HEARTBEAT_MS',live?60000:0,0,3600000),idleIntervalMs:integer(env,'JY_IDLE_INTERVAL_MS',7200000,0,86400000),
-  affect:{enabled:affect.enabled,fusion},cognition,rhythm,global:flag(env,'BRAIN_GLOBAL'),rhythmReset:flag(env,'JY_RHYTHM_RESET'),
+  openLife:flag(env,'JY_OPEN_LIFE'),affect:{enabled:affect.enabled,fusion},cognition,rhythm,global:flag(env,'BRAIN_GLOBAL'),rhythmReset:flag(env,'JY_RHYTHM_RESET'),
   maintenance:live&&flag(env,'BRAIN_MAINTENANCE',true),
   profile:{dailyMicros:integer(env,'BRAIN_MAX_MICROS',3000000,1,20000000),dailyCalls:callLimit,maxTokens:integer(env,'BRAIN_MAX_TOKENS',3000,1,6000),reasoning},
   authenticationConfigured:typeof env.BRAIN_TOKEN==='string'&&env.BRAIN_TOKEN.length>0};

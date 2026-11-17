@@ -42,7 +42,7 @@ export class AffectSession {
   const turns=[...this.store.all('affect_turn')].filter(t=>t.subject===this.subjectId);
   ensure(!args.currentEvent||!turns.some(t=>t.status==='closed-incomplete'&&t.packet.payload.current?.id===args.currentEvent.id),'AFFECT_SOURCE_STOPPED','closed incomplete source stays in history; do not automatically retry it');
   const pending=turns.filter(t=>!['committed','closed-incomplete','superseded'].includes(t.status));
-  ensure(!pending.some(t=>['dispatched','uncertain','failed'].includes(t.status)),'AFFECT_TURN_STOPPED','unconfirmed/rejected model turn blocks new calls; inspect captured evidence');
+  ensure(!pending.some(t=>t.status==='dispatched'),'AFFECT_TURN_STOPPED','an in-flight model turn still owns the affect slot; do not overlap it');
   const captured=pending.find(t=>t.status==='captured');
   if(captured){ensure(captured.argsKey===argsKey,'AFFECT_CAPTURE_PENDING','finish the captured turn before another task');return captured.packet;}
   const prepared=pending.find(t=>t.status==='prepared'&&t.argsKey===argsKey);

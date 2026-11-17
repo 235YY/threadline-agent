@@ -8,6 +8,8 @@ import {prepareReflection} from '../src/cognition.mjs';
 import {reflectionFrame} from '../src/reflection-frame.mjs';
 import {createModelDecision,DailyBudgetLedger} from '../src/model-transport.mjs';
 import {memory,frame,put,ref} from './helpers.mjs';
+import {RequestJournal} from '../src/request-journal.mjs';
+import {writeFileSync,readFileSync} from 'node:fs';
 const tmp=t=>{const dir=mkdtempSync(join(tmpdir(),'jingyang-transport-test-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;};
 
 const KEY='sk-abcdefghijklmnop';
@@ -25,6 +27,7 @@ function response(content){
   {status:200,headers:{'content-type':'application/json'}});
 }
 const okNetwork=async()=>({ok:true,classification:'test'});
+test('official mode ignores old financial halt while retaining exact request dedupe and immutable history',async t=>{const dir=tmp(t),history=join(dir,'old.json'),raw=JSON.stringify({halted:'old unknown',requests:[{id:'old-request',status:'uncertain',reserveMicros:9000000}]});writeFileSync(history,raw);let sends=0;const journal=new RequestJournal(join(dir,'requests.json'),{history}),model=createModelDecision({ledgerPath:join(dir,'requests.json'),requestJournal:journal,getKey:()=>KEY,networkCheck:okNetwork,transport:async()=>{sends++;return response('synthetic result');}});try{const p=packet(t);assert.equal(await model.decide(p),'synthetic result');assert.equal(await model.decide(p),'synthetic result');assert.equal(sends,1);assert.equal(journal.find('turn:'+p.packetId).reserveMicros,undefined);assert.equal(readFileSync(history,'utf8'),raw);}finally{model.close();}});
 
 test('不可用的服务商结束结果保留公开正文和原因，仍不重发',async t=>{
  const ledgerPath=join(tmp(t),'budget.json');let calls=0;
@@ -52,7 +55,7 @@ test('网络预检失败：不保留、不发送',async t=>{
   const {decide,state,close}=createModelDecision({ledgerPath:join(dir,'budget.json'),getKey:()=>KEY,
     transport:async()=>{calls++;return response('x');},networkCheck:async()=>({ok:false,classification:'dns'})});
   try{
-    await assert.rejects(()=>decide(packet(t)),{code:'NETWORK_PREFLIGHT_FAILED'});
+    await assert.rejects(()=>decide(packet(t)),{code:'NETWORK_PREFLIGHT_FAILED',transportInvoked:false,failurePhase:'before-transport'});
     assert.equal(calls,0);assert.equal(state().calls,0);
   }finally{close();}
 });
@@ -96,3 +99,5 @@ test('同日限制不可偷偷放宽；锁文件阻止并发写',async t=>{
   const reopened=new DailyBudgetLedger(ledgerPath,{dailyMicros:3000000,dailyCalls:96,dayKey:'2026-11-07'});
   reopened.close();
 });
+
+test('host packet rejection happens before key, preflight, reservation or transport',async t=>{let keys=0,network=0,sent=0;const model=createModelDecision({ledgerPath:join(tmp(t),'budget.json'),getKey:()=>{keys++;return KEY;},networkCheck:async()=>{network++;return {ok:true};},transport:async()=>{sent++;throw Error('must not send');}});try{const p=packet(t);p.messages[0].content+='tampered';await assert.rejects(model.decide(p),e=>e.code==='PACKET_CHANGED'&&e.transportInvoked===false);assert.equal(keys,0);assert.equal(network,0);assert.equal(sent,0);assert.equal(model.ledger.data.requests.length,0);}finally{model.close();}});

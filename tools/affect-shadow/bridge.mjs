@@ -5,7 +5,7 @@ import {join,resolve} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const worker=fileURLToPath(new URL('./worker.py',import.meta.url));
-export const python=process.env.JY_AFFECT_PYTHON??(process.platform==='win32'?'python':'python3');
+export const python=process.env.JY_AFFECT_PYTHON??join(root,'_local/affect-runtime/python-3.13.9/python.exe');
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const fail=(code)=>{throw Object.assign(new Error(code),{code});};
 const check=(ok,code)=>{if(!ok)fail(code);};

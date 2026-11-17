@@ -1,3 +1,17 @@
-// Optional desktop integration; importing it does not start a process.
-import {resolve} from 'node:path';import {pathToFileURL} from 'node:url';let link;
-export async function runDesktop(input={}){if(!process.env.JY_LEGACY_BRIDGE_ROOT){if((input.action??'status')==='status')return {available:false,reason:'optional desktop adapter not configured'};throw Object.assign(Error('Desktop adapter not configured'),{code:'TOOL_DEPENDENCY_MISSING',transportInvoked:false});}if(!link){const legacy=resolve(process.env.JY_LEGACY_BRIDGE_ROOT),{DesktopLink}=await import(pathToFileURL(resolve(legacy,'src/desktop-link.js')).href);link=new DesktopLink({directory:resolve(legacy,'../desktop-companion'),logDirectory:resolve('_local/desktop'),enabled:()=>true,renderer:()=>'animation'});}const action=input.action??'status';if(action==='status')return link.status();if(action==='start')return link.start();if(action==='stop')return link.stop();return link.request(action,input.args??{});}
+﻿// 原生桌宠：复用旧 DesktopLink/动画协议；不经过旧 DSH。
+import {DesktopLink} from '../../../整理版_2026-10-16/qq-bridge/src/desktop-link.js';
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
+const legacy=fileURLToPath(new URL('../../../整理版_2026-10-16/qq-bridge/',import.meta.url));
+const link=new DesktopLink({
+  directory:resolve(legacy,'..','desktop-companion'),
+  logDirectory:resolve(legacy,'..','..','鲸漾新系统','_local','desktop'),
+  enabled:()=>true,renderer:()=>'animation',
+});
+export async function runDesktop(input={}){
+  const action=input.action??'status';
+  if(action==='status')return link.status();
+  if(action==='start')return link.start();
+  if(action==='stop')return link.stop();
+  return link.request(action,input.args??{});
+}
