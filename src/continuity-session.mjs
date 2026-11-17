@@ -1,9 +1,22 @@
-import {digest,ensure,text} from './contracts.mjs';
+import {canonical,digest,ensure,text} from './contracts.mjs';
 import {initializeSubject,admitSubjectEvent} from './continuity.mjs';
 import {prepareDecision,prepareReflection,commitDecision,verifiedModelInput} from './cognition.mjs';
 import {attentionId} from './attention.mjs';
 import {packetContext,failureMetadata,outputMetrics} from './debug-contract.mjs';
 import {normalizeAndRecord} from './proposal-normalization.mjs';
+import {intentEligible,looksLikeIntent,intentWireFor,expandIntent} from './intent-protocol.mjs';
+
+// An intent-protocol answer is compiled into the full output before the ordinary commit.
+// The raw answer and its compilation are kept for audit; nothing else changes downstream.
+function compileIntentOutput({store,packet,output}){
+  if(!intentEligible(packet)||!looksLikeIntent(output))return output;
+  const raw=typeof output==='string'?output:canonical(output),wire=intentWireFor(packet,JSON.parse(raw).packetId);
+  ensure(wire,'WRONG_PACKET','intent answer does not match any intent packet for this input');
+  const diagnostics=[],compiled=expandIntent(wire,raw,{store,diagnostics}),subject=packet.payload.continuity.subject.id;
+  const id='extension:'+subject+':runtime:intent:'+digest({packet:packet.packetId,raw});
+  if(!store.read(id))store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:subject,theory:'runtime',stateType:'intent-compilation',schemaVersion:'1',expectedRevision:0,value:{packetId:packet.packetId,intentPacketId:wire.packetId,rawOutput:raw,compiled,diagnostics}}]});
+  return compiled;
+}
 
 // One request in, one decision out. The injected client owns metering and provider configuration.
 // There is no default provider, key loader, automatic retry, autonomous loop, or QQ sender here.
@@ -30,11 +43,11 @@ export class ContinuitySession {
   commit(args) {
     ensure(['decisionContinuity','decisionInformation','decisionWorkbench','decisionAttention','decisionMind','decisionGraph','reflection'].includes(args.packet?.stage)&&args.packet.payload.continuity.subject.id===this.#subjectId,'SUBJECT_FIXED','input belongs to another subject/session');
     let output,d;
-    try{const attempt=this.#requestJournal?.packetRequest(args.packet.packetId);ensure(!attempt||attempt.status==='settled'&&attempt.validation?.status!=='rejected','REQUEST_VALIDATION_CONFLICT','request must have a settled, unrejected output before adoption');output=normalizeAndRecord({store:this.#store,packet:args.packet,output:args.output});d=commitDecision({...args,output,store:this.#store});}
+    try{const attempt=this.#requestJournal?.packetRequest(args.packet.packetId);ensure(!attempt||attempt.status==='settled'&&attempt.validation?.status!=='rejected','REQUEST_VALIDATION_CONFLICT','request must have a settled, unrejected output before adoption');output=normalizeAndRecord({store:this.#store,packet:args.packet,output:compileIntentOutput({store:this.#store,packet:args.packet,output:args.output})});d=commitDecision({...args,output,store:this.#store});}
     catch(error){
       if(error.name==='ContractError'&&!this.#requestJournal?.packetRequest(args.packet.packetId)?.validation)this.#requestJournal?.recordValidation(args.packet.packetId,{status:'rejected',error:error.code});
-      if(['STATE_CONFLICT','UNDELIVERED_REFERENCE','WRONG_OBJECT_KIND','ID_COLLISION','UNREAD_STATE','INTENT_OPTION'].includes(error.code)){
-        const id='extension:'+this.#subjectId+':runtime:validation:'+digest({packet:args.packet.packetId,output,code:error.code});
+      if(['STATE_CONFLICT','UNDELIVERED_REFERENCE','WRONG_OBJECT_KIND','ID_COLLISION','UNREAD_STATE','INTENT_OPTION','INTENT_HANDLE','INTENT_SHAPE','INTENT_LIMIT','TOOL_NOT_GRANTED'].includes(error.code)){
+        const id='extension:'+this.#subjectId+':runtime:validation:'+digest({packet:args.packet.packetId,output:output??args.output,code:error.code});
         if(!this.#store.read(id))this.#store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'validation',sourceEvent:args.packet.payload.current?.id??null,packetId:args.packet.packetId,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',next:'上次提案未提交。按当前交付目录自主重新判断；不自动重放，不替你修订内容。'}}]});
       }
       throw error;

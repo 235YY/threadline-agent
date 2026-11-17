@@ -78,6 +78,7 @@
     "test/qq-recovery-recent.test.mjs",
     "test/public-release-contract.test.mjs",
     "test/doctor.test.mjs",
-    "test/prompt-generations.test.mjs"
+    "test/prompt-generations.test.mjs",
+    "test/intent-protocol.test.mjs"
   ]
 }

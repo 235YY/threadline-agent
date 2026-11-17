@@ -16,9 +16,10 @@ const forge=(p,instruction,payload,idFields)=>{
  return {...structuredClone(p),packetId,instruction,messages,bytes:Buffer.byteLength(canonical(messages),'utf8')};
 };
 
-test('every archived generation is a complete snapshot of the current prompt file set',()=>{
+test('archived generations are complete snapshots: every file they had still exists in the current set',()=>{
  const names=d=>readdirSync(new URL(d,import.meta.url)).filter(n=>n.endsWith('.zh.md')).sort();
- for(const g of ARCHIVED_PROMPT_GENERATIONS)assert.deepEqual(names(`../prompts/archive/${g}/`),names('../prompts/'),g);
+ const current=new Set(names('../prompts/'));
+ for(const g of ARCHIVED_PROMPT_GENERATIONS){const old=names(`../prompts/archive/${g}/`);assert.ok(old.length>20,g);for(const f of old)assert.ok(current.has(f),`${g}/${f}`);}
 });
 
 test('cognition: a packet sealed by the archived generation verifies; a forged instruction does not',()=>{

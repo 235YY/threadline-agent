@@ -134,6 +134,7 @@ export function modelRequestSource(packet,provided=null){
   ensure(provided?.subject===subject&&provided.kind==='reflection'&&typeof provided.opportunity?.id==='string'&&Number.isSafeInteger(provided.opportunity.revision),'REQUEST_SOURCE','reflection requires its existing durable opportunity reference');
   return {subject,kind:'reflection',opportunity:{id:provided.opportunity.id,revision:provided.opportunity.revision}};
 }
+import {intentEligible,intentPacket,intentFormatIssue} from './intent-protocol.mjs';
 export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyKey,transport=fetch,networkCheck=requireStudyNetwork,profile={},dayKey=null,timeoutMs=120000,enforceBudget=true,requestJournal=null,officialSpend=null}={}){
   ensure(typeof ledgerPath==='string'&&ledgerPath.length>0,'TRANSPORT_CONFIG','ledger path required');
   const limits={...(dayKey?{dayKey}:{}),...(Number.isSafeInteger(profile.dailyMicros)?{dailyMicros:profile.dailyMicros}:{}),
@@ -145,6 +146,9 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet,admitRequest});
   const maintenanceClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
     outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet,admitRequest});
+  // Opt-in: ordinary event decisions are sent as the small intent protocol; the
+  // answer is compiled into the full output at commit. Request identity is unchanged.
+  const intentWire=packet=>profile.intentProtocol===true&&intentEligible(packet)?intentPacket(packet):null;
   async function decide(packet,{beforeCorrection=null,source:providedSource=null}={}){
     const startedAt=Date.now();
     const source=journalled?modelRequestSource(packet,providedSource):null,prior=source?ledger.sourceRequest(source):null;
@@ -155,14 +159,14 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(existing?.validation?.status!=='rejected','SOURCE_OUTPUT_REJECTED','original output was rejected; do not resubmit its source');
     if(existing?.status==='settled'&&typeof existing.output==='string'){
       if(existing.proposalRecovery){
-        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});}
+        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet),wire=intentWire(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(wire?.messages??verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,...(wire?{formatIssue:raw=>intentFormatIssue(raw,wire)}:{})});}
         return selectedModelOutput(ledger.data.requests,existing).output;
       }
       return existing.output;
     }
     ensure(!existing||journalled&&existing.status==='reserved'&&existing.fingerprint===null,'TRANSPORT_REPLAY','request already attempted; never auto-resend');
-    const verified=verifiedBeforeTransport(packet);
-    let response=await client.call({id,packet:{...verified,payload:packet.payload,messages:toProviderMessages(verified.messages,{blobDirectory,packet})},requestContext:source?{source,packetId:packet.packetId}:null});
+    const verified=verifiedBeforeTransport(packet),wire=intentWire(packet),sent=wire?.messages??verified.messages;
+    let response=await client.call({id,packet:{...verified,payload:packet.payload,messages:toProviderMessages(sent,{blobDirectory,packet})},requestContext:source?{source,packetId:packet.packetId}:null});
     ledger.attachProviderResult(id,response);
     // JSON mode can replace an unrecognized JSON answer with spaces even with
     // finish_reason=stop (documented provider behavior). Treat this narrow,
@@ -171,7 +175,7 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(blankJson||response.complete===true&&typeof response.output==='string'&&response.output.trim().length>0,
       'MODEL_INCOMPLETE','provider returned no final text; recorded without retry');
     ledger.attachOutput(id,response.output);
-    if(profile.formatRecovery===true){const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection});if(journalled&&proposalFormatIssue(raw,packet))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
+    if(profile.formatRecovery===true){const formatIssue=wire?r=>intentFormatIssue(r,wire):r=>proposalFormatIssue(r,packet);const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(sent,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,formatIssue});if(journalled&&formatIssue(raw))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
     return response.output;
   }
   async function invokeMaintenance(input){

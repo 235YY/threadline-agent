@@ -46,7 +46,7 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
   heartbeatMs:integer(env,'BRAIN_HEARTBEAT_MS',live?60000:0,0,3600000),idleIntervalMs:integer(env,'JY_IDLE_INTERVAL_MS',7200000,0,86400000),
   openLife:flag(env,'JY_OPEN_LIFE'),affect:{enabled:affect.enabled,fusion},cognition,rhythm,global:flag(env,'BRAIN_GLOBAL'),rhythmReset:flag(env,'JY_RHYTHM_RESET'),
   maintenance:live&&flag(env,'BRAIN_MAINTENANCE',true),
-  profile:{dailyMicros:integer(env,'BRAIN_MAX_MICROS',3000000,1,20000000),dailyCalls:callLimit,maxTokens:integer(env,'BRAIN_MAX_TOKENS',3000,1,6000),reasoning},
+  profile:{dailyMicros:integer(env,'BRAIN_MAX_MICROS',3000000,1,20000000),dailyCalls:callLimit,maxTokens:integer(env,'BRAIN_MAX_TOKENS',3000,1,6000),reasoning,intentProtocol:flag(env,'JY_INTENT_PROTOCOL')},
   authenticationConfigured:typeof env.BRAIN_TOKEN==='string'&&env.BRAIN_TOKEN.length>0};
  // The token is passed to the server separately; it never enters fingerprints or instance records.
  const fingerprint=digest(config);return Object.freeze({...config,cognition:Object.freeze(config.cognition),affect:Object.freeze(config.affect),rhythm:Object.freeze(config.rhythm),profile:Object.freeze(config.profile),configFingerprint:fingerprint});

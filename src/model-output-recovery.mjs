@@ -22,8 +22,8 @@ export function selectedModelOutput(rows,primary){
  ensure(typeof primary.output==='string','MODEL_CAPTURE_MISSING','captured output missing');
  return {output:primary.output,attemptId:primary.id,primaryId:primary.id,corrected:false};
 }
-export async function recoverOutputOnce({packet,primary,ledger,client,verified,providerMessages,timeoutMs,startedAt,beforeCorrection=null}){
- const issue=proposalFormatIssue(primary.output,packet);if(!issue)return primary.output;
+export async function recoverOutputOnce({packet,primary,ledger,client,verified,providerMessages,timeoutMs,startedAt,beforeCorrection=null,formatIssue=raw=>proposalFormatIssue(raw,packet)}){
+ const issue=formatIssue(primary.output);if(!issue)return primary.output;
  const attemptId=`repair:${packet.packetId}:1`,packetHash=digest(packet),existing=primary.proposalRecovery;
  ensure(!existing||existing.attemptId===attemptId&&existing.packetHash===packetHash,'MODEL_RECOVERY_CHANGED','recovery belongs to another frozen input');
  if(existing?.selected)return selectedModelOutput(ledger.data.requests,primary).output;
@@ -43,6 +43,6 @@ export async function recoverOutputOnce({packet,primary,ledger,client,verified,p
   catch(error){if(!ledger.tryFind(attemptId)&&['SPEND_LIMIT','CALL_LIMIT','TASK_CALL_BUDGET','AGENT_CONTROL_CHANGED','AGENT_LEASE_LOST','INTENT_TASK_REVIEW_REQUIRED','NETWORK_PREFLIGHT_FAILED','CANCELLED'].includes(error.code))return close(error.code);throw error;}
  }
  if(!attempt.providerResult.complete||!attempt.output?.trim())return close('CORRECTION_INCOMPLETE');
- const secondIssue=proposalFormatIssue(attempt.output,packet);if(secondIssue){primary.proposalRecovery={...primary.proposalRecovery,secondIssue};return close('CORRECTION_REJECTED');}
+ const secondIssue=formatIssue(attempt.output);if(secondIssue){primary.proposalRecovery={...primary.proposalRecovery,secondIssue};return close('CORRECTION_REJECTED');}
  primary.proposalRecovery={...primary.proposalRecovery,selected:true,closed:true,outputHash:digest(attempt.output)};ledger.save();return attempt.output;
 }

@@ -85,6 +85,8 @@ ReadForWorker只供Node子进程捕获，禁止在可见终端执行并显示密
 B站/GitHub公开阅读受真实平台可达性限制；HTTP失败或截断明确反馈，
 不使用私人仓库凭据，不执行仓库代码。基本CLI不会替运营方创建Open Life生产策略。
 
+JY_INTENT_PROTOCOL=1：普通事件决策改用 intent-v1（模型表达意图、宿主编译事务），见 docs/INTENT-PROTOCOL.md。
+
 认知实验开关未设置时为false：JY_ALGORITHM_V011、JY_APPERCEPTION_V1、
 JY_SUBJECTIVE_DOMAINS、JY_SUBJECTIVE_MEMORY_V2、JY_TASK_THREADS、
 JY_ANCHOR_DIRECTORY、JY_MEMORY_SCOPE_V1、JY_INVESTIGATION_CONTINUITY_V1、

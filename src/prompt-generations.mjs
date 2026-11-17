@@ -9,9 +9,12 @@ export const promptReader=(generation=null)=>{
   return name=>readFileSync(new URL(name,dir),'utf8');
 };
 // Build one value per generation lazily; archived ones only when verification needs them.
+// A prompt introduced after a generation was archived simply has no packets from that
+// generation; such generations are skipped (missing file only, never other errors).
+const tryBuild=(build,g)=>{try{return build(promptReader(g));}catch(error){if(error.code==='ENOENT')return null;throw error;}};
 export function generationSets(build){
   const current=build(promptReader());let archived=null;
-  const old=()=>archived??=ARCHIVED_PROMPT_GENERATIONS.map(g=>build(promptReader(g)));
+  const old=()=>archived??=ARCHIVED_PROMPT_GENERATIONS.map(g=>tryBuild(build,g));
   // byName is for audit/tests: what an archived generation would have produced.
-  return {current,all:()=>[current,...old()],byName:name=>name===null?current:old()[ARCHIVED_PROMPT_GENERATIONS.indexOf(name)]??null};
+  return {current,all:()=>[current,...old().filter(Boolean)],byName:name=>name===null?current:old()[ARCHIVED_PROMPT_GENERATIONS.indexOf(name)]??null};
 }
