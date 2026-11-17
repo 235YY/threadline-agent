@@ -87,13 +87,23 @@ export class TurnDriver {
 
   // 节律机会：醒来 ≠ 必须思考。没有待处理观察时只是空闲；预算门由节律层给出。
   async tick({now=Date.now(),localHour=null,dayKey=null,memoryUpdate=false,followup=null,eventBypass=this.#eventBypass,idleReflection=false}={}){
-    const pendingActivity=readActivity(this.#store,this.#subjectId,this.#workspace)?.value;
-    if(pendingActivity&&pendingActivity.phase!=='complete'){
+    let pendingRecord=readActivity(this.#store,this.#subjectId,this.#workspace),pendingActivity=pendingRecord?.value;
+    if(pendingActivity?.failure?.outcome==='uncertain'&&!this.#store.read('extension:'+this.#subjectId+':runtime:invocation:'+pendingActivity.packet.packetId)){
+      // Preserve and quarantine the already-recorded legacy unknown, never
+      // re-enter its callback simply because an older driver marked it complete.
+      this.#isolateInvocation(pendingRecord,Object.assign(new Error(pendingActivity.failure.reason??'legacy unknown invocation'),{code:pendingActivity.failure.code??'TURN_OUTCOME_UNKNOWN'}));
+      pendingRecord=readActivity(this.#store,this.#subjectId,this.#workspace);pendingActivity=pendingRecord.value;
+    }
+    const isolated=pendingActivity&&['uncertain','not-executed'].includes(pendingActivity.failure?.outcome);
+    if(pendingActivity&&pendingActivity.phase!=='complete'&&!isolated){
       if(pendingActivity.context.kind==='reflection')return this.#runReflection({...pendingActivity.context,resume:pendingActivity});
       return this.#runDecision({...pendingActivity.context,resume:pendingActivity});
     }
     if(followup)return this.#runReflection({now,reason:'followup',followup});
-    const pending=this.#store.subjectInbox({subjectId:this.#subjectId,limit:64,pendingOnly:true}).items.filter(o=>!(this.#session.sourceBlocked?.(o.eventId)));
+    const blocked=new Set([...this.#store.all('extension_record')].filter(r=>r.owner===this.#subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&r.value?.invocationStopped===true).map(r=>r.value.sourceEvent));
+    const pending=this.#store.subjectInbox({subjectId:this.#subjectId,limit:64,pendingOnly:true}).items.filter(o=>!blocked.has(o.eventId)&&!(this.#session.sourceBlocked?.(o.eventId)));
+    if(isolated&&pendingActivity.failure.outcome==='uncertain'&&pending.length===0&&!followup)
+      throw Object.assign(new Error('unresolved invocation; do not resend its source'),{code:'TURN_OUTCOME_UNKNOWN'});
     // A subject-deferred source stays pending, but must not hide a new receipt
     // or user observation. Do not mark deferred work completed on her behalf.
     const observation=pending.find(o=>o.status==='received')??pending[0];
@@ -239,7 +249,7 @@ export class TurnDriver {
   async #durableDecision(packet,context,allowedActionTools){
     let row=readActivity(this.#store,this.#subjectId,this.#workspace);
     const save=value=>{row=saveActivity(this.#store,row,{subject:this.#subjectId,workspace:this.#workspace,value});};
-    if(!row||['complete','ready'].includes(row.value.phase))save({phase:'prepared',context,packet});
+    if(!row||['complete','ready'].includes(row.value.phase)||['uncertain','not-executed'].includes(row.value.failure?.outcome))save({phase:'prepared',context,packet});
     ensure(row.value.packet?.packetId===packet.packetId,'TURN_ACTIVITY_CHANGED','finish the exact pending turn before starting another');
     const decisionId='decision:'+packet.packetId,requestId='commit:'+packet.packetId;
     if(row.value.phase==='committed')return this.#store.read(row.value.decision.id,row.value.decision.revision);
@@ -247,8 +257,8 @@ export class TurnDriver {
     if(row.value.phase==='dispatched'){
       output=this.#session.capturedOutput?.(packet);
       if(typeof output!=='string'){
-        save({...row.value,phase:'complete',failure:{code:'TURN_OUTCOME_UNKNOWN',outcome:'uncertain',reason:'interrupted model invocation; no capture; do not resend'}});
-        throw Object.assign(new Error('interrupted model invocation requires explicit accounting/capture recovery; do not resend'),{code:'TURN_OUTCOME_UNKNOWN'});
+        const error=Object.assign(new Error('interrupted model invocation requires explicit accounting/capture recovery; do not resend'),{code:'TURN_OUTCOME_UNKNOWN'});
+        this.#isolateInvocation(row,error);throw error;
       }
       save({...row.value,phase:'captured',output});
     }
@@ -259,7 +269,7 @@ export class TurnDriver {
           save({...row.value,phase:'dispatched'});this.#state.callsToday++;return this.#decide(p,{beforeCorrection:()=>{ensure(this.#config.dailyCallCap===null||this.#state.callsToday<this.#config.dailyCallCap,'TASK_CALL_BUDGET','no remaining cognitive call budget for correction');this.#state.callsToday++;}});
         });
       }catch(error){
-        save({...row.value,phase:'complete',failure:{code:error.code??'MODEL_ERROR',outcome:'uncertain',reason:'model invocation failed; no output captured; do not resend'}});
+        this.#isolateInvocation(row,error);
         throw error;
       }
       output=typeof output==='string'?output:canonical(output);
@@ -272,6 +282,37 @@ export class TurnDriver {
       const journal=activityWrite(row,{subject:this.#subjectId,workspace:this.#workspace,value:{...row.value,phase:'complete',failure:{code:error.code??'ERROR',outcome:'rejected-not-adopted'}}});
       this.#session.closeRejected?.({packet,error,journal});throw error;
     }
+  }
+  #isolateInvocation(row,error){
+    const unknown=error.transportInvoked!==false,packet=row.value.packet,source=packet.payload.current??null;
+    const inputRejected=!unknown&&['PACKET_CHANGED','PACKET_STAGE'].includes(error.code);
+    const failure={code:error.code??'MODEL_ERROR',outcome:unknown?'uncertain':'not-executed',transportInvoked:error.transportInvoked??null,reason:'invocation stopped; original source must not be automatically resent'};
+    const journal=activityWrite(row,{subject:this.#subjectId,workspace:this.#workspace,value:{...row.value,phase:inputRejected?'complete':unknown?'dispatched':'prepared',failure}});
+    const id='extension:'+this.#subjectId+':runtime:invocation:'+packet.packetId;
+    const value={stage:'model',packetId:packet.packetId,sourceEvent:source?.id??null,sourceRef:source?ref(source):null,adopted:false,invocationStopped:true,execution:unknown?'unknown':'not-started',accounting:unknown?'uncertain':'not-dispatched',error:failure.code,message:error.message,journal:{id:row.id,revision:row.revision+1}};
+    const commands=[journal,{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value}];
+    if(inputRejected&&source&&this.#store.subjectObservation(this.#subjectId,source.id)?.status==='received')
+      commands.push({op:'fail_subject_event',subject:ref(this.#store.read(this.#subjectId)),event:ref(source),reason:error.code});
+    const records=this.#store.execute({requestId:'isolate-invocation:'+packet.packetId+':'+row.revision,commands});
+    error.processingOutcome={format:'host-processing-outcome-v1',status:unknown?'unknown-not-adopted':'failed-not-adopted',packetId:packet.packetId,sourceEvent:value.sourceEvent,adopted:false,execution:value.execution,accounting:value.accounting,closure:ref(records[1]),error:failure.code};
+  }
+  // Host-only explicit verification. Never retries a request or adopts a model
+  // proposal. A fixed verification event is retained alongside the old journal.
+  resolveUnknown({activity,evidence,outcome}){
+    ensure(Number.isSafeInteger(activity?.revision)&&activity.revision>0&&Number.isSafeInteger(evidence?.revision)&&evidence.revision>0,'TURN_RESOLUTION','fixed activity and evidence revisions required');
+    const old=this.#store.read(activity?.id,activity?.revision),event=this.#store.read(evidence?.id,evidence?.revision);
+    ensure(old?.type==='extension_record'&&old.owner===this.#subjectId&&old.stateType==='turn-activity'&&old.value.failure?.outcome==='uncertain','TURN_RESOLUTION','own fixed unknown journal required');
+    ensure(['succeeded','failed','not-executed'].includes(outcome),'TURN_RESOLUTION','explicit known outcome required');
+    const packetId=old.value.packet.packetId;let body;try{body=JSON.parse(event?.body);}catch{}
+    ensure(event?.type==='event'&&event.actor==='host'&&event.source?.system==='host-verification'&&event.source.key===packetId&&body?.packetId===packetId&&body.outcome===outcome,'TURN_RESOLUTION','matching persisted host verification event required');
+    const id='extension:'+this.#subjectId+':runtime:invocation:'+packetId,feedback=this.#store.read(id);
+    ensure(feedback?.owner===this.#subjectId&&feedback.value?.journal?.id===old.id&&feedback.value.journal.revision===old.revision,'TURN_RESOLUTION','exact isolated invocation required');
+    const resolution={outcome,evidence:ref(event),activity:ref(old)};
+    if(feedback.value.resolution){ensure(canonical(feedback.value.resolution)===canonical(resolution),'TURN_RESOLUTION_CONFLICT','cannot replace a prior verification');return feedback;}
+    const commands=[{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:feedback.revision,value:{...feedback.value,resolution}}];
+    const current=readActivity(this.#store,this.#subjectId,this.#workspace);
+    if(current?.id===old.id&&current.revision===old.revision)commands.push(activityWrite(current,{subject:this.#subjectId,workspace:this.#workspace,value:{...current.value,phase:'complete',failure:null,closure:resolution}}));
+    return this.#store.execute({requestId:'resolve-invocation:'+packetId+':'+digest(resolution),commands})[0];
   }
   #finishActivity(next=null){
     const row=readActivity(this.#store,this.#subjectId,this.#workspace);if(!row)return;
