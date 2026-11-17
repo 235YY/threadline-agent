@@ -22,7 +22,7 @@ node --env-file=.env tools/brain-service/doctor.mjs --qq --json
 按与标准入口相同的配置解析，逐项列出Node、身份、数据库、实例锁、RequestJournal、
 官方消费令牌、模型凭据（非Windows明确报告不可用）、情感Python、端口及QQ桥依赖。
 它不创建、不删除、不解锁、不读取密钥内容；缺失的数据库会被明确标为"将新建空主体"，
-不会被当作已有主体。有阻断项时退出码为1。
+不会被当作已有主体。诊断的阻断规则与启动检查一致；有阻断项时退出码为1。
 
 ## 已授权live的必要条件
 
@@ -31,6 +31,9 @@ node --env-file=.env tools/brain-service/doctor.mjs --qq --json
 | 项目 | 实际要求 |
 |---|---|
 | BRAIN_LIVE / JY_LIVE_CONFIRM | 1 / YES，都必须明确设置 |
+| JY_NEW_SUBJECT | BRAIN_STORE 不存在时必须为 1，否则拒绝启动（NEW_SUBJECT_UNCONFIRMED）；防止路径写错时静默新建空主体 |
+| JY_NEW_REQUEST_JOURNAL | BRAIN_LEDGER 不存在时必须为 1（NEW_JOURNAL_UNCONFIRMED）；仅首次空白部署使用 |
+| QQ_TEST_ONLY_OWNER 或 JY_QQ_SCOPE=all | 二选一，否则拒绝启动（QQ_SCOPE_UNCONFIRMED）；不再默认开放全部好友与群 |
 | BRAIN_STORE、BRAIN_STATE | 自己的数据库和状态目录；禁止样例指向生产 |
 | BRAIN_IDENTITY_FILE | 存在、非空且不超过4000字符的获准身份文件 |
 | BRAIN_LEDGER | RequestJournal路径，已有文件须为jingyang-request-journal-v1 |

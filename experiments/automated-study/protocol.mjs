@@ -4,7 +4,7 @@ import {keepAttention} from '../../src/attention.mjs';
 import {readFileSync} from 'node:fs';
 import {withMindInstructions} from '../../src/mind-prompt.mjs';
 import {generationSets} from '../../src/prompt-generations.mjs';
-const WIRE_PROMPTS=generationSets(read=>({CONSULT_PROMPT:read('decision-consultation.zh.md'),MATERIAL_PROMPT:read('decision-workbench-materials.zh.md'),
+export const WIRE_PROMPTS=generationSets(read=>({CONSULT_PROMPT:read('decision-consultation.zh.md'),MATERIAL_PROMPT:read('decision-workbench-materials.zh.md'),
   ATTENTION_PROMPT:read('decision-attention.zh.md'),FOCUS_PROMPT:read('decision-workbench-focus.zh.md'),RECOVERY_PROMPT:read('decision-workbench-recovery.zh.md'),
   MIND_PROMPT:read('decision-mind.zh.md')}));
 

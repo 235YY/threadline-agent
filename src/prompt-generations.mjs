@@ -11,5 +11,7 @@ export const promptReader=(generation=null)=>{
 // Build one value per generation lazily; archived ones only when verification needs them.
 export function generationSets(build){
   const current=build(promptReader());let archived=null;
-  return {current,all:()=>[current,...(archived??=ARCHIVED_PROMPT_GENERATIONS.map(g=>build(promptReader(g))))]};
+  const old=()=>archived??=ARCHIVED_PROMPT_GENERATIONS.map(g=>build(promptReader(g)));
+  // byName is for audit/tests: what an archived generation would have produced.
+  return {current,all:()=>[current,...old()],byName:name=>name===null?current:old()[ARCHIVED_PROMPT_GENERATIONS.indexOf(name)]??null};
 }

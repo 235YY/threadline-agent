@@ -2,8 +2,8 @@
   "format": "threadline-public-source-v1",
   "task": "JY-OPTIMIZE-007",
   "meaning": "Every tracked source file except this manifest; no private runtime data. Exact PR HEAD is the commit containing this tree.",
-  "publicRuntimeBuild": "0022170525b3ee3f019b681f9dfcfcd886595042a293387d225e50823d6a8b22",
-  "buildNote": "runtimeSourceIdentity on an LF (Linux) checkout; byte-level line endings change this value. Unmodified 987045e gives 82d23e584fb61e573ee682cc00f3e701db56f06c869c21cf85ba8fc3e7f45746 on the same checkout.",
+  "publicRuntimeBuild": "4d1b37bdd6484698054be92631d90cd5b673510d8e6a37919988e63cd6983e65",
+  "buildNote": "runtimeSourceIdentity rule source-text-lf-v2 (CRLF treated as LF); not comparable with earlier raw-byte build ids kept under previous.",
   "previous": {
     "task": "JY-RECOVERY-006",
     "localFrozenBuild": "dd392ea23d01edfe1d1953f4500238e03692b8fb1f6fdb8054c784184409f040",
@@ -14,6 +14,10 @@
     {
       "file": ".env.example",
       "sha256": "ae6b182e1ee7e26ed44e3f14f032629fba9eb6a365fa91931678c11668e76c54"
+    },
+    {
+      "file": ".gitattributes",
+      "sha256": "c636d9671e0d8a1917b27c60ebbc77c7ca2bf8f4308e72dbb175ec9d956e6ec2"
     },
     {
       "file": ".gitignore",
@@ -65,7 +69,7 @@
     },
     {
       "file": "docs/CONFIGURATION.md",
-      "sha256": "5d8a58c3322166d2e99396d0ac26f24a9bf5c3404e41c9081669856ed2ea3993"
+      "sha256": "2ae7883b24329878b98b9653aed776acb245001066a87b322aba1bc7575a15ee"
     },
     {
       "file": "docs/INTEGRATIONS.md",
@@ -73,7 +77,7 @@
     },
     {
       "file": "docs/OPTIMIZE-007.md",
-      "sha256": "fac51d2264a34cd62ed53f349a2e35193cfe7265b8dfb552d7b7e36c8ba4855d"
+      "sha256": "a6efca6a95b4d961cd10b8bc126f4b7370c2ececf4e3c56815fea4744925f763"
     },
     {
       "file": "docs/PRIVACY.md",
@@ -133,7 +137,7 @@
     },
     {
       "file": "experiments/automated-study/protocol.mjs",
-      "sha256": "78a4b4060f04ee4f55194ce1758237d6bf9e123a95818ec799fd699a62176808"
+      "sha256": "78053dfe9f8bd8b46fa9def2f78aa79b0dcc91d43214c6d3b0a1c3c58740faf6"
     },
     {
       "file": "experiments/bounded-study.mjs",
@@ -485,7 +489,7 @@
     },
     {
       "file": "scripts/current-test-files.json",
-      "sha256": "b20f6214699b3064db35fbcaff5c4e31e6caa2512a5d4fc75871dea2c35af80b"
+      "sha256": "ce383ef728f60dc154b4fa9a0ece026ec4c054321b1273f029731827a99056ce"
     },
     {
       "file": "scripts/study-key.ps1",
@@ -553,7 +557,7 @@
     },
     {
       "file": "src/cognition.mjs",
-      "sha256": "b34f2ac500f41c90d9506f9296cbb9c3b3842b8710728b94236ad89da40f8a6a"
+      "sha256": "bf58a142cd07d2db3f50aa24fb93554cc1b52a4ba473071db7e57084ab835542"
     },
     {
       "file": "src/conditional-combination.mjs",
@@ -681,7 +685,7 @@
     },
     {
       "file": "src/maintenance-protocol.mjs",
-      "sha256": "57fdba921da5210c5894aeab8f5b54ce22f60d9dabfbad08c6f4c06a8509c22b"
+      "sha256": "146d4ee30a445eaf59626818fbbd4b4ec622d2b986dc1c4a669a600e738826c1"
     },
     {
       "file": "src/maintenance.mjs",
@@ -749,7 +753,7 @@
     },
     {
       "file": "src/prompt-generations.mjs",
-      "sha256": "0b4a9ace5299721ae5fe18a2c16467775d1fd0191a605c116653dbb9df3764d6"
+      "sha256": "84ec5d6d70040b6887d3b07df21e3a2d2b7ed90ea12cff389985e315a3fc75c4"
     },
     {
       "file": "src/proposal-normalization.mjs",
@@ -945,7 +949,7 @@
     },
     {
       "file": "test/doctor.test.mjs",
-      "sha256": "91b376638094cf8290e91aea2e0463b186b7db7d3c8c61afaf47521de797949c"
+      "sha256": "c32a08480a231f188a576f062f3a38e859ba1813ad6f7ac7518c95e67533352d"
     },
     {
       "file": "test/event-process.test.mjs",
@@ -985,7 +989,7 @@
     },
     {
       "file": "test/full-runtime-profile.test.mjs",
-      "sha256": "f206374a279a777f985c14c077d5ba724fefacbc3ba0eef373c0ad43dc196414"
+      "sha256": "0ab511d49c142cf53b70dee12c16b485b6a5aa904b03f39ed8f1ad1b67d7a77d"
     },
     {
       "file": "test/helpers.mjs",
@@ -1076,6 +1080,10 @@
       "sha256": "38a16a5e49e5fd20f240c5627bf869b1f072e6d82205972283c2bcbd96d58857"
     },
     {
+      "file": "test/prompt-generations.test.mjs",
+      "sha256": "0f2bd31717e92f1dba7af416830fdbc1e5edf2558b51fcb8ede933bca24fccd9"
+    },
+    {
       "file": "test/public-release-contract.test.mjs",
       "sha256": "9f328099a601c768493ca0c5eedcfc45ece8e5d51274a64ff3a4c201397d7a02"
     },
@@ -1089,7 +1097,7 @@
     },
     {
       "file": "test/qq-recovery-host.test.mjs",
-      "sha256": "dff53a65dca41a8bacd7fe79b89479a9955814ffe46813a0f6c6f61bc4a6985c"
+      "sha256": "ce39297542490a62701c245c1504348e9bd1d8540b845c4fe85ebb88335f7744"
     },
     {
       "file": "test/qq-recovery-local-stop.test.mjs",
@@ -1157,7 +1165,7 @@
     },
     {
       "file": "test/runtime-boundaries.test.mjs",
-      "sha256": "a7fecec0ebea6efa6144c6517dff5965993a0765192ae32f56327e657470eb8a"
+      "sha256": "ec430e4d8d940c9d7eba8b09f5b70e0e42867c6346a086c37548f9916e079931"
     },
     {
       "file": "test/standing-daily-budget.test.mjs",
@@ -1421,15 +1429,15 @@
     },
     {
       "file": "tools/brain-service/bootstrap.mjs",
-      "sha256": "f0ba96b4b443c2f51e116a29d3c309d26609c46f739ea828dee87ec193d7f547"
+      "sha256": "c65b57ca2e06f8b30e0e443bf10bda62ca7e8001a50e36eb85e6f37fcf802661"
     },
     {
       "file": "tools/brain-service/doctor.mjs",
-      "sha256": "17fb6a9f88442f31e61a0a6c772c71a8352510fc1d2592fd99aa261f8787e9fb"
+      "sha256": "e27788031d8bd93d27447053f459084a842eeed85f2a5259eaaabdd1bfa80293"
     },
     {
       "file": "tools/brain-service/instance-guard.mjs",
-      "sha256": "feb0110d361b9ac8c3fd8dba4bccf34316a008b741dc7f96c8ea95390d808077"
+      "sha256": "02780c95c75b2ebbfaafe85922728d5e5e070fb6e8570b0ebe5d0c02dd246148"
     },
     {
       "file": "tools/brain-service/run.mjs",

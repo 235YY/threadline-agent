@@ -1,8 +1,7 @@
 # JY-OPTIMIZE-007：减轻模型操作负担、解冻Prompt、启动前诊断
 
 基线：`release/jy-recovery-005` @ 987045e（交接包指定的精确提交）。
-不部署、不接QQ、不调用模型、不迁移数据。离线回归：875项，874通过，1项Windows专属跳过，0失败
-（Node 26.13.1 / Linux / Python 3.13）。
+不部署、不接QQ、不调用模型、不迁移数据。离线回归结果见文末“审查后修正”。
 
 ## 1. 模型不再需要抄写版本号（交接01/02“模型操作负担重”）
 
@@ -57,5 +56,23 @@ Process存在于attention frame中而不是顶层记录。旧代码对“Process
 - 不新增跨平台凭据实现：涉及密钥保管方式，属于运营方决策（诊断会明确报告）。
 - 回执“来自哪个动作”的交接（01中把inspect回执当写入）尚未处理：需要真实调用对照才能判断是否有效，
   建议作为下一步，在同任务/同Token条件下对比。
-- `SOURCE-MANIFEST.json`里的Build编号与平台换行有关：未修改的987045e在Linux(LF)检出上算出的是
-  `82d23e58…`而非清单中的`5d81afb8…`。本次在LF检出上重新生成，并保留旧值以便追溯。
+
+## 审查后修正（第二个提交）
+
+外部审查提出三点，处理如下：
+
+1. **live启动不得静默新建主体/账本或全开QQ。** 原先只是诊断里的WARN，而且诊断不拦启动。
+   现在`launchBrain`本身在live下拒绝：BRAIN_STORE不存在（除非`JY_NEW_SUBJECT=1`）、
+   BRAIN_LEDGER不存在（除非`JY_NEW_REQUEST_JOURNAL=1`）、既无`QQ_TEST_ONLY_OWNER`也无`JY_QQ_SCOPE=all`。
+   检查发生在获取任何资源之前，不创建文件。doctor使用同一规则，显式确认后降为WARN。
+2. **Prompt版本覆盖维护流程。** 维护基础Prompt、焦点Prompt与mind扩展整体按代加载；
+   新增`test/prompt-generations.test.mjs`，对认知、紧凑wire、维护三条路径分别验证：
+   旧代合法封包通过、只篡改指令的封包被拒、新旧混拼被拒；并检查每个归档代都是完整快照。
+   仍在代码里内联的指令（如维护focused-adapter的说明句）没有改动，因此当前无影响；
+   以后若要修改，按prompts/archive/README.md先移入文件再归档。
+3. **Build身份跨平台稳定。** 仓库里本来就有CRLF/混合换行文件，Windows autocrlf还会改写其他文件，
+   按原始字节计算无法跨平台一致。现在按`source-text-lf-v2`规则（CRLF视同LF）计算，规则名进入指纹；
+   另加`.gitattributes`（`* -text`）让git在任何平台都按原样检出，使清单里的逐文件SHA也一致。
+   规则改变后，旧Build编号（如5d81afb8…）不能与新编号直接比较，清单中保留旧值供追溯。
+
+离线回归原始日志：`docs/optimize-007-test.log`（`node scripts/test-current.mjs`，spec reporter）。

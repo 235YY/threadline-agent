@@ -5,7 +5,8 @@
 //   node tools/brain-service/doctor.mjs                 # current env, human-readable
 //   node --env-file=.env tools/brain-service/doctor.mjs --json
 //
-// Exit code: 0 when nothing is blocking for the resolved mode, 1 otherwise.
+// Exit code: 0 when nothing is blocking for the resolved mode, 1 otherwise. The blocking
+// rules for a missing live store/journal and unbounded QQ reach match launchBrain.
 import {existsSync,readFileSync,statSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -54,15 +55,17 @@ export async function diagnose({root=process.cwd(),env=process.env,platform=proc
   // Store: a missing store becomes a brand-new subject. Say so instead of silently starting from nothing.
   if(config.storePath===':memory:')out.push(item('store',INFO,'内存数据库：退出即丢失'));
   else if(file(config.storePath))out.push(item('store',OK,config.storePath));
-  else out.push(item('store',config.live?WARN:INFO,`数据库不存在，启动会新建一个空主体：${config.storePath}`,
-    config.live?'若本应接续已有主体，请检查 BRAIN_STORE；不要用空库代替原数据':null));
+  else if(!config.live)out.push(item('store',INFO,`数据库不存在，启动会新建一个空主体：${config.storePath}`));
+  else if(env.JY_NEW_SUBJECT==='1')out.push(item('store',WARN,`已确认新建空主体（JY_NEW_SUBJECT=1）：${config.storePath}`));
+  else out.push(item('store',BLOCK,`live 数据库不存在：${config.storePath}`,'若应接续已有主体，修正 BRAIN_STORE；只有确实要新建主体时才设置 JY_NEW_SUBJECT=1'));
 
   const instance=join(config.stateDirectory,'brain.launch.lock');
   if(file(instance))out.push(item('instance',BLOCK,`已有启动锁：${instance}`,'先确认原实例是否仍在运行；不要凭 PID 猜测或直接删锁'));
   else out.push(item('instance',OK,`状态目录 ${config.stateDirectory}${dir(config.stateDirectory)?'':'（将新建）'}`));
 
   if(config.live){
-    if(!file(config.ledgerPath))out.push(item('request-journal',WARN,`RequestJournal 不存在，将新建：${config.ledgerPath}`,'已有运行资料时必须指向原 Journal；换空路径会绕过历史 UNKNOWN'));
+    if(!file(config.ledgerPath))out.push(env.JY_NEW_REQUEST_JOURNAL==='1'?item('request-journal',WARN,`已确认新建 RequestJournal（JY_NEW_REQUEST_JOURNAL=1）：${config.ledgerPath}`)
+      :item('request-journal',BLOCK,`RequestJournal 不存在：${config.ledgerPath}`,'已有运行资料时必须指向原 Journal（换空路径会绕过历史 UNKNOWN）；仅首次空白部署设置 JY_NEW_REQUEST_JOURNAL=1'));
     else if(file(config.ledgerPath+'.lock'))out.push(item('request-journal',BLOCK,`Journal 被锁定：${config.ledgerPath}.lock`,'确认持有者后按既有规则处理，不自动删锁'));
     else{
       let format=null;try{format=JSON.parse(readFileSync(config.ledgerPath,'utf8')).format;}catch{}
@@ -79,6 +82,9 @@ export async function diagnose({root=process.cwd(),env=process.env,platform=proc
     if(platform!=='win32')out.push(item('model-credential',BLOCK,`当前平台 ${platform}：默认凭据只实现了 Windows DPAPI helper`,'需在 Windows 运行，或由运营方评审并接入跨平台凭据实现（勿用明文环境变量代替）'));
     else out.push(file(keyFile)?item('model-credential',OK,'DPAPI 密文存在（未解密）'):item('model-credential',BLOCK,`缺少 ${keyFile}`,'在当前 Windows 用户下运行 scripts/study-key.ps1 填写'));
     if(config.openLife)out.push(item('open-life',BLOCK,'JY_OPEN_LIFE=1 需要宿主注入 lifePolicy；标准 run.mjs 不提供，启动会报 LIFE_POLICY_REQUIRED','保持 JY_OPEN_LIFE=0，或用自有宿主调用 launchBrain({dependencies:{lifePolicy}})'));
+    out.push(env.QQ_TEST_ONLY_OWNER?item('qq-scope',OK,`只允许私聊 ${env.QQ_TEST_ONLY_OWNER}`)
+      :env.JY_QQ_SCOPE==='all'?item('qq-scope',WARN,'已确认开放全部好友与已加入的群（JY_QQ_SCOPE=all）')
+      :item('qq-scope',BLOCK,'未限定 QQ 发送范围：默认会开放全部好友与群','设置 QQ_TEST_ONLY_OWNER=<主人QQ>；确需全部开放时显式设置 JY_QQ_SCOPE=all'));
     if(!env.BRAIN_TOKEN)out.push(item('http-auth',WARN,'未设置 BRAIN_TOKEN：本地 HTTP 接口无认证','设置 BRAIN_TOKEN，并让 QQ 桥使用相同令牌'));
   }
 
@@ -106,7 +112,6 @@ export async function diagnose({root=process.cwd(),env=process.env,platform=proc
     let sdkPath=null;try{sdkPath=sdk?(sdk.startsWith('file:')?fileURLToPath(sdk):resolve(root,sdk)):null;}catch{}
     out.push(sdkPath&&file(sdkPath)?item('qq-sdk',OK,sdkPath):item('qq-sdk',BLOCK,sdk?`找不到 SDK：${sdk}`:'QQ_SDK_MODULE 未设置；默认值是原机目录',
       '设置 QQ_SDK_MODULE 为 @snowluma/sdk 的 dist/index.js'));
-    if(!env.QQ_TEST_ONLY_OWNER)out.push(item('qq-scope',WARN,'未设置 QQ_TEST_ONLY_OWNER：发送范围是全部好友与群','首次验收建议只开放一个私聊'));
   }
   return finish(out,config);
 }

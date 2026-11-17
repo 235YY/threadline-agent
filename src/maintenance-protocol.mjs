@@ -2,13 +2,14 @@ import {readFileSync} from 'node:fs';
 import {canonical,digest,ensure,text,time,uniqueRefs,refKey,oneOf} from './contracts.mjs';
 import {normalizeStateDelta} from './personal-state.mjs';
 import {attentionDelta} from './attention.mjs';
-import {withMindInstructions,MIND_EXTENSIONS} from './mind-prompt.mjs';
+import {withMindInstructions} from './mind-prompt.mjs';
+import {generationSets} from './prompt-generations.mjs';
 import {normalizeAnchor} from './anchor.mjs';
 export const maintenanceScheduleId=subject=>`maintenance-schedule:${digest(subject)}`;
 export const maintenanceJobId=(subject,day)=>`maintenance-job:${digest({subject,day})}`;
 export const MAINTENANCE_DEFAULTS={enabled:true,utcOffsetMinutes:480,hour:3,minute:30,maxCandidates:8,maxSources:8,scanLimit:32,maxInputBytes:32768,maxOutputBytes:16384,maxOutputTokens:2048};
-const prompt=readFileSync(new URL('../prompts/maintenance.zh.md',import.meta.url),'utf8');
-const focusPrompt=readFileSync(new URL('../prompts/decision-workbench-focus.zh.md',import.meta.url),'utf8');
+// Whole maintenance prompt per generation, so archived packets stay verifiable after edits.
+export const MAINTENANCE_PROMPTS=generationSets(read=>({prompt:read('maintenance.zh.md'),focusPrompt:read('decision-workbench-focus.zh.md'),mind:read('decision-mind.zh.md')}));
 export const pin=r=>({id:r.id,revision:r.revision});
 export function exact(value,keys,name){ensure(value&&Object.getPrototypeOf(value)===Object.prototype&&canonical(Object.keys(value).sort())===canonical([...keys].sort()),'MAINTENANCE_SHAPE',`${name} fields do not match`);}
 export function maintenancePolicy(value=MAINTENANCE_DEFAULTS){
@@ -19,9 +20,9 @@ export function maintenancePolicy(value=MAINTENANCE_DEFAULTS){
 }
 export function maintenanceSlot(now,policy){time(now);const p=maintenancePolicy(policy),local=new Date(now+p.utcOffsetMinutes*60000);
   return {day:local.toISOString().slice(0,10),due:p.enabled&&local.getUTCHours()*60+local.getUTCMinutes()>=p.hour*60+p.minute};}
-export function maintenancePacket(payload,policy,mindExtension=MIND_EXTENSIONS.current){
+export function maintenancePacket(payload,policy,{prompt,focusPrompt,mind}=MAINTENANCE_PROMPTS.current){
   const base=prompt+(payload.continuity?.attention?.focusSupport?.enabled?'\n\n'+focusPrompt:'');
-  const instruction=payload.continuity?.mind?withMindInstructions(base,mindExtension):base;
+  const instruction=payload.continuity?.mind?withMindInstructions(base,mind):base;
   const p=maintenancePolicy(policy),stage='personalMaintenance',packetId=digest({stage,instruction,payload});
   const messages=[{role:'system',content:instruction},{role:'user',content:canonical({packetId,...payload})}],bytes=Buffer.byteLength(canonical(messages));
   ensure(bytes<=p.maxInputBytes,'MAINTENANCE_OVERFLOW','complete maintenance messages exceed budget',{bytes,budget:p.maxInputBytes});
@@ -29,7 +30,7 @@ export function maintenancePacket(payload,policy,mindExtension=MIND_EXTENSIONS.c
 }
 export function verifyMaintenancePacket(packet,policy){
   // Accept a packet sealed by any known prompt generation; never reseal it.
-  for(const extension of MIND_EXTENSIONS.all()){const actual=maintenancePacket(packet.payload,policy,extension);if(canonical(actual)===canonical(packet))return actual;}
+  for(const prompts of MAINTENANCE_PROMPTS.all()){const actual=maintenancePacket(packet.payload,policy,prompts);if(canonical(actual)===canonical(packet))return actual;}
   ensure(false,'PACKET_CHANGED','maintenance input changed');}
 export function maintenanceModelInput(packet,policy){verifyMaintenancePacket(packet,policy);return {packetId:packet.packetId,messages:JSON.parse(canonical(packet.messages)),bytes:packet.bytes};}
 export function maintenanceOutput(raw,packet,policy){

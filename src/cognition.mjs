@@ -712,6 +712,11 @@ export function ablateDecisionPacket(packet,aspect) {
 }
 
 // Network evaluators receive only a validated copy of the exact prepared messages.
+// Audit/test aid: the packet an archived prompt generation would have sealed for this payload.
+export function sealedWithGeneration(packet,generation){
+  const prompts=PROMPT_SETS.byName(generation);ensure(prompts,'PROMPT_GENERATION','unknown prompt generation');
+  return seal(packet.stage,packet.payload,packet.budgetBytes,packet.instructionSuffix??null,{operationContract:Object.hasOwn(packet.payload,'operationContract'),prompts});
+}
 export function verifiedModelInput(packet) {
   ensure(['decision','decisionContinuity','decisionInformation','decisionWorkbench','decisionAttention','decisionMind','decisionGraph','reflection','review'].includes(packet?.stage),'PACKET_STAGE','unsupported stage');
   verify(packet,packet.stage);

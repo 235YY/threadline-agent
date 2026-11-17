@@ -25,7 +25,7 @@ test('live lists every missing operator resource instead of assuming empty defau
  const env={BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',BRAIN_LEDGER:join(d,'journal.json'),BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_IDENTITY_FILE:join(d,'none.txt'),JY_OPEN_LIFE:'1'};
  const r=await diagnose({...base,env,platform:'linux'});
  assert.equal(r.ready,false);
- for(const [area,status] of [['identity','blocked'],['store','warn'],['request-journal','warn'],['official-usage','blocked'],['model-credential','blocked'],['open-life','blocked'],['http-auth','warn']])
+ for(const [area,status] of [['identity','blocked'],['store','blocked'],['request-journal','blocked'],['qq-scope','blocked'],['official-usage','blocked'],['model-credential','blocked'],['open-life','blocked'],['http-auth','warn']])
   assert.equal(find(r,area)?.status,status,area);
  assert.deepEqual(readdirSync(d),before);
 });
@@ -39,5 +39,14 @@ test('affect and QQ bridge requirements are explicit',async()=>{
  const r=await diagnose({...base,env:{JY_AFFECT:'1',QQ_UIN:'123'},qq:true,spawn:()=>({status:0,stdout:'3.9.1\n'})});
  assert.equal(find(r,'affect').status,'blocked');
  const r2=await diagnose({...base,env:{JY_AFFECT:'1',JY_AFFECT_PYTHON:'python3',QQ_UIN:'123'},qq:true,spawn:()=>({status:0,stdout:'3.13.2\n'})});
- assert.equal(find(r2,'affect').status,'ok');assert.equal(find(r2,'qq-sdk').status,'blocked');assert.equal(find(r2,'qq-onebot').status,'blocked');assert.equal(find(r2,'qq-scope').status,'warn');
+ assert.equal(find(r2,'affect').status,'ok');assert.equal(find(r2,'qq-sdk').status,'blocked');assert.equal(find(r2,'qq-onebot').status,'blocked');
+});
+test('live: new subject, new journal and all-chat scope are allowed only when explicitly acknowledged',async t=>{
+ const d=scratch(t);writeFileSync(join(d,'id.txt'),'你是一个合成测试主体。');
+ const env={BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',BRAIN_LEDGER:join(d,'journal.json'),BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_IDENTITY_FILE:join(d,'id.txt'),JY_OFFICIAL_USAGE_TOKEN:'x'.repeat(32),BRAIN_TOKEN:'t'};
+ const blocked=await diagnose({...base,platform:'win32',env});
+ assert.deepEqual(blocked.checks.filter(c=>c.status==='blocked').map(c=>c.area).sort(),['model-credential','qq-scope','request-journal','store']);
+ const ack=await diagnose({...base,platform:'win32',env:{...env,JY_NEW_SUBJECT:'1',JY_NEW_REQUEST_JOURNAL:'1',JY_QQ_SCOPE:'all'}});
+ for(const area of ['store','request-journal','qq-scope'])assert.equal(find(ack,area).status,'warn',area);
+ const owner=await diagnose({...base,platform:'win32',env:{...env,QQ_TEST_ONLY_OWNER:'10001'}});assert.equal(find(owner,'qq-scope').status,'ok');
 });

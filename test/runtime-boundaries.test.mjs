@@ -23,7 +23,7 @@ function fakeDependencies(extra={}){
   core:{READ_ONLY_HOST_TOOLS:[],startBrainService:async value=>{options=value;return {server:{listening:false},port:1,url:'http://127.0.0.1:1',health:()=>({cognitionBusy:false}),close:()=>calls.serviceClosed++,stopScheduling:()=>{},startScheduling:n=>calls.starts.push(n)};}},...extra};
  return {deps,calls,options:()=>options};
 }
-const liveEnv=env=>({...env,BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',BRAIN_LEDGER:'budget.json',BRAIN_MAX_CALLS:'3',BRAIN_MAX_MICROS:'100000',BRAIN_MAINTENANCE:'0'});
+const liveEnv=env=>({...env,BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',JY_NEW_SUBJECT:'1',JY_NEW_REQUEST_JOURNAL:'1',JY_QQ_SCOPE:'all',BRAIN_LEDGER:'budget.json',BRAIN_MAX_CALLS:'3',BRAIN_MAX_MICROS:'100000',BRAIN_MAINTENANCE:'0'});
 
 test('standard live startup injects the official gate and RequestJournal, without old financial or daily call halt',async()=>{
  const f=fixture(),token='o'.repeat(40),monitor=officialDashboard({file:join(f.root,'official.json'),token});
@@ -174,4 +174,26 @@ test('maintenance heartbeat uses the host exclusion gate before preparing a job'
  const s=createBrainService({heartbeatMs:0});t.after(()=>s.close());let gates=0,models=0,result;
  const session=new MaintenanceSession({store:s.store,subjectId:'jingyang'}),h=startMaintenanceHeartbeat({session,isBusy:()=>false,runExclusive:async fn=>{gates++;assert.equal(typeof fn,'function');return {status:'busy',modelCalled:false};},invoke:()=>models++,authorize:async()=>true,onResult:r=>result=r});
  try{await h.tick();assert.equal(gates,1);assert.equal(models,0);assert.equal(result.status,'busy');assert.equal([...s.store.all('maintenance_job')].length,0);}finally{h.stop();}
+});
+
+test('live launch refuses to silently create a subject or journal, or to open every QQ chat',async()=>{
+ const {launchBrain}=await import('../tools/brain-service/bootstrap.mjs');
+ const {mkdtempSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const d=mkdtempSync(join(tmpdir(),'jy-live-ack-')),env={BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',JY_AFFECT:'0',BRAIN_PORT:'0',BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_LEDGER:join(d,'j.json'),BRAIN_IDENTITY_FILE:new URL('../config/identity.example.txt',import.meta.url).pathname,JY_OFFICIAL_USAGE_TOKEN:'x'.repeat(32)};
+ const root=new URL('../',import.meta.url).pathname;
+ await assert.rejects(launchBrain({root,env}),{code:'NEW_SUBJECT_UNCONFIRMED'});
+ await assert.rejects(launchBrain({root,env:{...env,JY_NEW_SUBJECT:'1'}}),{code:'NEW_JOURNAL_UNCONFIRMED'});
+ await assert.rejects(launchBrain({root,env:{...env,JY_NEW_SUBJECT:'1',JY_NEW_REQUEST_JOURNAL:'1'}}),{code:'QQ_SCOPE_UNCONFIRMED'});
+ const {readdirSync}=await import('node:fs');assert.deepEqual(readdirSync(d),[]);
+});
+
+test('runtime build identity is the same for LF and CRLF checkouts, and still detects real edits',async()=>{
+ const {runtimeSourceIdentity,SOURCE_IDENTITY_RULE}=await import('../tools/brain-service/instance-guard.mjs');
+ const {mkdtempSync,mkdirSync,writeFileSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const tree=eol=>{const r=mkdtempSync(join(tmpdir(),'jy-build-'));mkdirSync(join(r,'src'));mkdirSync(join(r,'prompts'));
+  writeFileSync(join(r,'src','a.mjs'),['export const a=1;','// 注释',''].join(eol));writeFileSync(join(r,'prompts','p.zh.md'),['第一行','第二行'].join(eol));return r;};
+ const lf=runtimeSourceIdentity(tree('\n')),crlf=runtimeSourceIdentity(tree('\r\n'));
+ assert.equal(lf.rule,SOURCE_IDENTITY_RULE);assert.equal(lf.fingerprint,crlf.fingerprint);
+ const edited=tree('\n');writeFileSync(join(edited,'src','a.mjs'),'export const a=2;\n// 注释\n');
+ assert.notEqual(runtimeSourceIdentity(edited).fingerprint,lf.fingerprint);
 });

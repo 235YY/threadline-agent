@@ -13,6 +13,12 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
  assertSupportedNode();
  const config=resolveBrainConfig({root,env});
  ensure(dependencies.core||existsSync(join(config.root,'src/store.mjs'))&&existsSync(join(config.root,'package.json')),'PROJECT_ROOT','launch from the actual project directory');
+ // Live never silently starts from nothing or with unrestricted QQ reach: each needs an explicit acknowledgement.
+ if(config.live){
+  ensure(config.storePath===':memory:'||existsSync(config.storePath)||env.JY_NEW_SUBJECT==='1','NEW_SUBJECT_UNCONFIRMED','live store does not exist; set JY_NEW_SUBJECT=1 only if a brand-new subject is intended',{storePath:config.storePath});
+  ensure(existsSync(config.ledgerPath)||env.JY_NEW_REQUEST_JOURNAL==='1','NEW_JOURNAL_UNCONFIRMED','request journal does not exist; set JY_NEW_REQUEST_JOURNAL=1 only for a first blank deployment',{ledgerPath:config.ledgerPath});
+  ensure(!!env.QQ_TEST_ONLY_OWNER||env.JY_QQ_SCOPE==='all','QQ_SCOPE_UNCONFIRMED','set QQ_TEST_ONLY_OWNER, or JY_QQ_SCOPE=all to knowingly allow every friend and joined group');
+ }
  const officialSpend=config.live?(dependencies.officialSpend??officialDashboard({file:join(config.stateDirectory,'official-usage.json'),token:env.JY_OFFICIAL_USAGE_TOKEN})):null;
  const guard=claimBrainInstance({stateDirectory:config.stateDirectory});
  const shutdownToken=randomUUID();

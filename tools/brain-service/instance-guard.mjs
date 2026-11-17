@@ -36,12 +36,15 @@ export function claimBrainInstance({stateDirectory,pid=process.pid,isAlive=alive
 }
 
 // A stated, bounded startup inventory, not a claim that all lazy-loaded code is measured.
+export const SOURCE_IDENTITY_RULE='source-text-lf-v2';
+export const sourceTextSha256=bytes=>createHash('sha256').update(Buffer.from(bytes).toString('latin1').replace(/\r\n/g,'\n'),'latin1').digest('hex');
 export function runtimeSourceIdentity(root){
  const directories=['src','prompts','tools/brain-service','tools/affect-integrated','tools/affect-shadow','tools/qq-connect','tools/ops','tools/native-capabilities','tools/open-life'];
  const files=[];
  function visit(dir){if(!existsSync(dir))return;for(const e of readdirSync(dir,{withFileTypes:true})){if(e.isSymbolicLink()||e.name==='additions'||e.name==='upstream-tests'||e.name==='__pycache__')continue;const p=join(dir,e.name);if(e.isDirectory())visit(p);else if(/\.(mjs|py|md|json|ps1)$/.test(e.name)&&!e.name.endsWith('.test.mjs'))files.push(p);}}
  for(const d of directories)visit(join(root,d));
  for(const name of ['scripts/study-key.ps1'])if(existsSync(join(root,name)))files.push(join(root,name));
- const rows=[...new Set(files)].sort().map(path=>({path:relative(root,path).replaceAll('\\','/'),sha256:createHash('sha256').update(readFileSync(path)).digest('hex')}));
- return {fingerprint:createHash('sha256').update(JSON.stringify(rows)).digest('hex'),files:rows.length,scope:directories,meaning:'startup disk inventory; verify unchanged before publishing ready'};
+ // Identity is of source text, not of how a checkout stored line endings (Windows autocrlf, zip exports).
+ const rows=[...new Set(files)].sort().map(path=>({path:relative(root,path).replaceAll('\\','/'),sha256:sourceTextSha256(readFileSync(path))}));
+ return {fingerprint:createHash('sha256').update(JSON.stringify({rule:SOURCE_IDENTITY_RULE,rows})).digest('hex'),rule:SOURCE_IDENTITY_RULE,files:rows.length,scope:directories,meaning:'startup disk inventory; verify unchanged before publishing ready'};
 }
