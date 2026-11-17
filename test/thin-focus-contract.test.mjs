@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {openFocusFixture,SUPPLEMENT_CASES} from '../experiments/focus-study/fixture.mjs';
 import {wirePacket,verifiedWire,expandOutput,declaredEvidence} from '../experiments/automated-study/protocol.mjs';
 import {checkCaseGate} from '../experiments/bounded-study.mjs';
+import {verifiedModelInput} from '../src/cognition.mjs';
 const campaign=new URL('../evaluation/focus-study_2026-11-05/',import.meta.url);
 test('焦点薄接口只有一个输出外壳；保留输入continuity路径和完整语义限制',()=>{
  const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
@@ -47,4 +48,24 @@ test('注册门槛由驱动强制：首次允许，旧结果失败/提交不足�
  assert.throws(()=>checkCaseGate([{rounds:[{}],failure:null}],gate),{code:'CASE_GATE'});
  assert.doesNotThrow(()=>checkCaseGate([{rounds:[{},{}],failure:null}],gate));
  assert.doesNotThrow(()=>checkCaseGate([{rounds:[],failure:{}}],null));
+});
+
+test('recovery-002 wire: legacy/current mixed verification never reseals evidence or accepts tampering',()=>{
+ const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
+  const current=f.prepare().packet;
+  assert.equal(current.payload.operationContract.format,'operation-contract-v1');
+  const pointer=JSON.parse(readFileSync(new URL('current.json',campaign),'utf8'));
+  const archived=JSON.parse(readFileSync(new URL(`${pointer.hash}/f01/r0/call/wire.json`,campaign),'utf8')).basePacket;
+  assert.equal(Object.hasOwn(archived.payload,'operationContract'),false);
+  for(const p of [archived,current,JSON.parse(JSON.stringify(archived)),JSON.parse(JSON.stringify(current))]){
+   const original=JSON.stringify(p);verifiedModelInput(p);assert.equal(JSON.stringify(p),original);
+   for(const mutate of [x=>{x.instruction+='tampered';},x=>{x.messages[1].content+=' ';},x=>{x.payload.current.body='tampered';}]){
+    const bad=structuredClone(p);mutate(bad);assert.throws(()=>verifiedModelInput(bad),{code:'PACKET_CHANGED'});
+   }
+  }
+  const stripped=structuredClone(current);delete stripped.payload.operationContract;
+  assert.throws(()=>verifiedModelInput(stripped),{code:'PACKET_CHANGED'});
+  const wrong=structuredClone(current);wrong.payload.operationContract.processes.push({type:'process',id:'not-delivered',revision:1});
+  assert.throws(()=>verifiedModelInput(wrong),{code:'PACKET_CHANGED'});
+ }finally{f.store.close();}
 });
