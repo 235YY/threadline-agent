@@ -99,7 +99,7 @@ function firstText(messages){
   return last?.content??'';
 }
 
-export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null}={}){
+export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false}={}){
   ensure(typeof storePath==='string'&&storePath.length>0,'BRAIN_SERVICE','store path required');
   const cognitiveKeys=['algorithmV011','apperceptionV1','subjectiveDomains','subjectiveMemory','subjectiveMemoryV2','taskThreads','anchorDirectory','memoryScopeV1','investigationContinuityV1','experienceLearningV1'];
   ensure(cognition&&Object.getPrototypeOf(cognition)===Object.prototype&&Object.entries(cognition).every(([key,value])=>cognitiveKeys.includes(key)&&typeof value==='boolean'),'COGNITION_CONFIG','explicit known boolean cognition flags required');
@@ -177,12 +177,12 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     if(global){
       if(globalDriver)return globalDriver;
       const workspace=ensureWorkspace(store,'global');
-      globalDriver=new TurnDriver({...cognition,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null});
+      globalDriver=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null});
       globalDriver.loadState();if(rhythmReset){globalDriver.restore({state:{lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null},outbox:[]});globalDriver.persistState();}return globalDriver;
     }
     if(drivers.has(scene))return drivers.get(scene);
     const workspace=ensureWorkspace(store,scene);
-    const driver=new TurnDriver({...cognition,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null});
+    const driver=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null});
     driver.loadState();if(rhythmReset){driver.restore({state:{lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null},outbox:[]});driver.persistState();}
     drivers.set(scene,driver);return driver;
   };

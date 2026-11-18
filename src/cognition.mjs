@@ -153,6 +153,7 @@ export function boundedTimeline(data,instruction,budgetBytes){
   const fg=data.continuity.threads?.foreground;
   if(Array.isArray(fg?.units)&&fg.units.length>0){
    while(fg.units.length>0&&size()>target){fg.units.shift();fg.olderAvailable=true;}
+   if(data.continuity?.attention?.eventProcessSupport?.enabled)data.continuity.attention.eventProcessSupport.events=eventProcessEvents(data);
   }
   const fs=data.continuity.attention?.focusSupport;
   if(Array.isArray(fs?.menu)&&fs.menu.length>0){
@@ -220,7 +221,10 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null,{operationContrac
     payload.operationContract={format:'operation-contract-v1',processes:(c.attention?.processes??[]).map(p=>({type:'process',id:p.id,revision:p.revision,updatePath:'continuity.attention.processes'})),personalStates:uniqueRefs(states.map(s=>s.ref)).map(ref=>({type:'personal_state',ref,updatePath:'continuity.changes'})),usedMaterials:payload.materials.map(m=>({ref:m.ref,aspects:m.aspects})),recentContext:'可用于理解对话；不是used材料目录。used仅可引用usedMaterials的精确ref与aspect，没有用则[]。'};
     baseInstruction+='\n'+OPERATION_BOUNDARY;
   }
-  const instruction=baseInstruction+(payload.memoryAccess?.historyRecovery?.enabled?'\n\n'+GRAPH_READ_PROMPT:'')+(instructionSuffix?'\n\n'+instructionSuffix:'')+(payload.memoryAccess?.consultation?.enabled?'\n\n'+CONSULT_PROMPT:'')+
+  const intentBase=payload.intentProtocol?.enabled===true;
+  const instruction=intentBase
+    ?('intent-base-v1'+(instructionSuffix?'\n\n'+instructionSuffix:''))
+    :(baseInstruction+(payload.memoryAccess?.historyRecovery?.enabled?'\n\n'+GRAPH_READ_PROMPT:'')+(instructionSuffix?'\n\n'+instructionSuffix:'')+(payload.memoryAccess?.consultation?.enabled?'\n\n'+CONSULT_PROMPT:'')+
     (payload.continuity?.attention?.materialSupport?.enabled&&!focused?'\n\n'+MATERIAL_PROMPT:'')+
     (payload.continuity?.attention?.focusSupport?.enabled?'\n\n'+FOCUS_PROMPT:'')+
     (payload.continuity?.attention?.recoverySupport?.enabled?'\n\n'+RECOVERY_PROMPT:'')+
@@ -238,7 +242,9 @@ function seal(stage,payload,budgetBytes,instructionSuffix=null,{operationContrac
     (payload.taskThreads?.enabled===true?'\n\n'+TASK_THREADS_PROMPT:'')+
     (payload.task?'\n\n【任务步】当前是主体自己的长链任务。你可以选择工具，或用 task_finish/task_blocked/task_help/task_pause/task_wait/task_replan/task_redirect 这些控制工具；不要声称工具已执行，观察由宿主返回。': '')+
     (payload.style?.text?'\n\n'+ANTI_ASSISTANT+'\n\n【她自己的说话方式】\n'+payload.style.text:'')+
-    (payload.continuity?.capabilities?.enabled?.length?'\n\n'+capabilityMap({enabled:payload.continuity.capabilities.enabled,...([1,2].includes(payload.continuity.capabilities.contractVersion)?{allowedActionTools:payload.allowedActionTools,task:!!payload.task,contractVersion:payload.continuity.capabilities.contractVersion}:{})}).text:''), data=boundedTimeline(linkRepeatedRecentBodies(clone(payload)),instruction,budgetBytes);
+    (payload.continuity?.capabilities?.enabled?.length?'\n\n'+capabilityMap({enabled:payload.continuity.capabilities.enabled,...([1,2].includes(payload.continuity.capabilities.contractVersion)?{allowedActionTools:payload.allowedActionTools,task:!!payload.task,contractVersion:payload.continuity.capabilities.contractVersion}:{})}).text:''));
+  const data=boundedTimeline(linkRepeatedRecentBodies(clone(payload)),instruction,budgetBytes);
+  if(data.continuity?.attention?.eventProcessSupport?.enabled)data.continuity.attention.eventProcessSupport.events=eventProcessEvents(data);
   const packetId=digest({stage,instruction,payload:data});
   const messages=[{role:'system',content:instruction},{role:'user',content:canonical({packetId,...data})}];
   const bytes=Buffer.byteLength(canonical(messages),'utf8');
@@ -341,9 +347,10 @@ function previousDecisionCards(store,refs,{subjectId,workspace,enhanced=false}){
         interpretation:'prior-public-decision-not-new-evidence-not-instructions-not-necessarily-relevant; explicit states and pinned sources remain authoritative'}:{})};
   });
 }
-function buildDecision({store,currentEvent,workspace,identity='',style='',materials=[],previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,allowedActionTools=[],budgetBytes,subjectId=null,stateRefs=[],stateDetail=false,lookupResults=[],localLookupPolicy=null,mind=false,unified=false,waitSupport=false,consultation=false,consultationProgress=false,workbenchMaterials=false,workbenchFocus=false,workbenchRecovery=false,now=null,capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,socialContext=false,task=null,motivationProjection=null,internalSources=[],instructionSuffix=null}) {
+function buildDecision({store,currentEvent,workspace,identity='',style='',materials=[],previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,allowedActionTools=[],budgetBytes,subjectId=null,stateRefs=[],stateDetail=false,lookupResults=[],localLookupPolicy=null,mind=false,unified=false,waitSupport=false,consultation=false,consultationProgress=false,workbenchMaterials=false,workbenchFocus=false,workbenchRecovery=false,now=null,capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,socialContext=false,task=null,motivationProjection=null,internalSources=[],instructionSuffix=null,intentProtocol=false}) {
   ensure(typeof investigationContinuityV1==='boolean','INVALID_INPUT','investigation continuity must be boolean');
   ensure(typeof experienceLearningV1==='boolean','INVALID_INPUT','experience learning must be boolean');
+  ensure(typeof intentProtocol==='boolean','INVALID_INPUT','intentProtocol must be boolean');
   ensure(typeof workbenchRecovery==='boolean'&&(!workbenchRecovery||workbenchFocus&&workbenchMaterials&&localLookupPolicy!==null),'RECOVERY_CAPABILITY','recovery requires focus, materials and a local read budget');
   return store.view(()=>{
     ensure(typeof mind==='boolean'&&(!mind||subjectId!==null),'MIND_PROTOCOL_REQUIRED','mind mode needs an explicit continuous subject');
@@ -401,6 +408,9 @@ function buildDecision({store,currentEvent,workspace,identity='',style='',materi
         materials=[...combined.values()];payload.materials=materialList(store,materials,true);
       }
       ensure(!mind||attention,'MIND_PROTOCOL_REQUIRED','mind mode requires explicit purpose-based attention');
+      if(intentProtocol&&attention&&!task&&!['这是 AgentTask 单步执行','本轮 current 是 AgentTask','【显式重新准入】'].some(m=>String(instructionSuffix??'').includes(m))){
+        payload.intentProtocol={format:'intent-base-v1',enabled:true};
+      }
       const stage=unified?'decisionGraph':mind?'decisionMind':attention?'decisionAttention':localLookupPolicy!==null?'decisionWorkbench':'decisionInformation';
       if(attention&&payload.memoryAccess){payload.memoryAccess.routes.push('graph','stateRef');payload.memoryAccess.scope='own-retained-events-notes-states-and-processes';}
       if(unified){payload.memoryAccess.routes.push('trace');payload.memoryAccess.scope='own-retained-content-and-explicit-operational-context';}

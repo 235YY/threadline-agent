@@ -70,7 +70,7 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
   const nativeActions=['remember_note','start_agent_task','pause_agent_task','stop_agent_task','redirect_agent_task'];
   const allowed=config.live?[...effectiveHostTools,...nativeActions].filter(name=>nativeActions.includes(name)||registeredToolNames.includes(name)):[];
   service=await core.startBrainService({port:config.port,token:env.BRAIN_TOKEN??null,storePath:config.storePath,stateDirectory:config.stateDirectory,styleDirectory:config.styleDirectory,
-   heartbeatMs:0,decide,identity,rhythm:config.rhythm,cognition:config.cognition,runtimeInfo,shutdownControl:{token:shutdownToken,stop:async()=>{await stop();dependencies.onStopped?.();}},global:config.global,subjectTask:true,idleIntervalMs:config.idleIntervalMs,rhythmReset:config.rhythmReset,
+   heartbeatMs:0,decide,identity,rhythm:config.rhythm,cognition:config.cognition,runtimeInfo,shutdownControl:{token:shutdownToken,stop:async()=>{await stop();dependencies.onStopped?.();}},global:config.global,subjectTask:true,idleIntervalMs:config.idleIntervalMs,rhythmReset:config.rhythmReset,intentProtocol:config.profile.intentProtocol,
    sessionFactory,theoryStatus:()=>config.affect.enabled?{enabled:true,available:true,version:'limbic-v1',fusion:config.affect.fusion}:{enabled:false,available:false,version:null},
    capabilities:['remember','open','relate','say','do','wait',...allowed],
    officialSpend,agentTools,hostAllowedTools:effectiveHostTools,lifePolicy:config.openLife?dependencies.lifePolicy:null,allowedActionTools:allowed,adapter});

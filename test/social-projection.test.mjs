@@ -458,3 +458,19 @@ test('boundedTimeline sheds threads.foreground.units and focusSupport.menu at 13
   assert.ok(out.continuity.attention.focusSupport.menu.length < 20);
   assert.ok(out.continuity.attention.focusSupport.omittedMenu > 0);
 });
+
+test('associationCandidates lexical search skips internal tool_receipt JSON and agent/task events', async () => {
+  const { associationCandidates } = await import('../src/association.mjs');
+  const store = new ContinuityStore(':memory:');
+  new ContinuitySession({ store, subjectId: 'jingyang', attention: true });
+  const s1 = ensurePerson(store, { system: 'qq', id: '100001', name: '甲' });
+  const w = put(store, 'ws', frame())[0];
+  const act = store.execute({ requestId: 'a1', commands: [{ op: 'propose_action', id: 'act-1', workspace: ref(w), tool: 'qq_list_stickers', args: {}, inputRefs: [] }] })[0];
+  store.execute({ requestId: 'r1', commands: [{ op: 'record_receipt', actionId: act.id, expectedRevision: act.revision, status: 'succeeded', eventId: 'rcpt-sticker', body: '{"format":"sticker-page-v1","keyword":"开心表情"}', source: { system: 'host', key: 'rcpt-sticker' }, actor: 'host', occurredAt: 1000 }] });
+  const realPast = put(store, 'past', event('ev-past', { body: '上次聊到 开心表情 还挺可爱的', scene: 'qq/private/100001', actor: s1.entityId, sender: s1, occurredAt: 2000 })).at(-1);
+  const cur = put(store, 'cur', event('ev-cur', { body: '记得 开心表情 吗', scene: 'qq/private/100001', actor: s1.entityId, sender: s1, occurredAt: 3000 })).at(-1);
+  const out = associationCandidates({ store, subjectId: 'jingyang', currentEvent: ref(cur), limit: 6 });
+  assert.ok(out.some(c => c.ref.id === realPast.id));
+  assert.ok(!out.some(c => c.ref.id === 'rcpt-sticker'));
+  store.close();
+});

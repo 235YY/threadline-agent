@@ -104,20 +104,22 @@ export function associationCandidates({store,subjectId,currentEvent,limit=6}={})
     if(push(head,'graph',{strength:edge.strength??0.5}))graphCount++;
   }
 
-  // 字面相关：同流先给摘要，兄弟/他处只给指针。
+  // 字面相关：同流先给摘要，兄弟/他处只给指针（跳过纯工具回执与内部派发日志）。
+  const isInternalEvent=h=>h?.type==='event'&&(h.origin==='tool_receipt'||String(h.id??'').startsWith('delivery:')||h.scene==='agent/task');
   let sameCount=0,crossCount=0;
-  const sameHits=store.search({terms,types:['event','note'],scene:event.scene,limit:limit+4,excludeRefs:[currentEvent]});
+  const sameHits=store.search({terms,types:['event','note'],scene:event.scene,limit:limit+8,excludeRefs:[currentEvent]});
   for(const hit of sameHits.items){
     if(sameCount>=MAX_SAME)break;
     let head=null;try{head=store.read(hit.ref.id,hit.ref.revision);}catch{head=null;}
+    if(!head||isInternalEvent(head))continue;
     if(push(head,'lexical',{strength:0.5+0.5*(hit.hits.length/Math.max(1,terms.length))}))sameCount++;
   }
   if(out.length<limit){
-    const allHits=store.search({terms,types:['event','note'],limit:limit+8,excludeRefs:[currentEvent]});
+    const allHits=store.search({terms,types:['event','note'],limit:limit+12,excludeRefs:[currentEvent]});
     for(const hit of allHits.items){
       if(crossCount>=MAX_CROSS)break;
       let head=null;try{head=store.read(hit.ref.id,hit.ref.revision);}catch{head=null;}
-      if(!head)continue;
+      if(!head||isInternalEvent(head))continue;
       const scene=head.type==='event'?head.scene:(head.scope?.scenes?.[0]??null);
       if(scene===event.scene)continue;
       if(push(head,'lexical',{strength:0.5+0.5*(hit.hits.length/Math.max(1,terms.length))}))crossCount++;

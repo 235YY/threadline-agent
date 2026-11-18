@@ -125,3 +125,18 @@ test('group messages say whether they are aimed at her; private chats are marked
  assert.equal(view('group-secret').mentionsYou,true);
  assert.equal(view('quote-natural').chat,'private');
 });
+
+test('intentProtocol: true skips heavy legacy instructions in base packet while keeping verification and fallback intact',t=>{
+ const s=world(t),legacy=s.prepare({style:'温和口语'}),compact=s.prepare({style:'温和口语',intentProtocol:true});
+ assert.ok(Buffer.byteLength(compact.instruction)<1000,`compact base instruction should skip legacy prompts, got ${Buffer.byteLength(compact.instruction)}`);
+ assert.ok(Buffer.byteLength(legacy.instruction)>20000);
+ const wire=intentPacket(compact);
+ assert.doesNotThrow(()=>verifiedIntent(wire));
+ const tampered=structuredClone(compact);tampered.instruction+='\nextra';
+ assert.throws(()=>intentPacket(tampered),{code:'PACKET_CHANGED'});
+ const {d}=s.answer(compact,{decision:{type:'reply',text:'轻装上阵'}});
+ assert.equal(d.output.options[0].payload.text,'轻装上阵');
+ const fallback=s.prepare({style:'温和口语',intentProtocol:true,instructionSuffix:'【显式重新准入】测试'});
+ assert.ok(Buffer.byteLength(fallback.instruction)>20000,'ineligible turns still retain full base instruction');
+ assert.equal(intentEligible(fallback),false);
+});

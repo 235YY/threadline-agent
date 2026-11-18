@@ -21,8 +21,8 @@ const TASK_RESULT_SUFFIX='本轮 current 是 AgentTask 的 tool_receipt 结果�
 
 const MEMORY_SCOPE_V1=readFileSync(new URL('../prompts/memory-scope-v1.zh.md',import.meta.url),'utf8');
 export class TurnDriver {
-  #store;#subjectId;#session;#lookup;#decide;#config;#lookupPolicy;#workspace;#identity;#style;#eventBypass;#materialsFor;#maxCalls;#state;#outbox;#tendency;#allowed;#capabilities;#algorithmV011;#apperceptionV1;#subjectiveDomains;#subjectiveMemory;#subjectiveMemoryV2;#taskThreads;#anchorDirectory;#memoryScopeV1;#investigationContinuityV1;#experienceLearningV1;
-  constructor({store,subjectId,decide,workspace,identity='',style='',eventBypass=false,materialsFor=null,rhythm={},lookupPolicy={maxReads:2,maxHits:4},maxCallsPerTurn=3,maxForeground=16,tendency=null,allowedActionTools=[],capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,memoryScopeV1=false,investigationContinuityV1=false,experienceLearningV1=false,sessionFactory=null}={}){
+  #store;#subjectId;#session;#lookup;#decide;#config;#lookupPolicy;#workspace;#identity;#style;#eventBypass;#materialsFor;#maxCalls;#state;#outbox;#tendency;#allowed;#capabilities;#algorithmV011;#apperceptionV1;#subjectiveDomains;#subjectiveMemory;#subjectiveMemoryV2;#taskThreads;#anchorDirectory;#memoryScopeV1;#investigationContinuityV1;#experienceLearningV1;#intentProtocol;
+  constructor({store,subjectId,decide,workspace,identity='',style='',eventBypass=false,materialsFor=null,rhythm={},lookupPolicy={maxReads:2,maxHits:4},maxCallsPerTurn=3,maxForeground=16,tendency=null,allowedActionTools=[],capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,memoryScopeV1=false,investigationContinuityV1=false,experienceLearningV1=false,intentProtocol=false,sessionFactory=null}={}){
     ensure(store&&typeof store.execute==='function','TURN_DRIVER','store required');
     text(subjectId,'subject id');ensure(typeof decide==='function','TURN_DRIVER','decide function required');
     const w=store.read(workspace?.id??workspace,workspace?.revision);
@@ -45,7 +45,7 @@ export class TurnDriver {
     this.#subjectiveMemory=subjectiveMemory===true;
     this.#subjectiveMemoryV2=subjectiveMemoryV2===true;
     this.#taskThreads=taskThreads===true;
-    this.#anchorDirectory=anchorDirectory===true;this.#memoryScopeV1=memoryScopeV1===true;this.#experienceLearningV1=experienceLearningV1===true;this.#investigationContinuityV1=investigationContinuityV1===true||this.#experienceLearningV1;
+    this.#anchorDirectory=anchorDirectory===true;this.#memoryScopeV1=memoryScopeV1===true;this.#experienceLearningV1=experienceLearningV1===true;this.#investigationContinuityV1=investigationContinuityV1===true||this.#experienceLearningV1;this.#intentProtocol=intentProtocol===true;
     const sessionArgs={store,subjectId,attention:true,maxForeground,requestJournal:decide.requestJournal??null};
     this.#session=sessionFactory?sessionFactory(sessionArgs):new ContinuitySession(sessionArgs);
     this.#lookup=new LocalLookupSession({store,subjectId,policy:lookupPolicy});
@@ -250,7 +250,7 @@ export class TurnDriver {
       const prepareArgs={instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
         mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,
         subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,socialContext:true,
-        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities};
+        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities,...(this.#intentProtocol?{intentProtocol:true}:{})};
       let packet=resume?.packet;
       if(!packet){
         try{packet=await this.#session.prepare(prepareArgs);}
