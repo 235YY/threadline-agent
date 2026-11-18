@@ -85,7 +85,10 @@ ReadForWorker只供Node子进程捕获，禁止在可见终端执行并显示密
 B站/GitHub公开阅读受真实平台可达性限制；HTTP失败或截断明确反馈，
 不使用私人仓库凭据，不执行仓库代码。基本CLI不会替运营方创建Open Life生产策略。
 
-JY_INTENT_PROTOCOL=1：普通事件决策改用 intent-v1（模型表达意图、宿主编译事务），见 docs/INTENT-PROTOCOL.md。
+JY_INTENT_PROTOCOL=1：普通事件决策使用精简协议（模型表达意图、宿主编译事务），见 [INTENT-PROTOCOL](INTENT-PROTOCOL.md)。
+新建空白环境可按需同时启用 `JY_APPERCEPTION_V1=1`、`JY_SUBJECTIVE_DOMAINS=1`、`JY_SUBJECTIVE_MEMORY_V2=1` 和 `JY_TASK_THREADS=1`。
+需要计算情绪时，再显式启用 `JY_AFFECT=1` 和 `JY_AFFECT_FUSION=1` 并提供 Python。
+需要空闲认知时，需运行心跳（`BRAIN_HEARTBEAT_MS>0`），以 `JY_IDLE_INTERVAL_MS` 控制间隔；空闲不等于必须行动。现有默认值不变。
 
 认知实验开关未设置时为false：JY_ALGORITHM_V011、JY_APPERCEPTION_V1、
 JY_SUBJECTIVE_DOMAINS、JY_SUBJECTIVE_MEMORY_V2、JY_TASK_THREADS、

@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtempSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {createBrainService} from '../tools/brain-service/server.mjs';import {ContinuitySession} from '../src/continuity-session.mjs';import {AgentRuntime} from '../src/agent-runtime.mjs';import {keepAttention,attentionId} from '../src/attention.mjs';import {verifiedModelInput} from '../src/cognition.mjs';import {threadUnits} from '../src/task-threads.mjs';
+import {intentPacket} from '../src/intent-protocol.mjs';
 const ref=x=>({id:x.id,revision:x.revision});let seq=0;
 const proc=id=>({id,expectedRevision:0,label:id,body:id,status:'active',world:'actual',intervals:[],basis:[]});
 function out(p,kind='wait',payload={},procs=[]){return {packetId:p.packetId,options:[{id:'x',kind,payload}],selected:'x',summary:'synthetic',used:[],continuity:{changes:[],residency:{add:[],remove:[]},...(p.stage==='reflection'?{}:{expressionChoice:null,observationDisposition:'handled'}),attention:{...keepAttention(),processes:procs}}};}
@@ -28,6 +29,25 @@ test('floating, absent-version and foreign-subject source references cannot crea
 test('source thread A and explicitly selected Process B stay separate during execution',async t=>{const s=setup(t);s.event=s.store.execute({requestId:'thread-A'+(++seq),commands:[{op:'append_event',id:'thread-A'+seq,body:'source in A',threadId:'A',origin:'reported',actor:'fixture',scene:'synthetic',source:{system:'fixture',key:'thread-A'+seq},occurredAt:4000}]}).at(-1);const task=await start(s,{processId:'B'});assert.equal(task.threadId,'A');assert.equal(task.processId,'B');await s.service.stepAgentTask(task.id);const saved=s.store.read(task.id);assert.ok(histories(s,'B').some(u=>u.task?.id===task.id));assert.ok(!histories(s,'A').some(u=>u.task?.id===task.id));assert.ok(!histories(s,'A').flatMap(u=>u.exchanges).some(e=>saved.decisionRefs.some(r=>(r.id??r)===e.decision.id)));assert.equal(s.store.read(s.event.id).threadId,'A');});
 
 for(const toolResult of [{content:[{type:'text',text:'structured tool evidence'}]},{text:'x'.repeat(7000)}])test('existing observation representation survives typed history: '+(toolResult.content?'structured':'truncated'),async t=>{const s=setup(t,{outcome:'probe',toolResult});const task=await start(s,{processId:'A'});await s.service.stepAgentTask(task.id);const saved=s.store.read(task.id),e=s.store.read(saved.observationRefs[0].id,1),evidence=histories(s,'A')[0].evidence.find(x=>x.role==='observation');assert.ok(evidence);assert.equal(evidence.body,e.body);assert.deepEqual(evidence.message,e.message);assert.equal(evidence.completeness.truncated,!toolResult.content);assert.equal(evidence.origin,'tool_receipt');});
+
+test('compact decision binds only explicit Process and Intent handles and receives bounded task evidence',async t=>{
+ const s=setup(t,{finishResult:'unique-result-'+'x'.repeat(6500)});
+ const goal='intent:jingyang:compact';
+ s.store.execute({requestId:'compact-goal',commands:[{op:'put_intent',id:goal,expectedRevision:0,value:{format:'jingyang-intent-v1',id:goal,subject:'jingyang',goal:'inspect source',status:'open'}}]});
+ let p=prepare(s,{allowedActionTools:['start_agent_task'],intentProtocol:true}),wire=intentPacket(p);
+ let v=JSON.parse(wire.messages[1].content).view;
+ const selected=v.work.find(w=>w.title==='A'),wrong=v.work.find(w=>w.title==='B');
+ const raw=JSON.stringify({packetId:wire.packetId,decision:{type:'act',tool:'start_agent_task',args:{goal:'inspect source',processId:selected.handle,intentId:v.goals[0].handle}}});
+ const d=s.session.commit({packet:p,output:raw,decisionId:'compact-start',requestId:'compact-start',allowedActionTools:['start_agent_task']});
+ await s.service.executeAction(d.action);
+ const [task]=s.service.listAgent();assert.equal(task.processId,'A');assert.equal(task.intentRef.id,goal);assert.equal(task.threadId,null);
+ assert.equal((await s.service.stepAgentTask(task.id)).status,'done');
+ p=prepare(s,{intentProtocol:true});v=JSON.parse(intentPacket(p).messages[1].content).view;
+ const history=v.work.find(w=>w.handle===selected.handle).history.find(x=>x.kind==='task-history');
+ assert.ok(history.evidence.some(e=>e.kind==='result'&&e.origin==='tool_receipt'&&e.status==='done'&&e.partial&&e.excerpt.includes('unique-result')));
+ assert.equal(v.work.find(w=>w.handle===wrong.handle).history,undefined);
+ assert.equal(s.store.read(goal).status,'open','task success does not complete the Intent');
+});
 
 test('long terminal result retains its fixed receipt and explicit truncation boundary',async t=>{const s=setup(t,{finishResult:'x'.repeat(7000)}),task=await start(s,{processId:'A'});await s.service.stepAgentTask(task.id);const saved=s.store.read(task.id),e=s.store.read(saved.feedback.event.id,1),evidence=histories(s,'A')[0].evidence.find(x=>x.role==='result');assert.ok(evidence);assert.equal(evidence.body,e.body);assert.equal(evidence.body.length,6000);assert.equal(evidence.completeness.truncated,true);assert.equal(evidence.statusAtRecord,'done');});
 

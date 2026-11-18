@@ -22,6 +22,8 @@ const Database = sqlite.Database ?? sqlite.DatabaseSync;
 const NOTE_KINDS = ['fact_claim', 'interpretation', 'value', 'preference', 'dream', 'tension', 'feeling', 'skill'];
 const TYPES = ['event', 'note', 'workspace', 'link', 'action', 'decision', 'review', 'subject', 'personal_state', 'decision_attempt', 'response', 'lookup_round', 'lookup_result','attention_frame','maintenance_schedule','maintenance_job','entity','binding','agent_task','motivation_state','affect_turn','extension_record','intent'];
 const asRef = record => ({id: record.id, revision: record.revision});
+const REPLAY_REF='$version';
+const DEBUG_EVENTS_LIMIT=2048;
 
 // Local persistence and consistency only. This class neither calls a model nor executes actions.
 export class ContinuityStore {
@@ -66,8 +68,11 @@ export class ContinuityStore {
   debugHealth(){return {failedWrites:this.#debugFailures,lastErrorCode:this.#debugFailureCode,maxPacketBytes:this.#maxDebugPacketBytes};}
   #logDebug(value){
     const entry=diagnostic(value),c=entry.context;
-    this.#db.prepare('INSERT INTO debug_events(at,stage,status,subject_id,decision_id,packet_id,job_id,entry) VALUES(?,?,?,?,?,?,?,?)')
+    const result=this.#db.prepare('INSERT INTO debug_events(at,stage,status,subject_id,decision_id,packet_id,job_id,entry) VALUES(?,?,?,?,?,?,?,?)')
       .run(this.#now(),entry.stage,entry.status,c.subjectId,c.decisionId,c.packetId,c.jobId,canonical(entry));
+    // This journal is diagnostic metadata, not crash recovery or subject memory.
+    if(Number(result.lastInsertRowid)%128===0)
+      this.#db.prepare('DELETE FROM debug_events WHERE seq<=?').run(Number(result.lastInsertRowid)-DEBUG_EVENTS_LIMIT);
   }
   #debugTransactionContext(args,results=[]){
     const context=transactionContext(args),records=[...results];
@@ -161,11 +166,40 @@ export class ContinuityStore {
       const items=query(afterSeq);return {items:items.length||afterSeq===0?items:query(0)};
     });
   }
+  // Repeated recovery fields point to their first full version on this same
+  // record. Fixed reads and replay still return complete values.
+  #decode(body){
+    const row=JSON.parse(body);
+    if(!row.$recoveryFrom)return row;
+    const holder=row.type==='extension_record'?row.value:row;
+    for(const [field,rev] of Object.entries(row.$recoveryFrom)){
+      const source=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(row.id,rev);
+      const record=source?JSON.parse(source.body):null,origin=row.type==='extension_record'?record?.value:record;
+      ensure(origin&&Object.hasOwn(origin,field),'MISSING_REFERENCE','fixed recovery field is unavailable');
+      holder[field]=origin[field];
+    }
+    delete row.$recoveryFrom;
+    return row;
+  }
+  #encode(record,previous){
+    if(!previous||!(record.type==='decision_attempt'||record.type==='affect_turn'||record.type==='extension_record'&&record.theory==='runtime'&&record.stateType==='turn-activity'))return record;
+    const next=record.type==='extension_record'?{...record,value:{...record.value}}:{...record};
+    const [before,after]=record.type==='extension_record'?[previous.value,next.value]:[previous,next];
+    const stored=JSON.parse(this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(previous.id,previous.revision).body);
+    const refs={},fields={affect_turn:['packet','preview','rawOutput'],decision_attempt:['input','output'],extension_record:['packet','context','output']};
+    for(const field of fields[record.type]){
+      if(after[field]!=null&&before?.[field]!=null&&canonical(after[field])===canonical(before[field])){
+        refs[field]=stored.$recoveryFrom?.[field]??previous.revision;
+        delete after[field];
+      }
+    }
+    return Object.keys(refs).length?{...next,$recoveryFrom:refs}:record;
+  }
   #read(id, rev) {
     const row = rev === undefined
       ? this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.id=?').get(id)
       : this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id, rev);
-    return row ? JSON.parse(row.body) : null;
+    return row ? this.#decode(row.body) : null;
   }
   read(id, rev) { text(id, 'id'); if (rev !== undefined) revision(rev); return this.#read(id, rev); }
   #require(ref, types = TYPES) {
@@ -184,7 +218,7 @@ export class ContinuityStore {
     const next = {id, type, revision: expected + 1, ...fields};
     if (old) this.#db.prepare('UPDATE objects SET current_revision=? WHERE id=?').run(next.revision, id);
     else this.#db.prepare('INSERT INTO objects(id,type,current_revision) VALUES(?,?,?)').run(id, type, next.revision);
-    this.#db.prepare('INSERT INTO versions(id,revision,body) VALUES(?,?,?)').run(id, next.revision, canonical(next));
+    this.#db.prepare('INSERT INTO versions(id,revision,body) VALUES(?,?,?)').run(id, next.revision, canonical(this.#encode(next,old)));
     this.#indexGraph(next);
     this.#transactionWrites?.push(debugRef(next));
     return next;
@@ -277,10 +311,21 @@ export class ContinuityStore {
       if (previous) {
         ensure(previous.fingerprint === fingerprint, 'REQUEST_COLLISION', 'request id reused with different content');
         this.#logDebug({stage:'transaction.replayed',status:'replayed',context:this.#debugTransactionContext({requestId,commands}),data:{writeCount:0,operations:commands.slice(0,32).map(c=>String(c?.op??'invalid').slice(0,80))}});
-        this.#db.exec('COMMIT'); return JSON.parse(previous.result);
+        const replay=JSON.parse(previous.result);
+        const restored=Array.isArray(replay)?replay:replay.items.map(item=>{
+          const decode=r=>r&&Object.hasOwn(r,REPLAY_REF)?this.#require(r[REPLAY_REF]):r;
+          return item?.record?{...item,record:decode(item.record)}:decode(item);
+        });
+        this.#db.exec('COMMIT'); return restored;
       }
       const results = commands.map(command => this.#command(command));
-      this.#db.prepare('INSERT INTO operations(request_id,fingerprint,result) VALUES(?,?,?)').run(requestId, fingerprint, canonical(results));
+      const written=new Set(writes.map(refKey));
+      // Replay points at the revision written by this exact transaction, never the mutable head.
+      // Non-record return values and old inline rows remain readable without a migration.
+      const encode=r=>r&&typeof r==='object'&&written.has(refKey(r))&&r.type&&canonical(this.#read(r.id,r.revision))===canonical(r)
+        ?{[REPLAY_REF]:asRef(r)}:r;
+      const items=results.map(r=>r?.record?{...r,record:encode(r.record)}:encode(r));
+      this.#db.prepare('INSERT INTO operations(request_id,fingerprint,result) VALUES(?,?,?)').run(requestId, fingerprint, canonical({items}));
       this.#logDebug({stage:'transaction.committed',status:'ok',context:this.#debugTransactionContext({requestId,commands},results),
         data:{writes:writes.slice(0,16),writeCount:writes.length,operations:commands.slice(0,32).map(c=>String(c?.op??'invalid').slice(0,80))}});
       this.#db.exec('COMMIT'); return results;
@@ -1269,12 +1314,12 @@ export class ContinuityStore {
     oneOf(type, TYPES, 'record type');
     ensure(Number.isSafeInteger(limit) && limit > 0 && limit <= 500, 'INVALID_INPUT', 'limit must be 1..500');
     const rows = this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.type=? AND o.id>? ORDER BY o.id LIMIT ?').all(type, after, limit + 1);
-    const items = rows.slice(0, limit).map(row => JSON.parse(row.body));
+    const items = rows.slice(0, limit).map(row => this.#decode(row.body));
     return {items, next: rows.length > limit ? items.at(-1).id : null};
   }
   // Indexed, read-only lookups over current record versions (see versions_by_* in schema).
   // Each returns parsed records; "newest" ones are ordered newest first.
-  #byIndex(sql,...args){return this.#db.prepare(`SELECT v.body FROM versions v CROSS JOIN objects o ON o.id=v.id AND o.current_revision=v.revision WHERE ${sql}`).all(...args).map(r=>JSON.parse(r.body));}
+  #byIndex(sql,...args){return this.#db.prepare(`SELECT v.body FROM versions v CROSS JOIN objects o ON o.id=v.id AND o.current_revision=v.revision WHERE ${sql}`).all(...args).map(r=>this.#decode(r.body));}
   #bound(limit){ensure(Number.isSafeInteger(limit)&&limit>0&&limit<=1000,'INVALID_INPUT','limit must be 1..1000');return limit;}
   newestInScene({type,scene,limit=50,since=null}){text(type,'type');text(scene,'scene');
     return since===null?this.#byIndex(`o.type=? AND json_extract(v.body,'$.scene')=? ORDER BY coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt')) DESC LIMIT ?`,type,scene,this.#bound(limit))

@@ -5,6 +5,7 @@ import {AffectSession} from '../tools/affect-integrated/session.mjs';
 import {fusionContext,meaningId} from '../tools/affect-integrated/fusion.mjs';
 import {motivationId,affectTurnId} from '../src/affect-contract.mjs';
 import {normalizeApperception} from '../src/cognition.mjs';
+import {intentPacket} from '../src/intent-protocol.mjs';
 import {proposal} from '../experiments/unified-graph/fixture.mjs';
 import {callWorker} from '../tools/affect-shadow/bridge.mjs';
 import {disk} from './helpers.mjs';
@@ -31,6 +32,19 @@ function output(p,{mode='encounter',sources=[ref(p.payload.current)],previous=nu
  if(appraisal)o.affectAppraisal={schema_version:'affect.appraisal.v2',mode,source_refs:sources,previous,reason:'当前理解的形成或变化',appraisals:[{weight:1,value:{event:'synthetic-result',summary:text,valence,intensity:.7,relevance:.8,agency:'circumstance',competence:.8}}]};
  return o;
 }
+test('compact affect appraisal enters the existing engine and the next cognitive view',async t=>{
+ const s=setup(t),e=s.event('compact-emotion'),p=await s.session.prepare({...s.args(e),intentProtocol:true});
+ const w=intentPacket(p),view=JSON.parse(w.messages[1].content).view;
+ assert.equal(view.canEvaluateMood,true);
+ const raw={packetId:w.packetId,decision:{type:'wait'},perception:{domain:'world',meaning:'一次令人惊喜的发现'},
+   moodEval:{meaning:'惊喜',event:'discovery',valence:.9,intensity:.9,agency:'circumstance'}};
+ await s.commit(p,raw);
+ assert.equal(s.store.read(meaningId('s',[e])).value.interpretation.activated_cells[0].domain,'world');
+ const next=await s.session.prepare({...s.args(s.event('after-emotion')),intentProtocol:true});
+ const delivered=JSON.parse(intentPacket(next).messages[1].content).view;
+ assert.ok(delivered.mood?.length,'computed emotions reach a later compact input');
+ assert.equal([...s.store.all('personal_state')].length,0,'affect does not manufacture personal memories');
+});
 async function encountered(s){const e=s.event('e'),p=await s.session.prepare(s.args(e));await s.commit(p,output(p));return e;}
 
 test('fusion delivers a typed time-specific internal source and preserves task instructions',async t=>{

@@ -19,12 +19,17 @@ import {keepAttention} from './attention.mjs';
 import {toolContract} from './tool-contracts.mjs';
 import {generationSets} from './prompt-generations.mjs';
 import {deliveredStateRefs} from './revision-derivation.mjs';
+import {normalizeDomains} from './personal-state.mjs';
 import {formatRelativeTime,resolveSpeakerName} from './social-projection.mjs';
 
 export const INTENT_STAGE='intent-v1';
 const PROMPTS=generationSets(read=>({intent:read('intent-v1.zh.md'),anti:read('anti-assistant.zh.md')}));
 const DECISION_STAGES=['decisionContinuity','decisionInformation','decisionWorkbench','decisionAttention','decisionMind','decisionGraph'];
 const STATE_KINDS=['feeling','appraisal','intention','tension','activity','impression'];
+const richView=p=>p.intentProtocol?.format==='intent-base-v2';
+const READINESS_LINKS={belief:'appraisals',concern:'concerns',condition:'conditions',expectation:'expectations'};
+const MIND_CHOICES={concern:['seek','preserve','avoid'],condition:['available','unavailable','unknown']};
+const MIND_INPUT=`只在值得记下时才写 states。可用 appraisal 附 confidence（tentative/uncertain/confident）记下暂定认识；concern 用 stance:seek/preserve/avoid 记长期关切；condition 用 stance:available/unavailable/unknown 记条件判断；readiness 用 links:[S编号] 把已交付的认识和关切连成行动准备。可选 domains: [self/relationship/world/normative 中适用的项]。修改前用 S 编号；不确定就保留不确定。已有判断、准备关系、情绪和带来源类型的任务结果在 view 中供你参考，它们都不替你决定该做什么。若 view.canInterpret 为 true，可用 perception: {domain,meaning} 表达对当前经历的统觉判断，不必有情绪；moodEval 可同时给，现有情绪与它的对象、原因可帮助你判断。start_agent_task 的 processId/intentId 可填本轮 P/G 编号；没有明确归属就省略。任务完成和目标完成是两件事。`;
 const WORK_STATUS=['proposed','active','paused','completed','abandoned'];
 const STATUS={sent:'confirmed',pending:'pending',dispatching:'pending',failed:'failed',unknown:'unknown'};
 const fail=(code,message,details)=>ensure(false,code,message,details);
@@ -74,7 +79,7 @@ function addressing(text,names,scene){
 // Deterministic projection of a sealed base packet. Returns the model view and the handle table.
 export function intentView(base){
   const p=base.payload,c=p.continuity,handles={E0:{kind:'event',ref:{id:p.current.id,revision:p.current.revision}}};
-  const view={},nowMs=Number.isSafeInteger(p.now)?p.now:null,social=c.social??null;
+  const rich=richView(p),view={},nowMs=Number.isSafeInteger(p.now)?p.now:null,social=c.social??null;
   if(p.identity)view.you=p.identity;
   if(p.style?.text)view.style=p.style.text;
   if(nowMs!==null)view.now=new Date(nowMs).toISOString();
@@ -109,16 +114,34 @@ export function intentView(base){
       ...(last.responseStatus?{status:STATUS[last.responseStatus]??last.responseStatus}:{}),...(last.fromScene?{where:last.fromScene}:{}),...(lastAgo?{ago:lastAgo}:{})};
   }
 
-  let n=0;const states=[];
-  const cards=[...(c.foreground??[]),...(c.recalled??[]),...(c.subjectiveMemory?.recent?.items??[]),...(c.subjectiveMemory?.compressed?.items??[])];
+  let n=0;const states=[],stateHandles=new Map();
+  const memoryCards=[...(rich?c.shortTerm?.items??[]:[]),...(c.subjectiveMemory?.recent?.items??[]),...(c.subjectiveMemory?.compressed?.items??[])];
+  const cards=[...(c.foreground??[]),...(c.recalled??[]),...memoryCards.map(m=>rich?{...m,kind:'impression',status:'open'}:m)];
   const seen=new Set();
   for(const s of cards){
     if(!s?.ref||s.historical||seen.has(s.ref.id))continue;seen.add(s.ref.id);
-    const h='S'+(++n);handles[h]={kind:'state',ref:{id:s.ref.id,revision:s.ref.revision},stateKind:s.kind};
+    const h='S'+(++n);handles[h]={kind:'state',ref:{id:s.ref.id,revision:s.ref.revision},stateKind:s.kind,...(rich&&s.mind?{mind:s.mind}:{})};
+    stateHandles.set(canonical(handles[h].ref),h);
     const ago=formatRelativeTime(s.asOf??null,nowMs);
     states.push({handle:h,kind:s.kind,text:s.body,status:s.status,...(s.stage?{stage:s.stage}:{}),...(s.domains?.length?{domains:s.domains}:{}),...(ago?{ago}:{})});
   }
   if(states.length)view.states=states;
+  if(rich){
+    const asHandle=r=>stateHandles.get(canonical(r));
+    for(const s of states){
+      const m=handles[s.handle].mind;
+      if(m)s.assessment={role:m.role,confidence:m.confidence,...(m.orientation||m.assessment?{stance:m.orientation??m.assessment}:{})};
+    }
+    const links=(c.mind?.links??[]).flatMap(l=>{
+      const from=asHandle(l.from),to=asHandle(l.to);
+      return from?[{from,...(to?{to}:{}),relation:l.relation,status:l.status}]:[];
+    }).slice(0,12);
+    const expectations=(c.mind?.expectations??[]).flatMap(e=>{
+      const h=asHandle(e.ref);
+      return h?[{state:h,condition:e.value,execution:e.executionStatus}]:[];
+    }).slice(0,4);
+    if(links.length||expectations.length)view.judgments={links,expectations};
+  }
   if(c.subjectiveMemory&&((c.subjectiveMemory.recent?.omitted??0)>0||(c.subjectiveMemory.compressed?.count??0)>0)){
     view.memoryStats={recentCount:c.subjectiveMemory.recent?.count??0,compressedCount:c.subjectiveMemory.compressed?.count??0,
       ...(c.subjectiveMemory.recent?.omitted>0?{omittedRecent:c.subjectiveMemory.recent.omitted}:{}),
@@ -127,7 +150,11 @@ export function intentView(base){
   }
   if(c.mind?.unresolved?.length)view.unresolved=c.mind.unresolved.slice(0,6);
   if(c.intents?.length){
-    view.goals=c.intents.slice(0,6).map(x=>({goal:x.goal,status:x.status,...(x.nextAction?{nextAction:x.nextAction}:{}),...(x.dueAt?{dueIn:formatRelativeTime(x.dueAt,nowMs)}:{}),}));
+    view.goals=c.intents.slice(0,6).map((x,i)=>{
+      const h='G'+(i+1);
+      if(rich)handles[h]={kind:'goal',ref:{id:x.id,revision:x.revision}};
+      return {...(rich?{handle:h}:{}),goal:x.goal,status:x.status,...(x.nextAction?{nextAction:x.nextAction}:{}),...(x.dueAt?{dueIn:formatRelativeTime(x.dueAt,nowMs)}:{})};
+    });
   }
   if(p.previousDecisions?.length){
     const curPrivId=typeof cur.scene==='string'&&cur.scene.startsWith('qq/private/')?cur.scene.slice('qq/private/'.length):null;
@@ -153,6 +180,15 @@ export function intentView(base){
     const t=summaries.get(proc.id),units=t?.history?.units??t?.units??[];
     const history=units.slice(-4).map(u=>{
       const uAgo=formatRelativeTime(u.incoming?.at??u.at??null,nowMs);
+      if(rich&&u.kind==='task-execution-evidence'){
+        const visibleScene=scene=>!scene?.startsWith('qq/private/')||scene===cur.scene;
+        if(!visibleScene(u.sourceScene)||!visibleScene(u.incoming?.scene))return {kind:'task-history',withheld:true};
+        const evidence=u.evidence.filter(e=>['result','observation'].includes(e.role)&&visibleScene(e.scene));
+        return {kind:'task-history',goal:u.goal,status:u.status,...(uAgo?{ago:uAgo}:{}),
+          ...(evidence.length>3?{omittedEvidence:evidence.length-3}:{}),
+          evidence:evidence.slice(-3).map(e=>({kind:e.role,origin:e.origin,excerpt:e.body.slice(0,400),
+            partial:e.body.length>400||e.completeness?.truncated===true,...(e.statusAtRecord?{status:e.statusAtRecord}:{}),...(e.historical?{historical:true}:{})}))};
+      }
       return {...(uAgo?{ago:uAgo}:{}),...(u.incoming?{incoming:u.incoming.body}:{}),
         ...(u.exchanges??[]).slice(-1).reduce((a,x)=>({...a,...(x.response?{you:x.response.body,status:STATUS[x.response.status]??x.response.status}:{}),
           ...(x.action?{action:x.action.tool??x.action.kind??'action'}:{}),...(x.receipt?{result:String(x.receipt.body??x.receipt.status??'').slice(0,300)}:{})}),{})};
@@ -164,8 +200,9 @@ export function intentView(base){
   if(work.length)view.work=work;
 
   const emotions=Object.values(c.motivation?.projection?.emotions??[]).filter(e=>Number.isFinite(e?.intensity)&&e.intensity>0.05)
-    .sort((a,b)=>b.intensity-a.intensity).slice(0,4).map(e=>({name:e.name,target:e.target??null,intensity:Math.round(e.intensity*100)/100}));
+    .sort((a,b)=>b.intensity-a.intensity).slice(0,4).map(e=>({name:e.name,target:e.target??null,intensity:Math.round(e.intensity*100)/100,...(rich&&e.cause?{cause:e.cause}:{})}));
   if(emotions.length)view.mood=emotions;
+  if(rich&&p.apperceptionV1?.enabled===true)view.canInterpret=true;
   if(p.apperceptionV1?.enabled===true&&c.motivation?.canAppraiseCurrent===true)view.canEvaluateMood=true;
   const fb=parseHostFeedback(base.instructionSuffix);
   if(fb?.recentFeedback?.length){
@@ -225,7 +262,7 @@ export function intentPacket(base,prompts=PROMPTS.current){
   verifiedModelInput(base);
   ensure(intentEligible(base),'INTENT_PROFILE','packet is not an ordinary event decision');
   const {view,handles}=intentView(base);
-  const instruction=prompts.intent+(base.payload.style?.text?'\n\n'+prompts.anti:'');
+  const instruction=prompts.intent+(richView(base.payload)?'\n\n'+MIND_INPUT:'')+(base.payload.style?.text?'\n\n'+prompts.anti:'');
   const packetId=digest({stage:INTENT_STAGE,instruction,basePacketId:base.packetId,view});
   const messages=[{role:'system',content:instruction},{role:'user',content:canonical({packetId,view})}];
   const bytes=Buffer.byteLength(canonical(messages),'utf8');
@@ -238,7 +275,7 @@ export function verifiedIntent(wire){
   return {packetId:wire.packetId,messages:wire.messages,bytes:wire.bytes};
 }
 
-const handle=(wire,h,kind,path)=>{const v=wire.handles[h];if(!v||v.kind!==kind)fail('INTENT_HANDLE',`${path}: “${h}” 不是本轮 view 里的${{state:'状态 S',process:'工作 P',material:'材料 M'}[kind]}编号`,{path,handle:h,expected:kind});return v;};
+const handle=(wire,h,kind,path)=>{const v=wire.handles[h];if(!v||v.kind!==kind)fail('INTENT_HANDLE',`${path}: “${h}” 不是本轮 view 里的${{state:'状态 S',process:'工作 P',goal:'目标 G',material:'材料 M'}[kind]}编号`,{path,handle:h,expected:kind});return v;};
 
 // Compile model intent into the ordinary full output object. Throws ContractError on
 // anything ambiguous; never guesses meaning.
@@ -248,7 +285,7 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
   let o;try{o=JSON.parse(raw);}catch{fail('OUTPUT_JSON','output is not valid JSON');}
   ensure(plain(o),'INTENT_SHAPE','output must be a JSON object');
   ensure(o.packetId===wire.packetId,'WRONG_PACKET','packetId must be copied from this input');
-  const base=wire.basePacket,p=base.payload,subject=p.continuity.subject.id,current=wire.handles.E0.ref;
+  const base=wire.basePacket,p=base.payload,subject=p.continuity.subject.id,current=wire.handles.E0.ref,rich=richView(p);
   const salt=k=>digest({packet:base.packetId,k});
   // Process bodies are not in the catalog; read them from the exact delivered frame version.
   const frameRef=p.continuity.attention.frame,frame=store&&frameRef?store.read(frameRef.id,frameRef.revision):null;
@@ -262,7 +299,14 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
     case 'act':{
       ensure(typeof d.tool==='string'&&(p.allowedActionTools??[]).includes(d.tool),'TOOL_NOT_GRANTED',`tool “${d.tool}” is not in view.tools`,{tool:d.tool});
       ensure(d.args===undefined||plain(d.args),'INTENT_SHAPE','decision.args must be an object');
-      option={kind:'act',payload:{tool:d.tool,args:d.args??{}}};break;}
+      const args={...d.args};
+      if(rich&&d.tool==='start_agent_task'){
+        for(const [field,kind,prefix] of [['processId','process','P'],['intentId','goal','G']]){
+          if(typeof args[field]==='string'&&new RegExp('^'+prefix+'[0-9]+$').test(args[field]))
+            args[field]=handle(wire,args[field],kind,'decision.args.'+field).ref.id;
+        }
+      }
+      option={kind:'act',payload:{tool:d.tool,args}};break;}
     case 'lookup':
       if(d.open!==undefined){const t=wire.handles[d.open];ensure(t&&['material','reminder'].includes(t.kind),'INTENT_HANDLE',`decision.open: “${d.open}” 不是本轮 view 里的材料 M 或线索 R 编号`,{path:'decision.open',handle:d.open});option={kind:'lookup',payload:{ref:t.ref}};}
       else{ensure(Array.isArray(d.terms)&&d.terms.length>0&&d.terms.length<=8,'INTENT_SHAPE','lookup needs 1-8 terms or open');d.terms.forEach((t,i)=>str(t,`decision.terms[${i}]`,80));option={kind:'lookup',payload:{terms:d.terms}};}
@@ -278,19 +322,52 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
   const delivered=deliveredStateRefs(p.continuity);
   for(const [i,s] of states.entries()){
     const path=`states[${i}]`;ensure(plain(s),'INTENT_SHAPE',`${path} must be an object`);
-    ensure(Object.keys(s).every(k=>['update','kind','text','status','keep'].includes(k)),'INTENT_SHAPE',`${path}: only update/kind/text/status/keep`);
+    ensure(Object.keys(s).every(k=>['update','kind','text','status','keep',...(rich?['domains','stance','confidence','links']:[])].includes(k)),'INTENT_SHAPE',`${path}: unsupported state field`);
+    const previous=s.update!==undefined?handle(wire,s.update,'state',path+'.update'):null;
+    const kind=previous?.stateKind??s.kind,prior=previous?.mind;
+    const semantic={};
+    if(s.domains!==undefined)semantic.domains=normalizeDomains(s.domains);
+    if(s.links!==undefined||kind==='readiness'&&(s.confidence!==undefined||!previous)){
+      ensure(kind==='readiness'&&s.stance===undefined,'INTENT_SHAPE',`${path}: links are only for readiness`);
+      const confidence=s.confidence??prior?.confidence??'tentative';
+      ensure(['tentative','uncertain','confident'].includes(confidence),'INTENT_SHAPE',`${path}: invalid confidence`);
+      semantic.mind={...prior,role:'readiness',confidence};
+      if(s.links!==undefined){
+        ensure(Array.isArray(s.links)&&s.links.length>0&&s.links.length<=8,'INTENT_LIMIT',`${path}: link 1–8 delivered judgments`);
+        for(const key of Object.values(READINESS_LINKS))semantic.mind[key]=[];
+        for(const h of s.links){
+          const target=handle(wire,h,'state',path+'.links'),kind=target.mind?.role;
+          ensure(Object.hasOwn(READINESS_LINKS,kind),'INTENT_HANDLE',`${path}: link only delivered beliefs, concerns, conditions or expectations`);
+          semantic.mind[READINESS_LINKS[kind]].push(target.ref);
+        }
+      }else ensure(prior,'INTENT_SHAPE',`${path}: new readiness needs delivered links`);
+    }else if(s.stance!==undefined||s.confidence!==undefined||rich&&!previous&&Object.hasOwn(MIND_CHOICES,kind)){
+      ensure(['appraisal','concern','condition'].includes(kind),'INTENT_SHAPE',`${path}: stance/confidence require appraisal, concern or condition`);
+      ensure(!prior||['belief','concern','condition'].includes(prior.role),'INTENT_SHAPE',`${path}: cannot change this judgment through a simple stance`);
+      const confidence=s.confidence??prior?.confidence??'tentative';
+      ensure(['tentative','uncertain','confident'].includes(confidence),'INTENT_SHAPE',`${path}: invalid confidence`);
+      semantic.mind={...prior,role:kind==='appraisal'?'belief':kind,confidence};
+      if(kind==='appraisal')ensure(s.stance===undefined,'INTENT_SHAPE',`${path}: appraisal has no stance`);
+      else{
+        const field=kind==='concern'?'orientation':'assessment',stance=s.stance??prior?.[field];
+        ensure(MIND_CHOICES[kind].includes(stance),'INTENT_SHAPE',`${path}: give a valid stance for ${kind}`);
+        semantic.mind[field]=stance;
+      }
+    }
     if(s.status!==undefined)ensure(['open','closed'].includes(s.status),'INTENT_SHAPE',`${path}.status must be open or closed`);
     if(s.update!==undefined){
-      const t=handle(wire,s.update,'state',path+'.update');
+      const t=previous;
       ensure(s.kind===undefined||s.kind===t.stateKind,'STATE_IDENTITY',`${path}: kind of ${s.update} cannot change; write a new state instead`);
-      ensure(s.text!==undefined||s.status!==undefined,'INTENT_SHAPE',`${path}: give text or status`);
-      changes.push({id:t.ref.id,nature:'reappraisal',...(s.text!==undefined?{body:str(s.text,path+'.text',2048)}:{}),...(s.status?{status:s.status}:{}),
-        basis:{observations:[current],priorStates:[t.ref],memories:[]}});
-      if(s.keep!==false&&s.status!=='closed')keep.push({id:t.ref.id,revision:Math.max(t.ref.revision,...delivered.filter(r=>r.id===t.ref.id).map(r=>r.revision))+1,cue:s.text??null});
+      ensure(s.text!==undefined||s.status!==undefined||Object.keys(semantic).length,'INTENT_SHAPE',`${path}: give text, status or a judgment change`);
+      changes.push({id:t.ref.id,nature:'reappraisal',...(s.text!==undefined?{body:str(s.text,path+'.text',2048)}:{}),...(s.status?{status:s.status}:{}),...(rich?{expectedRevision:t.ref.revision}:{}),
+        basis:{observations:[current],priorStates:[t.ref],memories:[]},...semantic});
+      if(s.keep!==false&&s.status!=='closed'&&(!rich||t.stateKind!=='impression'))keep.push({id:t.ref.id,revision:(rich?t.ref.revision:Math.max(t.ref.revision,...delivered.filter(r=>r.id===t.ref.id).map(r=>r.revision)))+1,cue:s.text??null});
     }else{
-      ensure(STATE_KINDS.includes(s.kind),'INTENT_SHAPE',`${path}.kind must be one of ${STATE_KINDS.join('/')}`);
+      ensure(STATE_KINDS.includes(s.kind)||rich&&(s.kind==='readiness'||Object.hasOwn(MIND_CHOICES,s.kind)),'INTENT_SHAPE',`${path}.kind must be one of ${STATE_KINDS.join('/')}`);
       const id=`state:${subject}:${s.kind}:${salt('state'+i)}`;
-      changes.push({id,kind:s.kind,body:str(s.text,path+'.text',2048),status:s.status??'open',nature:'encounter',basis:{observations:[current],priorStates:[],memories:[]}});
+      const scene=rich&&s.kind==='impression'?(p.continuity.eventAbout??[]).find(r=>r.kind==='scene'&&r.id===p.current.scene):null;
+      if(scene)semantic.about=[scene];
+      changes.push({id,kind:s.kind,...(rich?{expectedRevision:0}:{}),body:str(s.text,path+'.text',2048),status:s.status??'open',nature:'encounter',basis:{observations:[current],priorStates:[],memories:[]},...semantic});
       if(s.keep!==false&&s.status!=='closed'&&s.kind!=='impression')keep.push({id,revision:1,cue:s.text});
     }
   }
@@ -343,6 +420,12 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
   const summary=typeof o.summary==='string'&&o.summary.trim()?[...o.summary].slice(0,400).join(''):'模型未提供简短说明（宿主标记）';
 
   let apperception,affectAppraisal;
+  if(rich&&o.perception!==undefined){
+    const v=o.perception;
+    ensure(p.apperceptionV1?.enabled===true&&plain(v)&&Object.keys(v).every(k=>['domain','meaning'].includes(k)),'INTENT_SHAPE','perception needs enabled apperception and domain/meaning');
+    const meaning=str(v.meaning,'perception.meaning',300);
+    apperception={schema_version:'apperception.slice.v1',activated_cells:[{domain:v.domain,perspective:'meaning',content:meaning,epistemic_status:'interpretation',source_refs:[current],uncertainty:null}],integrated_understanding:meaning};
+  }
   if(o.moodEval!==undefined&&o.moodEval!==null){
     ensure(plain(o.moodEval),'INTENT_SHAPE','moodEval must be an object');
     const m=o.moodEval;
@@ -353,7 +436,7 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
     ensure(typeof intensity==='number'&&Number.isFinite(intensity)&&intensity>=0&&intensity<=1,'INTENT_SHAPE','moodEval.intensity must be 0..1');
     ensure(['self','other','circumstance'].includes(agency),'INTENT_SHAPE','moodEval.agency must be self/other/circumstance');
     if(p.apperceptionV1?.enabled===true){
-      apperception={schema_version:'apperception.slice.v1',activated_cells:[{domain:p.continuity.social?.person?'relationship':'self',perspective:'meaning',content:meaning,epistemic_status:'interpretation',source_refs:[current],uncertainty:null}],integrated_understanding:meaning};
+      apperception??={schema_version:'apperception.slice.v1',activated_cells:[{domain:p.continuity.social?.person?'relationship':'self',perspective:'meaning',content:meaning,epistemic_status:'interpretation',source_refs:[current],uncertainty:null}],integrated_understanding:meaning};
       if(p.continuity.motivation?.canAppraiseCurrent===true){
         affectAppraisal={schema_version:'affect.appraisal.v2',mode:'encounter',source_refs:[current],reason:summary,
           appraisals:[{weight:1,value:{event:evLabel,summary:meaning,valence,intensity,relevance:Math.max(0.2,intensity),agency,target:p.continuity.social?.person?.who?.id??null}}]};

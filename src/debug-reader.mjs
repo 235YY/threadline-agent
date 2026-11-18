@@ -78,7 +78,18 @@ export class DebugArchive {
     if(typeof id!=='string')return null;
     const row=revision===undefined?this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.id=?').get(id)
       :this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,revision);
-    return row?JSON.parse(row.body):null;
+    if(!row)return null;
+    const record=JSON.parse(row.body);
+    if(record.type==='decision_attempt'&&record.$recoveryFrom){
+      for(const [field,rev] of Object.entries(record.$recoveryFrom)){
+        const saved=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,rev);
+        const source=saved?JSON.parse(saved.body):null;
+        ensure(source&&Object.hasOwn(source,field),'MISSING_REFERENCE','fixed attempt source is unavailable');
+        record[field]=source[field];
+      }
+      delete record.$recoveryFrom;
+    }
+    return record;
   }
   journal({subjectId=null,decisionId=null,packetId=null,jobId=null,afterSeq=0,limit=100}={}){
     bound(limit,200);ensure(Number.isSafeInteger(afterSeq)&&afterSeq>=0,'DEBUG_LIMIT','bounded journal cursor required');
