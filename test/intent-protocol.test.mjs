@@ -8,6 +8,35 @@ import {eventProcessId} from '../src/task-threads.mjs';
 import {runtimeFeedback} from '../src/runtime-feedback.mjs';
 import {put,event,frame,ref,note} from './helpers.mjs';
 
+test('compact belief, concern, condition and impression persist across restart and preparation can use their fixed handles',async t=>{
+ const {disk}=await import('./helpers.mjs');
+ let store;t.after(()=>store?.close());
+ const file=disk(t);store=new ContinuityStore(file);
+ let session=new ContinuitySession({store,subjectId:'jingyang',attention:true});
+ const [first,w]=put(store,'initial',event('a'),frame());
+ const prepare=e=>session.prepare({currentEvent:ref(e),workspace:ref(w),mind:true,unified:true,workbenchFocus:true,
+   workbenchMaterials:true,localLookupPolicy:{maxReads:2,maxHits:4},subjectiveDomains:true,subjectiveMemoryV2:true,apperceptionV1:true,intentProtocol:true,budgetBytes:131072});
+ const answer=(p,id,x)=>session.commit({packet:p,decisionId:id,requestId:id,output:{packetId:intentPacket(p).packetId,...x}});
+ answer(prepare(first),'meaning',{decision:{type:'reply',text:'明白了。'},perception:{domain:'normative',meaning:'答应的核对应有据可查'},states:[
+   {kind:'appraisal',text:'原件需要核对',confidence:'tentative',domains:['world']},
+   {kind:'concern',text:'保住记录的准确性',stance:'preserve'},
+   {kind:'condition',text:'已有原件',stance:'unknown'},
+   {kind:'impression',text:'这次先看原件再下判断'}]});
+ assert.equal(store.read('meaning').output.apperception.activated_cells[0].domain,'normative');
+ store.close();store=new ContinuityStore(file);session=new ContinuitySession({store,subjectId:'jingyang',attention:true});
+ const next=put(store,'next',event('b')).at(-1),p=prepare(next),wire=intentPacket(p),view=JSON.parse(wire.messages[1].content).view;
+ const handles=Object.fromEntries(view.states.map(x=>[x.kind,x.handle]));
+ assert.equal(view.states.find(x=>x.kind==='condition').assessment.stance,'unknown');
+ assert.ok(handles.impression);
+ assert.throws(()=>answer(p,'bad',{decision:{type:'wait'},states:[{kind:'readiness',text:'先核对',links:['S999']}]}),{code:'INTENT_HANDLE'});
+ const d=answer(p,'readiness',{decision:{type:'wait'},states:[{kind:'readiness',text:'先查清准确性再行动',links:[handles.concern,handles.appraisal,handles.condition]}]});
+ assert.equal(d.output.options[0].kind,'wait');
+ const ready=[...store.all('personal_state')].find(x=>x.kind==='readiness');
+ assert.equal(ready.mind.concerns[0].revision,1);
+ const later=prepare(put(store,'later',event('c')).at(-1)),v=JSON.parse(intentPacket(later).messages[1].content).view;
+ assert.ok(v.judgments.links.some(x=>x.relation==='concerns'&&x.status==='delivered'));
+ assert.ok(wire.bytes<p.bytes);
+});
 function world(t){
  const store=new ContinuityStore(':memory:');t.after(()=>store.close());
  const session=new ContinuitySession({store,subjectId:'jingyang',attention:true});

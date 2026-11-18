@@ -5,6 +5,26 @@ import * as sqlite from 'node:sqlite';
 import {ContinuityStore} from '../src/store.mjs';
 import {code, disk, event, frame, memory, note, put, ref} from './helpers.mjs';
 
+test('compact transaction replay reads the original revision and accepts legacy inline rows',t=>{
+ const path=disk(t),cmd=note('same-note',[],{body:'large body '.repeat(300)});
+ let store=new ContinuityStore(path,{clock:()=>2000});
+ try{
+  const v1=put(store,'v1',cmd);
+  put(store,'v2',{...cmd,expectedRevision:1,body:'new body'});
+  store.close();
+  const db=new sqlite.DatabaseSync(path);
+  try{
+   const replay=db.prepare("SELECT result FROM operations WHERE request_id='v1'").get();
+   assert.ok(replay.result.length<200,'result stores a fixed reference rather than a second body');
+   db.prepare("UPDATE operations SET result=? WHERE request_id='v2'").run(JSON.stringify([{legacy:true}]));
+  }finally{db.close();}
+  store=new ContinuityStore(path);
+  assert.deepEqual(put(store,'v1',cmd),v1);
+  assert.deepEqual(put(store,'v2',{...cmd,expectedRevision:1,body:'new body'}),[{legacy:true}]);
+  assert.throws(()=>put(store,'v1',{...cmd,body:'other'}),{code:'REQUEST_COLLISION'});
+ }finally{store.close();}
+});
+
 test('committed events and all note revisions survive reopening', t => {
   const path = disk(t); let store = new ContinuityStore(path, {clock: () => 2000});
   const [e] = put(store, 'event', event('e'));

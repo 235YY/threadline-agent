@@ -409,7 +409,7 @@ function buildDecision({store,currentEvent,workspace,identity='',style='',materi
       }
       ensure(!mind||attention,'MIND_PROTOCOL_REQUIRED','mind mode requires explicit purpose-based attention');
       if(intentProtocol&&attention&&!task&&!['这是 AgentTask 单步执行','本轮 current 是 AgentTask','【显式重新准入】'].some(m=>String(instructionSuffix??'').includes(m))){
-        payload.intentProtocol={format:'intent-base-v1',enabled:true};
+        payload.intentProtocol={format:'intent-base-v2',enabled:true};
       }
       const stage=unified?'decisionGraph':mind?'decisionMind':attention?'decisionAttention':localLookupPolicy!==null?'decisionWorkbench':'decisionInformation';
       if(attention&&payload.memoryAccess){payload.memoryAccess.routes.push('graph','stateRef');payload.memoryAccess.scope='own-retained-events-notes-states-and-processes';}

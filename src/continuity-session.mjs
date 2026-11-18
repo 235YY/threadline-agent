@@ -7,14 +7,14 @@ import {normalizeAndRecord} from './proposal-normalization.mjs';
 import {intentEligible,looksLikeIntent,intentWireFor,expandIntent} from './intent-protocol.mjs';
 
 // An intent-protocol answer is compiled into the full output before the ordinary commit.
-// The raw answer and its compilation are kept for audit; nothing else changes downstream.
+// Keep the raw answer and diagnostics for audit; the attempt already contains the compiled output.
 export function compileIntentOutput({store,packet,output}){
   if(!intentEligible(packet)||!looksLikeIntent(output))return output;
   const raw=typeof output==='string'?output:canonical(output),wire=intentWireFor(packet,JSON.parse(raw).packetId);
   ensure(wire,'WRONG_PACKET','intent answer does not match any intent packet for this input');
   const diagnostics=[],compiled=expandIntent(wire,raw,{store,diagnostics}),subject=packet.payload.continuity.subject.id;
   const id='extension:'+subject+':runtime:intent:'+digest({packet:packet.packetId,raw});
-  if(!store.read(id))store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:subject,theory:'runtime',stateType:'intent-compilation',schemaVersion:'1',expectedRevision:0,value:{packetId:packet.packetId,intentPacketId:wire.packetId,rawOutput:raw,compiled,diagnostics}}]});
+  if(!store.read(id))store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:subject,theory:'runtime',stateType:'intent-compilation',schemaVersion:'1',expectedRevision:0,value:{packetId:packet.packetId,intentPacketId:wire.packetId,rawOutput:raw,diagnostics}}]});
   return compiled;
 }
 

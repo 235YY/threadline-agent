@@ -398,6 +398,7 @@ export class TurnDriver {
   }
   persistState(){
     const id=`rhythm:${this.#subjectId}`,old=this.#store.read(id),body=canonical({format:'rhythm-state-v1',...this.#state});
+    if(old?.body===body)return ref(old);
     const out=this.#store.execute({requestId:`rhythm-state:${digest({id,body,expected:old?.revision??0})}`,
       commands:[{op:'write_note',id,expectedRevision:old?.revision??0,kind:'skill',change:'self_report',evidence:[],body}]}).at(-1);
     return ref(out.record);

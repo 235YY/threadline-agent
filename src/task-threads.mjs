@@ -65,7 +65,7 @@ function taskHistoryUnits({store,subjectId,threadId}){
     for(let revision=1;revision<=task.revision;revision++){
       const record=store.read(task.id,revision);if(record?.feedback?.status==='recorded')add(record.feedback.event,'result',record);
     }
-    units.push({id:'task-evidence:'+task.id,threadId,kind:'task-execution-evidence',task:{id:task.id,revision:task.revision},processId:threadId,processSource:{ref:source.process,frame:source.frame},originDecisionRef:task.originDecisionRef,originEventRef:task.originEventRef??null,at:task.createdAt,latestAt:Math.max(task.updatedAt,...evidence.map(e=>e.occurredAt??e.at)),goal:task.goal,status:task.status,evidence,exchanges:[],incoming:{body:'任务执行记录：'+task.goal,origin:'task-record',scene:task.target??null},meaning:'typed Task evidence, not an attributed external message; original event types remain unchanged'});
+    units.push({id:'task-evidence:'+task.id,threadId,kind:'task-execution-evidence',task:{id:task.id,revision:task.revision},processId:threadId,processSource:{ref:source.process,frame:source.frame},originDecisionRef:task.originDecisionRef,originEventRef:task.originEventRef??null,sourceScene:source.decision.input.payload.current?.scene??null,at:task.createdAt,latestAt:Math.max(task.updatedAt,...evidence.map(e=>e.occurredAt??e.at)),goal:task.goal,status:task.status,evidence,exchanges:[],incoming:{body:'任务执行记录：'+task.goal,origin:'task-record',scene:task.target??null},meaning:'typed Task evidence, not an attributed external message; original event types remain unchanged'});
   }
   return units;
 }
