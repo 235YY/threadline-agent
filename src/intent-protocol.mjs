@@ -92,11 +92,14 @@ export function intentView(base){
   if(social?.person)view.person=social.person;
   if(social?.elsewhere?.length)view.elsewhere=social.elsewhere;
   if(social?.recentTools?.length)view.recentTools=social.recentTools;
+  const matById=new Map((p.materials??[]).map(m=>[m.ref?.id,m]));
   const recent=(c.recent?.items??[]).filter(i=>!(i.ref?.id===cur.id&&i.ref?.revision===cur.revision)).slice(-12)
     .map(i=>{
       const who=i.role==='user'?(i.senderName??resolveSpeakerName(null,{sender:i.sender,actor:i.actor})):(i.role==='assistant'||i.role==='her'?'你':i.role);
       const ago=formatRelativeTime(i.at??null,nowMs);
-      return {who,where:i.scene??null,...(ago?{ago}:{}),text:i.text??'(见 current)'};
+      const matBody=i.bodySource?.path==='materials'?matById.get(i.bodySource.ref?.id)?.record?.body:null;
+      const bodyText=i.text??matBody??(i.bodySource?.path==='current'?'(见 current)':'(见上下文)');
+      return {who,where:i.scene??null,...(ago?{ago}:{}),text:bodyText};
     });
   if(recent.length)view.recent=recent;
   const last=c.lastReaction;
@@ -127,7 +130,19 @@ export function intentView(base){
     view.goals=c.intents.slice(0,6).map(x=>({goal:x.goal,status:x.status,...(x.nextAction?{nextAction:x.nextAction}:{}),...(x.dueAt?{dueIn:formatRelativeTime(x.dueAt,nowMs)}:{}),}));
   }
   if(p.previousDecisions?.length){
-    view.priorSteps=p.previousDecisions.slice(-2).map(d=>({selected:d.selected?.kind??null,summary:d.summary}));
+    const curPrivId=typeof cur.scene==='string'&&cur.scene.startsWith('qq/private/')?cur.scene.slice('qq/private/'.length):null;
+    const sameContext=d=>{
+      const dScene=d.origin?.scene;
+      if(typeof dScene==='string'&&dScene.startsWith('qq/private/')){
+        return curPrivId!==null&&dScene.slice('qq/private/'.length)===curPrivId;
+      }
+      const evId=d.origin?.currentEvent?.id;
+      if(typeof evId!=='string'||!evId.startsWith('obs:private:'))return true;
+      const parts=evId.split(':');
+      return curPrivId!==null&&parts[2]===curPrivId;
+    };
+    const steps=p.previousDecisions.filter(sameContext).slice(-2).map(d=>({selected:d.selected?.kind??null,summary:d.summary}));
+    if(steps.length)view.priorSteps=steps;
   }
 
   const threads=c.threads??{},summaries=new Map([[threads.foreground?.id,threads.foreground],...(threads.background??[]).map(t=>[t.id,t])]);
@@ -153,7 +168,18 @@ export function intentView(base){
   if(emotions.length)view.mood=emotions;
   if(p.apperceptionV1?.enabled===true&&c.motivation?.canAppraiseCurrent===true)view.canEvaluateMood=true;
   const fb=parseHostFeedback(base.instructionSuffix);
-  if(fb?.recentFeedback?.length)view.hostFeedback=fb.recentFeedback.slice(0,4);
+  if(fb?.recentFeedback?.length){
+    const safeFb=fb.recentFeedback
+      .filter(x=>x.kind!=='input-feedback')
+      .slice(0,3)
+      .map(x=>({
+        kind:x.kind,
+        ...(x.adopted!==undefined?{adopted:x.adopted}:{}),
+        ...(x.error?{error:x.error}:{}),
+        ...(x.tool?{tool:x.tool,outcome:x.outcome}:{}),
+      }));
+    if(safeFb.length)view.hostFeedback=safeFb;
+  }
   if(fb?.policy?.externalSend)view.sendScope=fb.policy.externalSend;
 
   n=0;const materials=[];

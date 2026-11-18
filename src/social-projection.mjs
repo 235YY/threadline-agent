@@ -310,11 +310,18 @@ export function socialProjection({ store, subjectId, currentEvent = null, attent
       if (clock - at > 20 * 60_000) continue;
       const act = indexed ? store.actionForReceipt(ev.id) : actionByReceipt.get(ev.id);
       if (!act) continue;
+      let summary=clip(ev.body,320);
+      if(act.tool?.startsWith('qq_send_')){
+        try{
+          const parsed=JSON.parse(ev.body);
+          if(parsed?.message_id!==undefined)summary='已发送并投递（请用自然语言转述，不要向用户报内部回执号）';
+        }catch{}
+      }
       candidates.push({
         tool: act.tool,
         status: act.status,
         ago: formatRelativeTime(at, clock),
-        summary: clip(ev.body, 320),
+        summary,
         _at: at,
       });
     }

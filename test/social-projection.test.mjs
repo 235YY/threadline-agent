@@ -284,6 +284,43 @@ test('intent-v1 exposes recentTools, full memory stack, and bridges moodEval int
   assert.equal(meanings[0].value.interpretation.integrated_understanding, '觉得测试进展顺利很开心');
 });
 
+test('intentView sanitizes internal logs, avoids cross-chat priorSteps bleed, and resolves material-linked recent bodies', () => {
+  const store = new ContinuityStore(':memory:');
+  const w = put(store, 'ws', frame())[0];
+  const s1 = ensurePerson(store, { system: 'qq', id: '100001', name: '甲' });
+  const s2 = ensurePerson(store, { system: 'qq', id: '100002', name: '乙' });
+  const e1 = put(store, 'e1', event('m1', { body: '第一句悄悄话', scene: 'qq/private/100001', actor: s1.entityId, sender: s1, occurredAt: 1000 })).at(-1);
+  const e2 = put(store, 'e2', event('m2', { body: '乙的新消息', scene: 'qq/private/100002', actor: s2.entityId, sender: s2, occurredAt: 2000 })).at(-1);
+  const act = store.execute({ requestId: 'a-send', commands: [{ op: 'propose_action', id: 'act-send', workspace: ref(w), tool: 'qq_send_message', args: { target: 'private', id: '100002', text: 'hi' }, inputRefs: [] }] })[0];
+  store.execute({ requestId: 'r-send', commands: [{ op: 'record_receipt', actionId: act.id, expectedRevision: act.revision, status: 'succeeded', eventId: 'rcpt-send', body: '{"message_id":99887766}', source: { system: 'host', key: 'rcpt-send' }, actor: 'host', occurredAt: 1900 }] });
+  const e3 = put(store, 'e3', event('m3', { body: '乙的第二句', scene: 'qq/private/100002', actor: s2.entityId, sender: s2, occurredAt: 3000 })).at(-1);
+  // Change rcpt-send's scene indirectly or test hostFeedback sanitization + priorSteps filtering + material recent body
+  const session = new ContinuitySession({ store, subjectId: 'jingyang', attention: true });
+  store.execute({ requestId: 'admit-all', commands: [{ op: 'admit_subject_event', subjectId: 'jingyang', event: ref(e1) }, { op: 'admit_subject_event', subjectId: 'jingyang', event: ref(e2) }, { op: 'admit_subject_event', subjectId: 'jingyang', event: ref(e3) }] });
+  const d1 = session.prepare({ currentEvent: ref(e1), workspace: ref(w), mind: true, unified: true, workbenchMaterials: true, workbenchFocus: true, workbenchRecovery: true, localLookupPolicy: { maxReads: 2, maxHits: 4 }, budgetBytes: 131072, now: 1500 });
+  const d1Rec = session.commit({ packet: d1, decisionId: 'dec-priv-1', requestId: 'dec-priv-1', output: { packetId: d1.packetId, options: [{ id: 'w', kind: 'wait', payload: {} }], selected: 'w', summary: '甲的私密内部总结', used: [], continuity: { changes: [], residency: { add: [], remove: [] }, expressionChoice: null, observationDisposition: 'handled', attention: keepAttention() } } });
+
+  const suffix = '【宿主操作反馈】' + JSON.stringify({
+    recentFeedback: [
+      { kind: 'input-feedback', error: 'INPUT_OVERFLOW', source: { id: 'extension:secret', revision: 1 }, details: { budgetBytes: 131072 } },
+      { kind: 'tool-feedback', tool: 'qq_send_message', outcome: 'success', rawReceiptExcerpt: '{"message_id":99887766}', receipt: { id: 'x', revision: 1 } },
+    ],
+  });
+  const p = session.prepare({
+    currentEvent: ref(e3), workspace: ref(w), materials: [{ ref: ref(e2), aspect: 'experience' }],
+    previousDecisions: [ref(d1Rec)], investigationContinuityV1: true,
+    instructionSuffix: suffix,
+    mind: true, unified: true, workbenchMaterials: true, workbenchFocus: true, workbenchRecovery: true,
+    localLookupPolicy: { maxReads: 2, maxHits: 4 }, budgetBytes: 131072, now: 4000,
+  });
+  const wire = intentPacket(p);
+  const view = JSON.parse(wire.messages[1].content).view;
+  assert.equal(view.priorSteps, undefined, 'private decision summary from another user must not leak into view.priorSteps');
+  assert.ok(view.recent.some(r => r.text === '乙的新消息'), 'material-linked recent message keeps its real body instead of (见 current)');
+  assert.doesNotMatch(JSON.stringify(view.hostFeedback ?? []), /INPUT_OVERFLOW|99887766|revision|packetId/);
+  store.close();
+});
+
 test('isGroupAddressed enforces all, mentioned, and wake policies cleanly', () => {
   const plainMsg = { message_type: 'group', message: [{ type: 'text', data: { text: '大家好' } }] };
   const wakeMsg = { message_type: 'group', message: [{ type: 'text', data: { text: '鲸漾在吗' } }] };

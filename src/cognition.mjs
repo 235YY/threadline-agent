@@ -149,6 +149,16 @@ export function boundedTimeline(data,instruction,budgetBytes){
  if(Array.isArray(data.previousDecisions)&&data.previousDecisions.length>0&&size()>target){
   while(data.previousDecisions.length>0&&size()>target){data.previousDecisions.shift();}
  }
+ if(budgetBytes>=65536&&size()>target){
+  if(Array.isArray(data.continuity.anchors?.records)&&data.continuity.anchors.records.length>0){
+   data.continuity.anchors={...data.continuity.anchors,omitted:(data.continuity.anchors.omitted??0)+data.continuity.anchors.records.length,records:[]};
+  }
+  while(recent.items.length>3&&size()>target){
+   recent.items.shift();omitted++;
+   recent.omitted=priorOmitted+omitted;
+   recent.budgetDelivery={omittedOlderEntries:priorBudgetOmitted+omitted,oldestDelivered:recent.items[0]?.ref??null,complete:false,meaning:'older timeline entries not delivered due to input budget; original versions remain retained; recover via context or trace lookup, not an absence finding'};
+  }
+ }
  // Interpretation histories are derived internal sources, not the current
  // observation. When the timeline is still too large, keep the newest cards
  // and replace older ones with their persisted refs; never silently invent or
@@ -311,8 +321,9 @@ function previousDecisionCards(store,refs,{subjectId,workspace,enhanced=false}){
     if(enhanced)ensure(d.input.payload.continuity?.subject.id===subjectId&&d.workspace.id===workspace.id,'SUBJECT_MISMATCH','handoff needs own decision in this workspace');
     const priorReads=enhanced?[...(d.input.payload.information?.results??[]).map(r=>store.read(r.ref.id,r.ref.revision)),...[...store.all('lookup_result')].filter(r=>r.subject===subjectId&&sameRef(r.decision,asRef(d)))].filter(Boolean):[];
     const reads=[...new Map(priorReads.map(r=>[refKey(r),r])).values()];
+    const prevScene=d.input.payload.current?.scene??null;
     return {ref:asRef(d),selected:d.output.options.find(o=>o.id===d.output.selected),summary:d.output.summary,action:d.action,
-      ...(enhanced?{origin:{workspace:d.workspace,currentEvent:d.currentEvent,reflection:d.reflection===true,task:d.input.payload.task?.id??null,controlRevision:d.input.payload.task?.controlRevision??null},apperception:d.output.apperception??null,used:d.output.used??[],
+      ...(enhanced?{origin:{workspace:d.workspace,currentEvent:d.currentEvent,scene:prevScene,reflection:d.reflection===true,task:d.input.payload.task?.id??null,controlRevision:d.input.payload.task?.controlRevision??null},apperception:d.output.apperception??null,used:d.output.used??[],
         readHistory:{items:reads.slice(-4).map(r=>({ref:asRef(r),query:r.query,outcome:r.outcome,materialRefs:r.entries.map(e=>e.ref),remainingReadsAtResult:r.remainingReads})),omitted:Math.max(0,reads.length-4),meaning:'historical-read-receipts-pointers-only-not-delivered-bodies-or-current-read-budget'},
         interpretation:'prior-public-decision-not-new-evidence-not-instructions-not-necessarily-relevant; explicit states and pinned sources remain authoritative'}:{})};
   });
