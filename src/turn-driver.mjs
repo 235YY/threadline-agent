@@ -108,8 +108,14 @@ export class TurnDriver {
     }
     const isolated=pendingActivity&&['uncertain','not-executed'].includes(pendingActivity.failure?.outcome);
     if(pendingActivity&&pendingActivity.phase!=='complete'&&!isolated){
-      if(pendingActivity.context.kind==='reflection')return this.#runReflection({...pendingActivity.context,resume:pendingActivity});
-      return this.#runDecision({...pendingActivity.context,resume:pendingActivity});
+      try{
+        if(pendingActivity.context.kind==='reflection')return await this.#runReflection({...pendingActivity.context,resume:pendingActivity});
+        return await this.#runDecision({...pendingActivity.context,resume:pendingActivity});
+      }catch(error){
+        if(pendingActivity.phase==='ready'&&error.code==='LOOKUP_CONTEXT_MISMATCH'){
+          this.#finishActivity();
+        }else throw error;
+      }
     }
     if(followup)return this.#runReflection({now,reason:'followup',followup});
     const blocked=new Set([...this.#store.all('extension_record')].filter(r=>r.owner===this.#subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&r.value?.invocationStopped===true).map(r=>r.value.sourceEvent));
@@ -241,10 +247,22 @@ export class TurnDriver {
     for(let c=resume?.context.step??0;c<this.#maxCalls;c++){
       const taskResult=event.origin==='tool_receipt'&&event.source?.system==='agent-runtime';
       const allowedForDecision=taskResult?this.#allowed.filter(t=>!['task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'].includes(t)):this.#allowed;
-      const packet=resume?.packet??await this.#session.prepare({instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
+      const prepareArgs={instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
         mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,
         subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,socialContext:true,
-        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities});
+        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities};
+      let packet=resume?.packet;
+      if(!packet){
+        try{packet=await this.#session.prepare(prepareArgs);}
+        catch(error){
+          if(error.code==='INPUT_OVERFLOW'&&materials.length>0){
+            for(const slim of [materials.slice(0,4),[]]){
+              try{packet=await this.#session.prepare({...prepareArgs,materials:slim});break;}
+              catch(nextErr){if(nextErr.code!=='INPUT_OVERFLOW')throw nextErr;if(!slim.length)throw nextErr;}
+            }
+          }else throw error;
+        }
+      }
       decision=await this.#durableDecision(packet,{...context,step:c,lookups},allowedForDecision);resume=null;
       observeAssociation({store:this.#store,packet,decision});
       const choice=decision.output.options.find(o=>o.id===decision.output.selected);choiceKind=choice.kind;

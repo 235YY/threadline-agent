@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +16,7 @@ import { keepAttention } from '../src/attention.mjs';
 import { affectFactory } from '../tools/affect-integrated/session.mjs';
 import { isGroupAddressed, acceptsChat, blockedChatSet } from '../tools/qq-connect/scope.mjs';
 import { createOpenLifeHost } from '../tools/open-life/host.mjs';
+import { boundedTimeline } from '../src/cognition.mjs';
 import { put, event, frame, note, ref } from './helpers.mjs';
 
 test('intent view aggregates person, cross-session metadata, relative times, speaker names, and private boundaries', t => {
@@ -313,4 +315,88 @@ test('createOpenLifeHost initializes persistent policy and sandboxed office work
   });
   assert.ok(host.policy);
   assert.equal(host.officeRoot, join(dir, 'state', 'office-workspace'));
+});
+
+test('boundedTimeline sheds older foreground thread units and previousDecisions before overflowing', () => {
+  const units = Array.from({ length: 12 }, (_, i) => ({ id: 'u-' + i, incoming: { body: 'x'.repeat(2500) } }));
+  const data = {
+    current: { body: 'hi' },
+    previousDecisions: [{ summary: 'p1 ' + 'a'.repeat(4000) }, { summary: 'p2 ' + 'b'.repeat(4000) }],
+    continuity: {
+      capabilities: { contractVersion: 2 },
+      recent: { items: Array.from({ length: 10 }, (_, i) => ({ ref: { id: 'r-' + i, revision: 1 }, text: 'hi' })) },
+      threads: { foreground: { id: 'proc-1', history: { units } }, background: [] },
+    },
+  };
+  const instruction = 'i'.repeat(90000);
+  const out = boundedTimeline(data, instruction, 131072);
+  assert.ok(Buffer.byteLength(JSON.stringify([{ role: 'system', content: instruction }, { role: 'user', content: JSON.stringify(out) }])) <= 131072);
+  assert.ok(out.continuity.threads.foreground.history.units.length < 12);
+  assert.equal(out.continuity.threads.foreground.history.budgetDelivery.complete, false);
+});
+
+test('TurnDriver recovers cleanly if stale ready lookup activity hits LOOKUP_CONTEXT_MISMATCH', async t => {
+  const store = new ContinuityStore(':memory:');
+  t.after(() => store.close());
+  let w = put(store, 'ws', frame())[0];
+  const sender = ensurePerson(store, { system: 'qq', id: '100001', name: '测试同学', isOwner: true });
+  let step = 0;
+  const driver = new TurnDriver({
+    store, subjectId: 'jingyang', workspace: ref(w), identity: '你是鲸漾。',
+    taskThreads: true, investigationContinuityV1: true,
+    decide: p => {
+      step++;
+      if (step === 1) {
+        return JSON.stringify({
+          packetId: p.packetId,
+          options: [{ id: 'l', kind: 'lookup', payload: { terms: ['测试'] } }],
+          selected: 'l', summary: '查一下', used: [],
+          continuity: { changes: [], residency: { add: [], remove: [] }, expressionChoice: null, observationDisposition: 'handled', attention: keepAttention() },
+        });
+      }
+      return JSON.stringify({
+        packetId: p.packetId,
+        options: [{ id: 'r', kind: 'respond', payload: { text: '收到恢复了' } }],
+        selected: 'r', summary: '回复', used: [],
+        continuity: { changes: [], residency: { add: [], remove: [] }, expressionChoice: null, observationDisposition: 'handled', attention: keepAttention() },
+      });
+    },
+  });
+  driver.ingest({ key: 'm1', body: '第一句', actor: sender.entityId, sender, scene: 'qq/private/100001' });
+  await assert.doesNotReject(async () => {
+    await driver.tick({ now: Date.now(), eventBypass: true });
+  });
+  // Second message after a forced stale ready activity must not wedge forever:
+  const ws2 = store.execute({
+    requestId: 'bump-ws',
+    commands: [{ op: 'set_workspace', id: w.id, expectedRevision: w.revision, scene: w.scene, focus: w.focus, workingRefs: [], continuityRefs: [], actionRefs: [] }],
+  }).at(-1);
+  const actId = 'extension:jingyang:runtime:turn:' + createHash('sha256').update(JSON.stringify({ subject: 'jingyang', workspace: w.id })).digest('hex');
+  // Actually inject via driver2 bound to ws2 using an existing lookup_result from ws1
+  const lr = [...store.all('lookup_result')][0];
+  const actRec = store.read(actId);
+  if (lr && actRec) {
+    store.execute({
+      requestId: 'inject-stale-ready',
+      commands: [{
+        op: 'put_extension_record', id: actId, owner: 'jingyang', theory: 'runtime', stateType: 'turn-activity',
+        schemaVersion: '1', expectedRevision: actRec.revision,
+        value: { phase: 'ready', context: { kind: 'decision', now: Date.now(), observation: { eventId: lr.anchor.id }, reason: 'event', step: 1, lookups: [ref(lr)] } },
+      }],
+    });
+  }
+  const driver2 = new TurnDriver({
+    store, subjectId: 'jingyang', workspace: ref(ws2), identity: '你是鲸漾。',
+    taskThreads: true, investigationContinuityV1: true,
+    decide: p => JSON.stringify({
+      packetId: p.packetId,
+      options: [{ id: 'r', kind: 'respond', payload: { text: '恢复后正常回信' } }],
+      selected: 'r', summary: '正常回', used: [],
+      continuity: { changes: [], residency: { add: [], remove: [] }, expressionChoice: null, observationDisposition: 'handled', attention: keepAttention() },
+    }),
+  });
+  driver2.ingest({ key: 'm2', body: '第二句在不在', actor: sender.entityId, sender, scene: 'qq/private/100001' });
+  const r2 = await driver2.tick({ now: Date.now(), eventBypass: true });
+  assert.equal(r2.action, 'decided');
+  assert.equal(r2.outbox[0].text, '恢复后正常回信');
 });

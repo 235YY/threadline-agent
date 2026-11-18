@@ -122,6 +122,33 @@ export function boundedTimeline(data,instruction,budgetBytes){
   recent.omitted=priorOmitted+omitted;
   recent.budgetDelivery={omittedOlderEntries:priorBudgetOmitted+omitted,oldestDelivered:recent.items[0]?.ref??null,complete:false,meaning:'older timeline entries not delivered due to input budget; original versions remain retained; recover via context or trace lookup, not an absence finding'};
  }
+ // Trim older task-thread exchange units and prior decision summaries only when the
+ // optional timeline trim alone was not enough (for example with full open-life tool
+ // catalogs, style packs, and all cognition extensions enabled).
+ const fgHistory=data.continuity.threads?.foreground?.history;
+ if(Array.isArray(fgHistory?.units)&&fgHistory.units.length>0&&size()>target){
+  let droppedUnits=0;
+  while(fgHistory.units.length>1&&size()>target){fgHistory.units.shift();droppedUnits++;}
+  if(fgHistory.units.length===1&&size()>target){fgHistory.units.shift();droppedUnits++;}
+  if(droppedUnits>0){
+   fgHistory.budgetDelivery={omittedOlderUnits:(fgHistory.budgetDelivery?.omittedOlderUnits??0)+droppedUnits,complete:false,meaning:'older thread units omitted due to input budget; original events remain retained'};
+  }
+ }
+ if(Array.isArray(data.continuity.threads?.background)&&data.continuity.threads.background.length>0&&size()>target){
+  for(let i=data.continuity.threads.background.length-1;i>=0&&size()>target;i--){
+   if(data.continuity.threads.background[i]?.history?.units?.length){
+    data.continuity.threads.background[i].history={...data.continuity.threads.background[i].history,units:[],omittedOlderUnits:true};
+   }
+  }
+ }
+ while(recent.items.length>8&&size()>target){
+  recent.items.shift();omitted++;
+  recent.omitted=priorOmitted+omitted;
+  recent.budgetDelivery={omittedOlderEntries:priorBudgetOmitted+omitted,oldestDelivered:recent.items[0]?.ref??null,complete:false,meaning:'older timeline entries not delivered due to input budget; original versions remain retained; recover via context or trace lookup, not an absence finding'};
+ }
+ if(Array.isArray(data.previousDecisions)&&data.previousDecisions.length>0&&size()>target){
+  while(data.previousDecisions.length>0&&size()>target){data.previousDecisions.shift();}
+ }
  // Interpretation histories are derived internal sources, not the current
  // observation. When the timeline is still too large, keep the newest cards
  // and replace older ones with their persisted refs; never silently invent or
