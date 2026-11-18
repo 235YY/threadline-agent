@@ -74,7 +74,8 @@ export const EVENT_PROCESS_THEORY='event-process-v1';
 export const eventProcessId=(subjectId,event,processId)=>`extension:${subjectId}:${EVENT_PROCESS_THEORY}:${digest([event,processId])}`;
 export function eventProcessLinks({store,subjectId}){
   if(!subjectId)return [];
-  return [...store.all('extension_record')].filter(r=>r.owner===subjectId&&r.theory===EVENT_PROCESS_THEORY&&r.stateType==='event-process-link'&&r.schemaVersion==='1');
+  const rows=typeof store.extensionRecords==='function'?store.extensionRecords({stateType:'event-process-link',owner:subjectId}):store.all('extension_record');
+  return [...rows].filter(r=>r.owner===subjectId&&r.theory===EVENT_PROCESS_THEORY&&r.stateType==='event-process-link'&&r.schemaVersion==='1');
 }
 // Only complete delivered events qualify; recent snippets and directories are not event bodies.
 export function eventProcessEvents(input){
@@ -93,15 +94,21 @@ export function threadUnits({store,threadId,subjectId=null,limit=THREAD_HISTORY_
   ensure(Number.isSafeInteger(limit)&&limit>0&&limit<=100,'THREAD_HISTORY','limit 1..100');
   const links=eventProcessLinks({store,subjectId}).filter(r=>r.value.status==='active'&&r.value.processId===threadId);
   const pinned=new Set(links.map(r=>canonical(r.value.event)));
-  const events=[...store.all('event')].filter(e=>(e.threadId===threadId||pinned.has(canonical(pin(e))))&&['observed','reported'].includes(e.origin)&&(!subjectId||store.subjectObservation(subjectId,e.id))).sort(byTime);
-  const decisions=[...store.all('decision')];
-  const actions=[...store.all('action')];
+  const indexed=typeof store.eventsInThread==='function';
+  // Indexed path: this thread's own events plus explicitly linked ones; decisions per event.
+  const candidates=indexed?[...store.eventsInThread(threadId),...links.map(r=>store.read(r.value.event.id,r.value.event.revision)).filter(Boolean)]:store.all('event');
+  const seenEvent=new Set();
+  const events=[...candidates].filter(e=>{if(seenEvent.has(e.id))return false;seenEvent.add(e.id);return (e.threadId===threadId||pinned.has(canonical(pin(e))))&&['observed','reported'].includes(e.origin)&&(!subjectId||store.subjectObservation(subjectId,e.id));}).sort(byTime);
+  const allDecisions=indexed?null:[...store.all('decision')];
+  const decisionsFor=id=>indexed?store.decisionsForEvent(id):allDecisions.filter(d=>d.currentEvent?.id===id);
+  const actions=indexed?null:[...store.all('action')];
+  const actionOf=ref=>indexed?store.read(ref.id):actions.find(a=>a.id===ref.id)??null;
   const units=events.map(event=>{
-    const ds=decisions.filter(d=>d.currentEvent?.id===event.id&&!d.input?.payload?.task?.id&&(!subjectId||d.input?.payload?.continuity?.subject?.id===subjectId))
+    const ds=decisionsFor(event.id).filter(d=>d.currentEvent?.id===event.id&&!d.input?.payload?.task?.id&&(!subjectId||d.input?.payload?.continuity?.subject?.id===subjectId))
       .sort((a,b)=>(a.recordedAt??0)-(b.recordedAt??0)||a.id.localeCompare(b.id));
     const exchanges=ds.map(decision=>{
       const response=store.read(`${decision.id}:response`);
-      const action=decision.action?actions.find(a=>a.id===decision.action.id)??null:null;
+      const action=decision.action?actionOf(decision.action):null;
       const receipt=action?.receipt?store.read(action.receipt.id,action.receipt.revision):null;
       return {at:decision.recordedAt??0,decision:pin(decision),selected:decision.output.selected,summary:decision.output.summary,
         response:response?{ref:pin(response),body:response.body,status:response.status,claimId:response.claimId,at:response.recordedAt??0}:null,
@@ -130,7 +137,10 @@ export function taskThreads({store,frame,currentEvent=null,foregroundId=null,his
   const links=eventProcessLinks({store,subjectId}).filter(r=>r.value.status==='active');
   const processes=frame.processes.filter(p=>!['completed','abandoned'].includes(p.status));
   const ids=new Set(processes.map(p=>p.id));
-  const events=[...store.all('event')].filter(e=>!['tool_receipt','background','imagination'].includes(e.origin)&&(!subjectId||store.subjectObservation(subjectId,e.id)));
+  const indexed=typeof store.eventsInThread==='function';
+  const pool=indexed?[...processes.flatMap(p=>store.eventsInThread(p.id)),...links.filter(r=>ids.has(r.value.processId)).map(r=>store.read(r.value.event.id,r.value.event.revision)).filter(Boolean)]:store.all('event');
+  const seenPool=new Set();
+  const events=[...pool].filter(e=>{if(seenPool.has(e.id))return false;seenPool.add(e.id);return !['tool_receipt','background','imagination'].includes(e.origin)&&(!subjectId||store.subjectObservation(subjectId,e.id));});
   const latest=new Map();
   const owners=e=>[...new Set([e.threadId,...links.filter(r=>canonical(r.value.event)===canonical(pin(e))).map(r=>r.value.processId)].filter(id=>id&&ids.has(id)))];
   for(const e of events)for(const id of owners(e))latest.set(id,Math.max(latest.get(id)??0,atOf(e)));
@@ -153,7 +163,10 @@ export function taskThreads({store,frame,currentEvent=null,foregroundId=null,his
       world:foregroundProcess.world,summary:foregroundProcess.body,history:full,units:full?.units??[],olderCursor:full?.nextBefore??null,olderAvailable:full?.olderAvailable??false}:null,
     background,activeIds:[...active],activeCount:active.length,
     suspended:ranked.filter(p=>!activeIds.has(p.id)).map(p=>({id:p.id,label:p.label,status:p.status,latestAt:latest.get(p.id)??p.recordedAt??null})),
-    unassignedCount:events.filter(e=>owners(e).length===0).length,
+    // Indexed pool holds only assigned events, so count the rest in SQL instead of loading them.
+    unassignedCount:indexed&&subjectId&&typeof store.countAdmittedEvents==='function'
+      ?Math.max(0,store.countAdmittedEvents({subjectId,excludeOrigins:['tool_receipt','background','imagination']})-events.filter(e=>owners(e).length>0).length)
+      :events.filter(e=>owners(e).length===0).length,
     meaning:'one-foreground-full-history-plus-three-background-metadata; no-status-mutation; no-event-duplication; older pages explicit'};
 }
 function focusProcessId(frame){

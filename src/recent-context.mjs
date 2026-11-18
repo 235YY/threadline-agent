@@ -5,8 +5,11 @@ import {resolveSpeakerName} from './social-projection.mjs';
 
 const clip=(text,max=600)=>{const s=String(text??'').replace(/\s+/g,' ').trim();return s.length<=max?s:s.slice(0,max)+'…';};
 export function recentContext({store,subjectId,currentEvent=null,scene=null,limit=50}={}){
-  const items=[];
-  for(const event of store.all('event')){
+  const items=[],indexed=scene!==null&&typeof store.newestInScene==='function';
+  // With a scene, read only the newest messages/replies of that chat from the index.
+  const n=Math.max(1,Math.min(100,limit));
+  const events=indexed?store.newestInScene({type:'event',scene,limit:n*4}):store.all('event');
+  for(const event of events){
     if(!['observed','reported'].includes(event.origin))continue;
     if(scene!==null&&event.scene!==scene)continue;
     const senderName=resolveSpeakerName(store,{sender:event.sender,actor:event.actor});
@@ -16,7 +19,7 @@ export function recentContext({store,subjectId,currentEvent=null,scene=null,limi
     try{const d=store.read(response.decision?.id);const e=d?.currentEvent?store.read(d.currentEvent.id):null;if(e?.scene)return e.scene;}catch{}
     return response.scene??null;
   };
-  for(const response of store.all('response')){
+  for(const response of indexed?store.newestInScene({type:'response',scene,limit:n*2}):store.all('response')){
     if(response.subject!==subjectId||!response.body)continue;
     if(response.status!=='sent')continue;
     const responseSceneValue=responseScene(response);

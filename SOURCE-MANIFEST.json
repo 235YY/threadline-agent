@@ -2,7 +2,7 @@
   "format": "threadline-public-source-v1",
   "task": "JY-OPTIMIZE-007",
   "meaning": "Every tracked source file except this manifest; no private runtime data. Exact PR HEAD is the commit containing this tree.",
-  "publicRuntimeBuild": "8417486874c542eeba0585e40c406decd3e02f540e968dc056d215aaaec3c90f",
+  "publicRuntimeBuild": "a60ef7b0f3a7ea279e112feadd8d87a509bb65e6c5b8503051a0c37804faf535",
   "buildNote": "runtimeSourceIdentity rule source-text-lf-v2 (CRLF treated as LF); not comparable with earlier raw-byte build ids kept under previous.",
   "previous": {
     "task": "JY-RECOVERY-006",
@@ -90,6 +90,10 @@
     {
       "file": "docs/PRODUCT.md",
       "sha256": "dd3f409a376ff46f6238dbd9766eb378d7a2bea335fa96c4c4a0c237c61212fd"
+    },
+    {
+      "file": "docs/STORE-INDEXES.md",
+      "sha256": "df3f1322fa5bbfeaa88fa59f7b892bd88b20ac15224d410a42c06fbcda5d172d"
     },
     {
       "file": "docs/VALIDATION.md",
@@ -230,6 +234,10 @@
     {
       "file": "experiments/model-study/scenarios.mjs",
       "sha256": "a9fa8659ae384a4754909a7d59d9b22e9eda3fd412c1b195d05b91ae64264ccb"
+    },
+    {
+      "file": "experiments/naturalness/bench.mjs",
+      "sha256": "e73511e248bee17cd86bcc8b7cf6d5c34887e385400a67c8e840a4a61dad6827"
     },
     {
       "file": "experiments/naturalness/run.mjs",
@@ -893,7 +901,7 @@
     },
     {
       "file": "scripts/current-test-files.json",
-      "sha256": "ae0cc12062b1b91b321fc9f84bb7a772bc4ea5f50b242291e1cbc7febc588b4e"
+      "sha256": "8377129c9a7c6b7329bfd758e806951d5d9d687469d2c428e4ddfe5c7cfa1567"
     },
     {
       "file": "scripts/study-key.ps1",
@@ -1169,7 +1177,7 @@
     },
     {
       "file": "src/recent-context.mjs",
-      "sha256": "1391923e1913a11e03f4d0152855480fee921950c7dcb8bcfd18a655f5fc53ce"
+      "sha256": "2557b26cd19bce9c42b8651f2125c6e0a64037a5de766b4290b64f026dc78d04"
     },
     {
       "file": "src/reference-menu.mjs",
@@ -1213,15 +1221,15 @@
     },
     {
       "file": "src/schema.mjs",
-      "sha256": "dbba597ccf03416c63562f1f3025f7f94e9aae2e9ed9d194938aa9f7651b8f43"
+      "sha256": "6c1f065d86e2175dc4f5e23c7a13a23103ae6bb239b823d3635ab5ed62a73d92"
     },
     {
       "file": "src/social-projection.mjs",
-      "sha256": "999b34d1ba30adea0ec55a315007732fb7efd36c515b7b53d317e8ebf20fc935"
+      "sha256": "e8b60faf4999bd7292a582e6c498f9c0242a9eef7e2c39b220561fbe33ffe80f"
     },
     {
       "file": "src/store.mjs",
-      "sha256": "4db7df00eb81efeae44e405640034d23489b827d44db30b897b9bda2ac45bf7f"
+      "sha256": "3d56560d8a4b77be212ff3ee1ac92ac96d3a3be545dbb50856431e226dcecba4"
     },
     {
       "file": "src/streams.mjs",
@@ -1233,7 +1241,7 @@
     },
     {
       "file": "src/task-threads.mjs",
-      "sha256": "d047e1a84537bc9970b90b18f050b44122729627f2ac65137a75fd8cb137f84a"
+      "sha256": "f8f8d7e0949da7c17681441565c87d370556951b661519f40ce9df99115051ec"
     },
     {
       "file": "src/tendency.mjs",
@@ -1590,6 +1598,10 @@
     {
       "file": "test/standing-daily-budget.test.mjs",
       "sha256": "260f7a516b78b01ac41d2998afc4d9301eeff7027438bd63ad75dc3abb7fd992"
+    },
+    {
+      "file": "test/store-indexes.test.mjs",
+      "sha256": "842e25109ca66fa0941c6dd1cd3d8930bd76be13b80b56d41a255dff8da5683b"
     },
     {
       "file": "test/store.test.mjs",

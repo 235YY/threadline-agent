@@ -1272,6 +1272,26 @@ export class ContinuityStore {
     const items = rows.slice(0, limit).map(row => JSON.parse(row.body));
     return {items, next: rows.length > limit ? items.at(-1).id : null};
   }
+  // Indexed, read-only lookups over current record versions (see versions_by_* in schema).
+  // Each returns parsed records; "newest" ones are ordered newest first.
+  #byIndex(sql,...args){return this.#db.prepare(`SELECT v.body FROM versions v CROSS JOIN objects o ON o.id=v.id AND o.current_revision=v.revision WHERE ${sql}`).all(...args).map(r=>JSON.parse(r.body));}
+  #bound(limit){ensure(Number.isSafeInteger(limit)&&limit>0&&limit<=1000,'INVALID_INPUT','limit must be 1..1000');return limit;}
+  newestInScene({type,scene,limit=50,since=null}){text(type,'type');text(scene,'scene');
+    return since===null?this.#byIndex(`o.type=? AND json_extract(v.body,'$.scene')=? ORDER BY coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt')) DESC LIMIT ?`,type,scene,this.#bound(limit))
+      :this.#byIndex(`o.type=? AND json_extract(v.body,'$.scene')=? AND coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt'))>=? ORDER BY coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt')) DESC LIMIT ?`,type,scene,since,this.#bound(limit));}
+  newestFromSender({senderId,limit=50}){text(senderId,'sender id');
+    return this.#byIndex(`o.type='event' AND json_extract(v.body,'$.sender.id')=? ORDER BY coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt')) DESC LIMIT ?`,String(senderId),this.#bound(limit));}
+  eventsInThread(threadId){text(threadId,'thread id');return this.#byIndex(`o.type='event' AND json_extract(v.body,'$.threadId')=? ORDER BY o.id`,threadId);}
+  decisionsForEvent(eventId){text(eventId,'event id');return this.#byIndex(`o.type='decision' AND json_extract(v.body,'$.currentEvent.id')=? ORDER BY o.id`,eventId);}
+  actionForReceipt(receiptId){text(receiptId,'receipt id');return this.#byIndex(`o.type='action' AND json_extract(v.body,'$.receipt.id')=? LIMIT 1`,receiptId)[0]??null;}
+  extensionRecords({stateType,owner}){text(stateType,'state type');text(owner,'owner');
+    return this.#byIndex(`o.type='extension_record' AND json_extract(v.body,'$.stateType')=? AND json_extract(v.body,'$.owner')=? ORDER BY o.id`,stateType,owner);}
+  linksForProcess({owner,processId}){text(owner,'owner');text(processId,'process id');
+    return this.#byIndex(`o.type='extension_record' AND json_extract(v.body,'$.value.processId')=? AND json_extract(v.body,'$.owner')=? ORDER BY o.id`,processId,owner);}
+  countAdmittedEvents({subjectId,excludeOrigins=[]}){text(subjectId,'subject id');
+    return this.#db.prepare(`SELECT count(*) AS n FROM subject_inbox i CROSS JOIN objects o ON o.id=i.event_id CROSS JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
+      WHERE i.subject_id=? AND o.type='event' AND json_extract(v.body,'$.origin') NOT IN (SELECT value FROM json_each(?))`).get(subjectId,JSON.stringify(excludeOrigins)).n;}
+  queryPlan(sql){return this.#db.prepare('EXPLAIN QUERY PLAN '+sql).all().map(r=>r.detail);}
   *all(type) {
     let after = '';
     do { const page = this.list({type, after, limit: 500}); yield* page.items; after = page.next; } while (after !== null);
@@ -1312,7 +1332,14 @@ export class ContinuityStore {
     // Exact substring baseline over all retained records; deliberately no claim of semantic recall.
     const normalized = [...new Set(terms.map(term => term.toLocaleLowerCase('zh-CN')))];
     const matches = [];
-    for (const type of [...new Set(types)]) for (const record of this.all(type)) {
+    // Substring prefilter inside SQLite: only records whose body contains a term are parsed.
+    // Exact parity with the JS check needs SQLite's ASCII lower() to agree with JS lowercasing,
+    // so terms with non-ASCII cased letters, and lineage (contextAnchor) searches, use the full scan.
+    const caseSafe=normalized.every(t=>[...t].every(ch=>ch.charCodeAt(0)<128||ch.toLowerCase()===ch.toUpperCase()));
+    const candidates=type=>!contextAnchor&&caseSafe
+      ?this.#db.prepare(`SELECT v.body FROM objects o CROSS JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.type=? AND (${normalized.map(()=>"instr(lower(json_extract(v.body,'$.body')),?)>0").join(' OR ')})`).all(type,...normalized).map(r=>JSON.parse(r.body))
+      :this.all(type);
+    for (const type of [...new Set(types)]) for (const record of candidates(type)) {
       if(excluded.has(refKey(record)))continue;
       if (record.type === 'note' && record.status !== 'current') continue;
       if (scene && (record.type === 'event' ? record.scene !== scene : record.scope.scenes.length && !record.scope.scenes.includes(scene))) continue;
