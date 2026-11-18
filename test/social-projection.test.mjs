@@ -13,7 +13,7 @@ import { MaintenanceSession } from '../src/maintenance.mjs';
 import { startBrainService } from '../tools/brain-service/server.mjs';
 import { keepAttention } from '../src/attention.mjs';
 import { affectFactory } from '../tools/affect-integrated/session.mjs';
-import { isGroupAddressed } from '../tools/qq-connect/scope.mjs';
+import { isGroupAddressed, acceptsChat, blockedChatSet } from '../tools/qq-connect/scope.mjs';
 import { createOpenLifeHost } from '../tools/open-life/host.mjs';
 import { put, event, frame, note, ref } from './helpers.mjs';
 
@@ -292,6 +292,14 @@ test('isGroupAddressed enforces all, mentioned, and wake policies cleanly', () =
   assert.equal(isGroupAddressed(plainMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['鲸漾'] }), false);
   assert.equal(isGroupAddressed(wakeMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['鲸漾'] }), true);
   assert.equal(isGroupAddressed(atMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['鲸漾'] }), true);
+});
+
+test('blockedChatSet and acceptsChat enforce blocked group/private denylist cleanly', () => {
+  const blocked = blockedChatSet({ QQ_BLOCKED_GROUPS: '200001, bad', QQ_BLOCKED_CHATS: 'qq/private/999999' });
+  assert.equal(acceptsChat({ privateChat: false, userId: '100001', groupId: '200001' }, { scope: 'all', blockedChats: blocked }), false);
+  assert.equal(acceptsChat({ privateChat: false, userId: '100001', groupId: '888888' }, { scope: 'all', blockedChats: blocked }), true);
+  assert.equal(acceptsChat({ privateChat: true, userId: '999999' }, { scope: 'all', blockedChats: blocked }), false);
+  assert.equal(acceptsChat({ privateChat: true, userId: '100001' }, { scope: 'all', blockedChats: blocked }), true);
 });
 
 test('createOpenLifeHost initializes persistent policy and sandboxed office workspace', t => {

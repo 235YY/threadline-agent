@@ -6,6 +6,7 @@ import { ensure } from '../../src/contracts.mjs';
 import { openLifePolicy } from './policy.mjs';
 import { configureLifeTools } from './tools.mjs';
 import { oneBotCall } from '../qq-connect/tools.mjs';
+import { blockedChatSet } from '../qq-connect/scope.mjs';
 
 export function createOpenLifeHost({
   root = process.cwd(),
@@ -14,6 +15,7 @@ export function createOpenLifeHost({
   ownerId,
   officeRoot = null,
   voiceDirectory = null,
+  blockedChats = blockedChatSet(process.env),
   storeGetter = () => null,
   onebot = oneBotCall,
 } = {}) {
@@ -37,10 +39,11 @@ export function createOpenLifeHost({
     onebot,
     knownTargets: async () => {
       const [friends, groups] = await Promise.all([onebot('get_friend_list'), onebot('get_group_list')]);
-      return new Set([
+      const all = [
         ...(Array.isArray(friends) ? friends.map(f => `qq/private/${f.user_id}`) : []),
         ...(Array.isArray(groups) ? groups.map(g => `qq/group/${g.group_id}`) : []),
-      ]);
+      ];
+      return new Set(all.filter(scene => !blockedChats?.has?.(scene)));
     },
     officeRoot: resolvedOffice,
     ...(voiceDirectory ? { voiceDirectory: resolve(root, voiceDirectory) } : {}),
