@@ -24,6 +24,15 @@ CREATE TABLE IF NOT EXISTS uses (
   PRIMARY KEY(memory_id, encounter_id)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS objects_by_type ON objects(type, id);
+-- Lookup indexes over record bodies. Pure query acceleration: no record or contract changes,
+-- created on open for existing files, ignored by older readers.
+CREATE INDEX IF NOT EXISTS versions_by_scene_time ON versions(json_extract(body,'$.scene'),coalesce(json_extract(body,'$.occurredAt'),json_extract(body,'$.recordedAt'))) WHERE json_extract(body,'$.scene') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS versions_by_sender_time ON versions(json_extract(body,'$.sender.id'),coalesce(json_extract(body,'$.occurredAt'),json_extract(body,'$.recordedAt'))) WHERE json_extract(body,'$.sender.id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS versions_by_thread ON versions(json_extract(body,'$.threadId')) WHERE json_extract(body,'$.threadId') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS versions_by_current_event ON versions(json_extract(body,'$.currentEvent.id')) WHERE json_extract(body,'$.currentEvent.id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS versions_by_receipt ON versions(json_extract(body,'$.receipt.id')) WHERE json_extract(body,'$.receipt.id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS versions_by_state_type ON versions(json_extract(body,'$.stateType'),json_extract(body,'$.owner')) WHERE json_extract(body,'$.stateType') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS versions_by_link_process ON versions(json_extract(body,'$.value.processId')) WHERE json_extract(body,'$.value.processId') IS NOT NULL;
 CREATE TABLE IF NOT EXISTS subject_inbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   subject_id TEXT NOT NULL REFERENCES objects(id), event_id TEXT NOT NULL REFERENCES objects(id),

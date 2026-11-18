@@ -100,6 +100,8 @@ function recordScenes(store, record) {
 
 export function socialProjection({ store, subjectId, currentEvent = null, attentionFrame = null, now = null } = {}) {
   if (!store || !subjectId) return null;
+  // Indexed stores answer each question from a bounded index read instead of a full scan.
+  const indexed = typeof store.newestInScene === 'function';
   const clock = Number.isSafeInteger(now) ? now : (store.clockNow?.() ?? Date.now());
   const currentScene = currentEvent?.scene ?? null;
   const currentAt = currentEvent ? (currentEvent.occurredAt ?? currentEvent.recordedAt ?? null) : null;
@@ -208,7 +210,7 @@ export function socialProjection({ store, subjectId, currentEvent = null, attent
     const relatedWork = [];
     if (attentionFrame?.processes?.length) {
       const linkedProcIds = new Set();
-      for (const link of store.all('extension_record')) {
+      for (const link of indexed ? store.extensionRecords({ stateType: 'event-process-link', owner: subjectId }) : store.all('extension_record')) {
         if (link.owner === subjectId && link.stateType === 'event-process-link' && link.value?.status === 'active') {
           const ev = link.value.event?.id ? store.read(link.value.event.id, link.value.event.revision) : null;
           if (matchesEvent(ev)) linkedProcIds.add(link.value.processId);
@@ -230,7 +232,7 @@ export function socialProjection({ store, subjectId, currentEvent = null, attent
 
     // Cross-session interaction snippets with this person outside currentScene.
     const cross = [];
-    for (const ev of store.all('event')) {
+    for (const ev of indexed && externalId ? store.newestFromSender({ senderId: externalId, limit: 200 }) : store.all('event')) {
       if (!ev.scene || ev.scene === currentScene) continue;
       if (!matchesEvent(ev)) continue;
       const at = ev.occurredAt ?? ev.recordedAt ?? 0;
@@ -247,7 +249,7 @@ export function socialProjection({ store, subjectId, currentEvent = null, attent
     // Include own sent replies in private chats with this person when currently outside that private chat.
     const privateSceneForPerson = externalId ? `qq/private/${externalId}` : null;
     if (privateSceneForPerson && privateSceneForPerson !== currentScene) {
-      for (const resp of store.all('response')) {
+      for (const resp of indexed ? store.newestInScene({ type: 'response', scene: privateSceneForPerson, limit: 12 }) : store.all('response')) {
         if (resp.subject !== subjectId || resp.status !== 'sent' || !resp.body) continue;
         let sc = resp.scene ?? null;
         if (!sc && resp.decision?.id) {
@@ -295,18 +297,18 @@ export function socialProjection({ store, subjectId, currentEvent = null, attent
   const recentTools = [];
   if (currentScene) {
     const actionByReceipt = new Map();
-    try {
+    if (!indexed) try {
       for (const a of store.all('action')) {
         if (a.receipt?.id) actionByReceipt.set(a.receipt.id, a);
       }
     } catch {}
     const candidates = [];
-    for (const ev of store.all('event')) {
+    for (const ev of indexed ? store.newestInScene({ type: 'event', scene: currentScene, since: clock - 20 * 60_000, limit: 200 }) : store.all('event')) {
       if (ev.origin !== 'tool_receipt' || ev.scene !== currentScene) continue;
       if (currentEvent && ev.id === currentEvent.id) continue;
       const at = ev.occurredAt ?? ev.recordedAt ?? 0;
       if (clock - at > 20 * 60_000) continue;
-      const act = actionByReceipt.get(ev.id);
+      const act = indexed ? store.actionForReceipt(ev.id) : actionByReceipt.get(ev.id);
       if (!act) continue;
       candidates.push({
         tool: act.tool,

@@ -80,6 +80,7 @@
     "test/doctor.test.mjs",
     "test/prompt-generations.test.mjs",
     "test/intent-protocol.test.mjs",
-    "test/social-projection.test.mjs"
+    "test/social-projection.test.mjs",
+    "test/store-indexes.test.mjs"
   ]
 }

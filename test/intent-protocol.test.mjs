@@ -107,10 +107,21 @@ test('a correct reply to a tool result is not lost because the model also called
  assert.deepEqual(audit.value.diagnostics.map(x=>x.code).sort(),['CURRENT_NOT_A_MATERIAL_IGNORED','NOT_ATTACHABLE_IGNORED']);
 });
 
-test('used tolerates non-material handles as declarations, but an unknown handle is still rejected',t=>{
+test('used is a declaration: non-material or unknown handles are noted, never discard the turn',t=>{
  const s=world(t),p=s.prepare({materials:[{ref:ref(s.n),aspect:'knowledge'}]}),wire=intentPacket(p);
  const d=s.session.commit({packet:p,decisionId:'u1',requestId:'u1',allowedActionTools:['office_read'],output:JSON.stringify({packetId:wire.packetId,decision:{type:'wait'},used:['M1','T1','E0']})});
  assert.deepEqual(d.output.used.map(u=>u.ref.id),['note-port']);
  const p2=s.prepare({materials:[{ref:ref(s.n),aspect:'knowledge'}]});
- assert.throws(()=>s.session.commit({packet:p2,decisionId:'u2',requestId:'u2',allowedActionTools:['office_read'],output:JSON.stringify({packetId:intentPacket(p2).packetId,decision:{type:'wait'},used:['M9']})}),{code:'INTENT_HANDLE'});
+ const d2=s.session.commit({packet:p2,decisionId:'u2',requestId:'u2',allowedActionTools:['office_read'],output:JSON.stringify({packetId:intentPacket(p2).packetId,decision:{type:'reply',text:'嗯'},used:['M9']})});
+ assert.deepEqual(d2.output.used,[]);
+});
+
+test('group messages say whether they are aimed at her; private chats are marked private',async()=>{
+ const {selfNames}=await import('../src/intent-protocol.mjs');
+ assert.deepEqual(selfNames('你叫“小鲸”，大家也叫你鲸漾。').sort(),['小鲸','鲸漾']);
+ const {SCENARIOS}=await import('../experiments/naturalness/scenarios.mjs');
+ const view=name=>{const {s,e,w}=SCENARIOS[name].build();const v=JSON.parse(intentPacket(s.prepare(e,w)).messages[1].content).view;s.store.close();return v.current;};
+ assert.deepEqual([view('group-not-for-her').chat,view('group-not-for-her').mentionsYou],['group',false]);
+ assert.equal(view('group-secret').mentionsYou,true);
+ assert.equal(view('quote-natural').chat,'private');
 });

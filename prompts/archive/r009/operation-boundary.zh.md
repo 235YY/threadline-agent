@@ -1,0 +1,1 @@
+操作填写边界：operationContract按类型列出对象，类型不能互换。Process只在continuity.attention.processes修改；个人状态只在continuity.changes修改，新状态用新的独立id，不要用Process id。各处expectedRevision都可省略，由宿主按本输入交付版本填写。eventProcesses引用process时用本输入交付的版本；本轮新建的过程用revision=1。固定Event引用不得改版本。used只从operationContract.usedMaterials原样复制ref/aspect，没有用到则used:[]；近期对话和Process历史可用于理解，但不属于used目录。这些目录不扩大任何读取权限。
