@@ -437,3 +437,24 @@ test('TurnDriver recovers cleanly if stale ready lookup activity hits LOOKUP_CON
   assert.equal(r2.action, 'decided');
   assert.equal(r2.outbox[0].text, '恢复后正常回信');
 });
+
+test('boundedTimeline sheds threads.foreground.units and focusSupport.menu at 131072 budget before overflowing', () => {
+  const fgUnits = Array.from({ length: 8 }, (_, i) => ({ id: 'u-' + i, incoming: { body: 'z'.repeat(2000) } }));
+  const menu = Array.from({ length: 20 }, (_, i) => ({ id: 'm-' + i, label: 'item-' + i + ' ' + 'm'.repeat(300) }));
+  const data = {
+    current: { body: 'hi' },
+    continuity: {
+      capabilities: { contractVersion: 2 },
+      attention: { focusSupport: { enabled: true, menu, omittedMenu: 0 } },
+      recent: { items: Array.from({ length: 12 }, (_, i) => ({ ref: { id: 'r-' + i, revision: 1 }, text: 'hi' })) },
+      threads: { foreground: { id: 'proc-1', units: fgUnits, olderAvailable: false }, background: [] },
+    },
+  };
+  const instruction = 'i'.repeat(118000);
+  const out = boundedTimeline(data, instruction, 131072);
+  assert.ok(Buffer.byteLength(JSON.stringify([{ role: 'system', content: instruction }, { role: 'user', content: JSON.stringify(out) }])) <= 131072);
+  assert.ok(out.continuity.threads.foreground.units.length < 8);
+  assert.equal(out.continuity.threads.foreground.olderAvailable, true);
+  assert.ok(out.continuity.attention.focusSupport.menu.length < 20);
+  assert.ok(out.continuity.attention.focusSupport.omittedMenu > 0);
+});

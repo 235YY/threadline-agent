@@ -150,10 +150,23 @@ export function boundedTimeline(data,instruction,budgetBytes){
   while(data.previousDecisions.length>0&&size()>target){data.previousDecisions.shift();}
  }
  if(budgetBytes>=65536&&size()>target){
+  const fg=data.continuity.threads?.foreground;
+  if(Array.isArray(fg?.units)&&fg.units.length>0){
+   while(fg.units.length>0&&size()>target){fg.units.shift();fg.olderAvailable=true;}
+  }
+  const fs=data.continuity.attention?.focusSupport;
+  if(Array.isArray(fs?.menu)&&fs.menu.length>0){
+   while(fs.menu.length>0&&size()>target){fs.menu.pop();fs.omittedMenu=(fs.omittedMenu??0)+1;}
+  }
   if(Array.isArray(data.continuity.anchors?.records)&&data.continuity.anchors.records.length>0){
    data.continuity.anchors={...data.continuity.anchors,omitted:(data.continuity.anchors.omitted??0)+data.continuity.anchors.records.length,records:[]};
   }
   while(recent.items.length>3&&size()>target){
+   recent.items.shift();omitted++;
+   recent.omitted=priorOmitted+omitted;
+   recent.budgetDelivery={omittedOlderEntries:priorBudgetOmitted+omitted,oldestDelivered:recent.items[0]?.ref??null,complete:false,meaning:'older timeline entries not delivered due to input budget; original versions remain retained; recover via context or trace lookup, not an absence finding'};
+  }
+  while(recent.items.length>1&&size()>target){
    recent.items.shift();omitted++;
    recent.omitted=priorOmitted+omitted;
    recent.budgetDelivery={omittedOlderEntries:priorBudgetOmitted+omitted,oldestDelivered:recent.items[0]?.ref??null,complete:false,meaning:'older timeline entries not delivered due to input budget; original versions remain retained; recover via context or trace lookup, not an absence finding'};
