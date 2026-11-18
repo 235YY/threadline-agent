@@ -159,7 +159,7 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(existing?.validation?.status!=='rejected','SOURCE_OUTPUT_REJECTED','original output was rejected; do not resubmit its source');
     if(existing?.status==='settled'&&typeof existing.output==='string'){
       if(existing.proposalRecovery){
-        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet),wire=intentWire(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(wire?.messages??verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,...(wire?{formatIssue:raw=>intentFormatIssue(raw,wire)}:{})});}
+        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet),wire=intentWire(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(wire?.messages??verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,expectedPacketId:wire?.packetId??packet.packetId,...(wire?{formatIssue:raw=>intentFormatIssue(raw,wire)}:{})});}
         return selectedModelOutput(ledger.data.requests,existing).output;
       }
       return existing.output;
@@ -175,7 +175,7 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(blankJson||response.complete===true&&typeof response.output==='string'&&response.output.trim().length>0,
       'MODEL_INCOMPLETE','provider returned no final text; recorded without retry');
     ledger.attachOutput(id,response.output);
-    if(profile.formatRecovery===true){const formatIssue=wire?r=>intentFormatIssue(r,wire):r=>proposalFormatIssue(r,packet);const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(sent,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,formatIssue});if(journalled&&formatIssue(raw))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
+    if(profile.formatRecovery===true){const formatIssue=wire?r=>intentFormatIssue(r,wire):r=>proposalFormatIssue(r,packet);const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(sent,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,expectedPacketId:wire?.packetId??packet.packetId,formatIssue});if(journalled&&formatIssue(raw))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
     return response.output;
   }
   async function invokeMaintenance(input){

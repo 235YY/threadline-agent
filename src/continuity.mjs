@@ -6,6 +6,7 @@ import {streamInfo} from './streams.mjs';
 import {mindProjection} from './mind.mjs';
 import {anchorView,anchorKey} from './anchor.mjs';
 import {recentContext} from './recent-context.mjs';
+import {socialProjection} from './social-projection.mjs';
 import {taskThreads} from './task-threads.mjs';
 const ref=x=>({id:x.id,revision:x.revision});
 
@@ -113,7 +114,7 @@ export function stateCandidates({store,subjectId,workbenchFocus=false,mind=false
   const page=sorted.slice(0,limit).map(r=>extended?{ref:{id:r.id,revision:r.revision},kind:r.kind,role:r.mind.role,recordType:'personal_state',domains:Array.isArray(r.domains)?r.domains:[],about:Array.isArray(r.about)?r.about:[]}:{ref:{id:r.id,revision:r.revision},kind:r.kind,role:r.mind.role});
   return {items:page,omitted:Math.max(0,sorted.length-page.length),total:sorted.length};
 }
-export function continuityInput({store,subjectId,stateRefs=[],detail=false,evidenceDetail=false,currentEvent=null,mind=false,workbenchFocus=false,focusProcessIds=[],subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads:includeThreads=false,anchorDirectory=false,candidateDomains=null,candidateAnchor=null,candidateScope=null,motivationProjection=null,internalSources=[]}) {
+export function continuityInput({store,subjectId,stateRefs=[],detail=false,evidenceDetail=false,currentEvent=null,mind=false,workbenchFocus=false,focusProcessIds=[],subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads:includeThreads=false,anchorDirectory=false,socialContext=false,now=null,candidateDomains=null,candidateAnchor=null,candidateScope=null,motivationProjection=null,internalSources=[]}) {
   text(subjectId,'subject id');ensure(typeof detail==='boolean','INVALID_INPUT','detail must be boolean');
   return store.view(()=>{
     const subject=store.read(subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','initialize the subject first');
@@ -150,7 +151,7 @@ export function continuityInput({store,subjectId,stateRefs=[],detail=false,evide
       const decision=store.read(subject.lastDecision.id,subject.lastDecision.revision);
       lastReaction={decision:subject.lastDecision,fromScene:decision.input.payload.workspace.scene,kind:reaction.choice.kind,
         utterance:reaction.choice.kind==='respond'?reaction.choice.payload.text:null,expressionChoice:reaction.expressionChoice??null,
-        responseStatus:reaction.response?.status??'no-response-intent'};
+        responseStatus:reaction.response?.status??'no-response-intent',at:decision.recordedAt??null};
     }
     const projection=mind?mindProjection({records:[...foreground,...recalled].map(x=>store.read(x.ref.id,x.ref.revision)),readHead:id=>store.read(id)}):null;
     const anchors=anchorView({store,subjectId,currentEvent:currentRecord,limit:12,mode:anchorDirectory?'directory':'legacy',domains:candidateDomains,about:subjectiveMemory&&anchorDirectory?eventRefs:null});
@@ -161,7 +162,8 @@ export function continuityInput({store,subjectId,stateRefs=[],detail=false,evide
     for(const source of internalSources){uniqueRefs([source.ref]);ensure(['computed-internal','interpretation-history'].includes(source.kind)&&source.value&&typeof source.value==='object','INTERNAL_SOURCE','typed host internal source required');}
     const motivation=motivationProjection;
     const intents=[...store.all('intent')].filter(x=>x.subject===subjectId&&['open','pursuing','deferred'].includes(x.status)).sort((a,b)=>(Number(a.status==='deferred')-Number(b.status==='deferred'))||(a.dueAt??Infinity)-(b.dueAt??Infinity)||String(a.id).localeCompare(String(b.id))).slice(0,8).map(x=>({id:x.id,revision:x.revision,goal:x.goal,status:x.status,nextAction:x.nextAction??null,dueAt:x.dueAt??null}));
-    return {...(internalSources.length?{internalSources}:{}),...(motivation?{motivation}:{}),...(intents.length?{intents}:{}),subject:ref(subject),maxForeground:subject.maxForeground,...(subject.attentionPolicy!==undefined?{attentionPolicy:subject.attentionPolicy}:{}),foreground,recalled,
+    const social=socialContext?socialProjection({store,subjectId,currentEvent:currentRecord,attentionFrame:frame,now}):null;
+    return {...(internalSources.length?{internalSources}:{}),...(motivation?{motivation}:{}),...(intents.length?{intents}:{}),...(social?{social}:{}),subject:ref(subject),maxForeground:subject.maxForeground,...(subject.attentionPolicy!==undefined?{attentionPolicy:subject.attentionPolicy}:{}),foreground,recalled,
       lastReaction,pendingObservations:store.subjectInbox({subjectId,limit:16}),detail,...(stream?{stream}:{}),...(view?{attention:{...view.metadata,...(includeThreads?{eventProcessSupport:{enabled:true,format:'event-process-v1',events:[]}}:{})}}:{}),...(projection?{mind:projection}:{}),...(anchors.records.length?{anchors}:{}),...(recent?{recent}:{}),...(threads?{threads}:{}),...((subjectiveMemory||subjectiveMemoryV2)&&eventRefs.length?{eventAbout:eventRefs}:{}),...(shortTerm?{shortTerm}:{}),...(subjective?{subjectiveMemory:subjective}:{}),...(historicalImpressions?.records.length?{historicalImpressions}:{}),
       ...(mind&&workbenchFocus?{selfProtocol:{format:'self-protocol-v1',enabled:true}}:{}),
       ...(view?{memoryProtocol:{format:'memory-protocol-v1',enabled:true}}:{}),

@@ -22,13 +22,13 @@ export function selectedModelOutput(rows,primary){
  ensure(typeof primary.output==='string','MODEL_CAPTURE_MISSING','captured output missing');
  return {output:primary.output,attemptId:primary.id,primaryId:primary.id,corrected:false};
 }
-export async function recoverOutputOnce({packet,primary,ledger,client,verified,providerMessages,timeoutMs,startedAt,beforeCorrection=null,formatIssue=raw=>proposalFormatIssue(raw,packet)}){
+export async function recoverOutputOnce({packet,primary,ledger,client,verified,providerMessages,timeoutMs,startedAt,beforeCorrection=null,expectedPacketId=packet.packetId,formatIssue=raw=>proposalFormatIssue(raw,packet)}){
  const issue=formatIssue(primary.output);if(!issue)return primary.output;
  const attemptId=`repair:${packet.packetId}:1`,packetHash=digest(packet),existing=primary.proposalRecovery;
  ensure(!existing||existing.attemptId===attemptId&&existing.packetHash===packetHash,'MODEL_RECOVERY_CHANGED','recovery belongs to another frozen input');
  if(existing?.selected)return selectedModelOutput(ledger.data.requests,primary).output;
  if(existing?.closed)return primary.output;
- const feedback={kind:'host-format-feedback',packetId:packet.packetId,issue,adopted:false,savedBusinessChanges:false,toolExecution:'not-started',remainingAutomaticCorrections:0,instruction:'前稿未被采用，任何查询/发送/状态修改均未执行。原任务、材料和固定版本如下，原稿也保留。请重新提交完整JSON候选，保留packetId。不要将提案说成已执行；可以自主选择回应、查阅、等待等合法选项。不要猜证据、对象版本或权限。只有一次自动重填机会。'};
+ const feedback={kind:'host-format-feedback',packetId:expectedPacketId,issue,adopted:false,savedBusinessChanges:false,toolExecution:'not-started',remainingAutomaticCorrections:0,instruction:'前稿未被采用，任何查询/发送/状态修改均未执行。原任务、材料和固定版本如下，原稿也保留。请重新提交完整JSON候选，保留packetId。不要将提案说成已执行；可以自主选择回应、查阅、等待等合法选项。不要猜证据、对象版本或权限。只有一次自动重填机会。'};
  const messages=[...providerMessages,{role:'assistant',content:primary.output},{role:'user',content:JSON.stringify(feedback)}],bytes=Buffer.byteLength(JSON.stringify(messages));
  const close=reason=>{primary.proposalRecovery={...primary.proposalRecovery,closed:true,reason};ledger.save();return primary.output;};
  if(!existing){primary.proposalRecovery={attemptId,packetHash,issue,feedback,selected:false};ledger.save();}

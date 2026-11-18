@@ -8,11 +8,12 @@ import {diagnose,formatReport} from '../tools/brain-service/doctor.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const scratch=t=>{const d=mkdtempSync(join(tmpdir(),'jy-doctor-'));return d;};
+const cleanRoot=t=>{const d=scratch(t);mkdirSync(join(d,'src'),{recursive:true});writeFileSync(join(d,'package.json'),'{}');writeFileSync(join(d,'src','store.mjs'),'');return d;};
 const find=(r,area)=>r.checks.find(c=>c.area===area);
 const base={root,nodeVersion:'26.8.0',probePort:false};
 
-test('dry-run on a clean checkout is ready and says the store would be new',async()=>{
- const r=await diagnose({...base,env:{}});
+test('dry-run on a clean checkout is ready and says the store would be new',async t=>{
+ const r=await diagnose({...base,root:cleanRoot(t),env:{}});
  assert.equal(r.mode,'dry-run');assert.equal(r.ready,true,formatReport(r));
  assert.equal(find(r,'identity').status,'warn');assert.match(find(r,'store').summary,/新建一个空主体/);
 });
@@ -42,11 +43,11 @@ test('affect and QQ bridge requirements are explicit',async()=>{
  assert.equal(find(r2,'affect').status,'ok');assert.equal(find(r2,'qq-sdk').status,'blocked');assert.equal(find(r2,'qq-onebot').status,'blocked');
 });
 test('live: new subject, new journal and all-chat scope are allowed only when explicitly acknowledged',async t=>{
- const d=scratch(t);writeFileSync(join(d,'id.txt'),'你是一个合成测试主体。');
+ const rRoot=cleanRoot(t),d=scratch(t);writeFileSync(join(d,'id.txt'),'你是一个合成测试主体。');
  const env={BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',BRAIN_LEDGER:join(d,'journal.json'),BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_IDENTITY_FILE:join(d,'id.txt'),JY_OFFICIAL_USAGE_TOKEN:'x'.repeat(32),BRAIN_TOKEN:'t'};
- const blocked=await diagnose({...base,platform:'win32',env});
+ const blocked=await diagnose({...base,root:rRoot,platform:'win32',env});
  assert.deepEqual(blocked.checks.filter(c=>c.status==='blocked').map(c=>c.area).sort(),['model-credential','qq-scope','request-journal','store']);
- const ack=await diagnose({...base,platform:'win32',env:{...env,JY_NEW_SUBJECT:'1',JY_NEW_REQUEST_JOURNAL:'1',JY_QQ_SCOPE:'all'}});
+ const ack=await diagnose({...base,root:rRoot,platform:'win32',env:{...env,JY_NEW_SUBJECT:'1',JY_NEW_REQUEST_JOURNAL:'1',JY_QQ_SCOPE:'all'}});
  for(const area of ['store','request-journal','qq-scope'])assert.equal(find(ack,area).status,'warn',area);
- const owner=await diagnose({...base,platform:'win32',env:{...env,QQ_TEST_ONLY_OWNER:'10001'}});assert.equal(find(owner,'qq-scope').status,'ok');
+ const owner=await diagnose({...base,root:rRoot,platform:'win32',env:{...env,QQ_TEST_ONLY_OWNER:'10001'}});assert.equal(find(owner,'qq-scope').status,'ok');
 });

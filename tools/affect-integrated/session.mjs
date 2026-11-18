@@ -1,5 +1,5 @@
 import {readFileSync} from 'node:fs';
-import {ContinuitySession} from '../../src/continuity-session.mjs';
+import {ContinuitySession,compileIntentOutput} from '../../src/continuity-session.mjs';
 import {prepareReflection} from '../../src/cognition.mjs';
 import {canonical,digest,ensure} from '../../src/contracts.mjs';
 import {motivationId,affectTurnId,validateSnapshot,normalizeAffectAppraisal,sourceFor,hasApplied,motivationInput,verifyTransition} from '../../src/affect-contract.mjs';
@@ -123,8 +123,10 @@ export class AffectSession {
   ensure(raw===turn.rawOutput,'AFFECT_OUTPUT_CHANGED','commit must use captured public output');
   let output;
   try{output=JSON.parse(raw);}catch{const error=Object.assign(new Error('invalid captured JSON; do not repair'),{code:'OUTPUT_JSON'});this.#fail(turn,error);throw error;}
+  let compiled;
+  try{compiled=compileIntentOutput({store:this.store,packet,output});}catch(e){this.#fail(turn,e);throw e;}
   let appraisal;
-  try{appraisal=this.fusion?normalizeFusionAppraisal(output.affectAppraisal??null,{packet,output,store:this.store,subjectId:this.subjectId}):normalizeAffectAppraisal(output.affectAppraisal??null,packet);}catch(e){this.#fail(turn,e);throw e;}
+  try{appraisal=this.fusion?normalizeFusionAppraisal(compiled.affectAppraisal??null,{packet,output:compiled,store:this.store,subjectId:this.subjectId}):normalizeAffectAppraisal(compiled.affectAppraisal??null,packet);}catch(e){this.#fail(turn,e);throw e;}
   const record=this.store.read(motivationId(this.subjectId));
   ensure(canonical(ref(record))===canonical(turn.preview.baseRef)&&digest(record.snapshot)===turn.preview.baseHash,'STALE_MOTIVATION','base state changed before worker calculation');
   let snapshot=turn.preview.snapshot;const receipts=[];
@@ -153,7 +155,7 @@ export class AffectSession {
   const transition={subject:this.subjectId,packetId:packet.packetId,baseRef:turn.preview.baseRef,baseHash:turn.preview.baseHash,
    previewHash:digest(turn.preview.snapshot),appraisalHash:digest(appraisal),snapshot,receipts};
   verifyTransition(transition,{record,packet,output:{affectAppraisal:appraisal},subjectId:this.subjectId});
-  const coreOutput=copy(output);delete coreOutput.affectAppraisal;
+  const coreOutput=copy(compiled);delete coreOutput.affectAppraisal;
   const write=this.fusion?meaningWrite(appraisal,{subjectId:this.subjectId,packet,decisionId:args.decisionId}):null;
   const extensionWrites=[...(args.extensionWrites??[]),...(write?[write]:[])];
   // CAS of the adopted explanation and engine snapshot is in the same business transaction.

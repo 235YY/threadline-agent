@@ -243,7 +243,7 @@ export class TurnDriver {
       const allowedForDecision=taskResult?this.#allowed.filter(t=>!['task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'].includes(t)):this.#allowed;
       const packet=resume?.packet??await this.#session.prepare({instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
         mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,
-        subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,
+        subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,socialContext:true,
         localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities});
       decision=await this.#durableDecision(packet,{...context,step:c,lookups},allowedForDecision);resume=null;
       observeAssociation({store:this.#store,packet,decision});

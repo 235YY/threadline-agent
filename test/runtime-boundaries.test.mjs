@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:net';
 import {resolveBrainConfig,launchIdentity} from '../tools/brain-service/runtime-config.mjs';
 import {claimBrainInstance} from '../tools/brain-service/instance-guard.mjs';
@@ -179,8 +180,8 @@ test('maintenance heartbeat uses the host exclusion gate before preparing a job'
 test('live launch refuses to silently create a subject or journal, or to open every QQ chat',async()=>{
  const {launchBrain}=await import('../tools/brain-service/bootstrap.mjs');
  const {mkdtempSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
- const d=mkdtempSync(join(tmpdir(),'jy-live-ack-')),env={BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',JY_AFFECT:'0',BRAIN_PORT:'0',BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_LEDGER:join(d,'j.json'),BRAIN_IDENTITY_FILE:new URL('../config/identity.example.txt',import.meta.url).pathname,JY_OFFICIAL_USAGE_TOKEN:'x'.repeat(32)};
- const root=new URL('../',import.meta.url).pathname;
+ const d=mkdtempSync(join(tmpdir(),'jy-live-ack-')),env={BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',JY_AFFECT:'0',BRAIN_PORT:'0',BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_LEDGER:join(d,'j.json'),BRAIN_IDENTITY_FILE:fileURLToPath(new URL('../config/identity.example.txt',import.meta.url)),JY_OFFICIAL_USAGE_TOKEN:'x'.repeat(32)};
+ const root=fileURLToPath(new URL('../',import.meta.url));
  await assert.rejects(launchBrain({root,env}),{code:'NEW_SUBJECT_UNCONFIRMED'});
  await assert.rejects(launchBrain({root,env:{...env,JY_NEW_SUBJECT:'1'}}),{code:'NEW_JOURNAL_UNCONFIRMED'});
  await assert.rejects(launchBrain({root,env:{...env,JY_NEW_SUBJECT:'1',JY_NEW_REQUEST_JOURNAL:'1'}}),{code:'QQ_SCOPE_UNCONFIRMED'});

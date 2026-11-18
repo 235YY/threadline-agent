@@ -11,7 +11,7 @@ const {SnowLumaWebSocketClient}=await import(sdkPath);
 import {buildReplyPayload} from './bridge-payload.mjs';
 import {message as jyMessage,textPart,imagePart,projectText} from '../../src/message.mjs';
 import {safeFetchBuffer} from './safe-fetch.mjs';
-import {acceptsChat,canStopAll,noticeScene} from './scope.mjs';
+import {acceptsChat,canStopAll,isGroupAddressed,noticeScene} from './scope.mjs';
 import {MessageReceiver} from './receive.mjs';
 import {shouldStopConnector} from './bridge-policy.mjs';
 
@@ -27,8 +27,9 @@ const log=(...args)=>console.log(new Date().toISOString(),...args);
 
 function pickAccount(){return readAccount({home:snowHome,uin:wantUin});}
 const WAKE=(process.env.QQ_WAKE_KEYWORDS??'鲸鱼,小鲸鱼,鲸漾,在吗').split(',').map(s=>s.trim()).filter(Boolean);
+const groupPolicy=process.env.QQ_GROUP_POLICY??'all';
 function addressed(event){
-  return true;
+  return isGroupAddressed(event,{selfId,policy:groupPolicy,wakeKeywords:WAKE});
 }
 function messageText(event){
   const parts=Array.isArray(event.message)?event.message.filter(s=>s?.type==='text').map(s=>s.data?.text??''):[];

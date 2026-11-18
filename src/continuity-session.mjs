@@ -8,7 +8,7 @@ import {intentEligible,looksLikeIntent,intentWireFor,expandIntent} from './inten
 
 // An intent-protocol answer is compiled into the full output before the ordinary commit.
 // The raw answer and its compilation are kept for audit; nothing else changes downstream.
-function compileIntentOutput({store,packet,output}){
+export function compileIntentOutput({store,packet,output}){
   if(!intentEligible(packet)||!looksLikeIntent(output))return output;
   const raw=typeof output==='string'?output:canonical(output),wire=intentWireFor(packet,JSON.parse(raw).packetId);
   ensure(wire,'WRONG_PACKET','intent answer does not match any intent packet for this input');

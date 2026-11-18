@@ -431,6 +431,8 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const fixed=current.receipt,event=store.read(fixed.id,fixed.revision);
     ensure(event?.type==='event'&&event.origin==='tool_receipt','NATIVE_RECEIPT','stored native receipt required');
     store.execute({requestId:`native-receipt-admit:${subjectId}:${fixed.id}:${fixed.revision}`,commands:[{op:'admit_subject_event',subjectId,event:fixed}]});
+    syncSchedulerInbox();
+    scheduleFollowupTick();
     return fixed;
   }
   async function dispatch(outbox,{scene,execute=false}={}){
@@ -602,7 +604,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function receipt({scene,action,status,body,eventId,claimId=null,actor='host',occurredAt=clock()}){
     ensure(scene&&action,'ADAPTER','receipt needs scene/action');
     const driver=driverFor(global?'global':scene);
-    return driver.applyReceipt({action,status,body,eventId,claimId,actor,occurredAt});
+    const result=driver.applyReceipt({action,status,body,eventId,claimId,actor,occurredAt});
+    syncSchedulerInbox();
+    scheduleFollowupTick();
+    return result;
   }
   function actionClaim(input){
     const current=store.read(input.action?.id);ensure(current?.type==='action','ACTION','action required');
@@ -794,28 +799,37 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     return {ok:true,followup:due.id,status};
     }finally{reflectionBusy=false;}
   }
-  let timer=null,scheduleIntervalMs=0,scheduleGeneration=0,closed=false;
-  function stopScheduling(){scheduleGeneration++;if(timer)clearInterval(timer);timer=null;scheduleIntervalMs=0;}
+  let timer=null,followupTimer=null,scheduleIntervalMs=0,scheduleGeneration=0,closed=false;
+  function stopScheduling(){scheduleGeneration++;if(timer)clearInterval(timer);timer=null;if(followupTimer)clearTimeout(followupTimer);followupTimer=null;scheduleIntervalMs=0;}
+  function runScheduledTick(generation=scheduleGeneration){
+    if(closed||draining||scheduler.active()!==null)return;
+    syncSchedulerInbox();
+    agentTick().catch(()=>{}).finally(()=>{if(generation!==scheduleGeneration)return;
+      recoverPendingEffects().then(()=>followupTick()).catch(()=>{}).finally(()=>{if(generation!==scheduleGeneration)return;
+        // A durable user observation outranks due reflection. The old order
+        // chose idleReflect first, which then skipped forever because the queue
+        // was non-empty. Drain the queue through the same turn/budget/mutex path.
+        if(scheduler.pending().length)idleTurn().catch(()=>{});
+        else if(global&&(memoryDue()||idleDue()))idleReflect().catch(()=>{});
+        else idleTurn().catch(()=>{});
+      });
+    });
+  }
+  function scheduleFollowupTick(){
+    if(closed||draining||scheduleIntervalMs<=0||followupTimer)return;
+    const generation=scheduleGeneration;
+    followupTimer=setTimeout(()=>{followupTimer=null;if(generation===scheduleGeneration)runScheduledTick(generation);},25);
+    followupTimer.unref?.();
+  }
   function startScheduling(intervalMs=heartbeatMs){
     ensure(!closed&&Number.isSafeInteger(intervalMs)&&intervalMs>=0&&intervalMs<=3600000,'SCHEDULER_CONFIG','bounded heartbeat required');
     stopScheduling();if(intervalMs===0)return;const generation=scheduleGeneration;scheduleIntervalMs=intervalMs;
-    timer=setInterval(()=>{if(scheduler.active()!==null)return;
-      syncSchedulerInbox();
-      agentTick().catch(()=>{}).finally(()=>{if(generation!==scheduleGeneration)return;
-        recoverPendingEffects().then(()=>followupTick()).catch(()=>{}).finally(()=>{if(generation!==scheduleGeneration)return;
-          // A durable user observation outranks due reflection. The old order
-          // chose idleReflect first, which then skipped forever because the queue
-          // was non-empty. Drain the queue through the same turn/budget/mutex path.
-          if(scheduler.pending().length)idleTurn().catch(()=>{});
-          else if(global&&(memoryDue()||idleDue()))idleReflect().catch(()=>{});
-          else idleTurn().catch(()=>{});
-        });
-      });
-    },intervalMs);timer.unref?.();
+    timer=setInterval(()=>runScheduledTick(generation),intervalMs);timer.unref?.();
   }
   async function runCognitionExclusive(callback){
     if(officialSpend&&!officialSpend.gate().allow)return {status:'busy',reason:'official-spend-paused',modelCalled:false};
     ensure(typeof callback==='function','COGNITION_CALLBACK','host callback required');
+    syncSchedulerInbox();
     if(closed||draining||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {status:'busy',modelCalled:false};
     reflectionBusy=true;try{return await callback();}finally{reflectionBusy=false;}
   }

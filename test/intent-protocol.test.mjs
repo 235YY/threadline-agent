@@ -89,6 +89,7 @@ test('transport opt-in sends the intent messages, keeps request identity, and re
  t.after(()=>m.close());
  const raw=await m.decide(p);
  assert.equal(sent.length,2,'one mechanical repair');assert.equal(sent[0][0].content,wire.instruction);
+ assert.equal(JSON.parse(sent[1].at(-1).content).packetId,wire.packetId,'repair feedback must carry wire packetId, not base packetId');
  assert.match(sent[1].at(-1).content,/packetId/);
  assert.ok(m.ledger.tryFind('turn:'+p.packetId),'journal keyed by the base packet');
  const d=s.session.commit({packet:p,output:raw,decisionId:'dx',requestId:'dx',allowedActionTools:['office_read']});

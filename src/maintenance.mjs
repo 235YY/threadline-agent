@@ -24,8 +24,8 @@ function prepareSnapshot(store,subjectId,schedule,identity){
       ...frame.residences.map(r=>({key:`r:${r.id}`,kind:'residence',record:r,reasons:[r.cueFor&&refKey(r.cueFor)!==refKey(r.target.ref)?'outdated-entry':'resident-to-reconsider']})),
       ...stale.map(r=>({key:`e:${r.id}`,kind:'relation',record:r,reasons:['endpoint-version-changed']}))],schedule.cursors.residences),
       questions:rotate(frame.questions.filter(q=>['open','suspended'].includes(q.status)).map(q=>({key:q.id,kind:'question',record:q,reasons:['unresolved-question']})),schedule.cursors.questions),
-      inbox:inbox.items.map(i=>({key:String(i.seq),kind:'event',record:store.readBounded(i.eventId,undefined,recordBudget),inbox:i,reasons:['unhandled-observation']})),
-      experiences:experiences.items.map(i=>({key:String(i.seq),kind:'event',record:store.readBounded(i.eventId,undefined,recordBudget),inbox:i,reasons:['encounter-not-yet-reviewed']})),
+      inbox:inbox.items.map(i=>({key:String(i.seq),kind:'event',record:store.readBounded(i.eventId,undefined,recordBudget),inbox:i,reasons:['unhandled-observation']})).filter(x=>x.record?.origin!=='tool_receipt'),
+      experiences:experiences.items.map(i=>({key:String(i.seq),kind:'event',record:store.readBounded(i.eventId,undefined,recordBudget),inbox:i,reasons:['encounter-not-yet-reviewed']})).filter(x=>!(x.record?.origin==='tool_receipt'&&x.inbox?.status!=='handled')),
       objects:rows.map(r=>({key:r.id,kind:r.type==='note'?'note':'state',record:r,reasons:[r.kind==='tension'?'unresolved-tension':'retained-view-to-reconsider']}))};
     const cursor={...schedule.cursors},selected=[],omitted=[],covered=[];
     const build=items=>{

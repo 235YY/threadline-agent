@@ -36,8 +36,8 @@ export const TOOL_CONTRACTS=Object.freeze({
  attention_mute:def('免打扰：指定会话消息仍保存但暂不唤醒',{prefix:s},['prefix'],{sideEffect:'local-write'}),attention_unmute:def('恢复指定会话',{prefix:s,load:{type:'boolean'}},['prefix'],{sideEffect:'local-write'}),attention_load:def('按需读取被静音会话积压',{prefix:s,limit:count},['prefix'],{sideEffect:'local-write'}),
 
  qq_list_stickers:def('按关键词查当前本地表情库，或分页浏览',{query:{type:'string',maxLength:100},offset:i,limit:{type:'integer',minimum:1,maximum:32}},[],{result:'items含表情id/描述/url；total是本次匹配总量，nextOffset非null表示还有页。文件缺失是不可用，不是无匹配。',next:'可用nextOffset继续查，或自主选择item.url发送；无需强制发送。'}),
- qq_send_sticker:def('发送查询取得的真实表情图片',recipient,['target','id','url'],{sideEffect:'external-send',result:'只有实际message_id及关联回执才确认成功；未知不得补发。',example:{target:'private',id:'接收方QQ号',url:'查询结果item.url'},warning:'id是接收方QQ/群号，不是表情item.id；实际目标必须满足本轮授权约束。'}),
- qq_send_message:def('给获准目标发送文字',{...recipient,text:s},['target','id','text'],{sideEffect:'external-send'}),
+ qq_send_sticker:def('发送查询取得的真实表情图片',{...recipient,reason:{type:'string',maxLength:600}},['target','id','url'],{sideEffect:'external-send',result:'只有实际message_id及关联回执才确认成功；未知不得补发。',example:{target:'private',id:'接收方QQ号',url:'查询结果item.url'},warning:'id是接收方QQ/群号，不是表情item.id；实际目标必须满足本轮授权约束。'}),
+ qq_send_message:def('给获准目标发送文字',{...recipient,text:s,reason:{type:'string',maxLength:600}},['target','id','text'],{sideEffect:'external-send'}),
  qq_list_friends:def('列出真实好友'),qq_list_groups:def('列出真实群'),
  qq_get_group_history:def('读取指定群最近消息',{group_id:{type:['integer','string']},count},['group_id']),
  qq_get_friend_history:def('读取指定好友最近消息',{user_id:{type:['integer','string']},count},['user_id']),

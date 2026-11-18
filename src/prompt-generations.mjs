@@ -2,7 +2,7 @@
 // rebuilding them from prompt text, so archived generations must stay loadable.
 // Current first; archived snapshots are complete and immutable (prompts/archive/README.md).
 import {readFileSync} from 'node:fs';
-export const ARCHIVED_PROMPT_GENERATIONS=Object.freeze(['r006']);
+export const ARCHIVED_PROMPT_GENERATIONS=Object.freeze(['r008','r007','r006']);
 const ROOT=new URL('../prompts/',import.meta.url);
 export const promptReader=(generation=null)=>{
   const dir=generation?new URL(`archive/${generation}/`,ROOT):ROOT;

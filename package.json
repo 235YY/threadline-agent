@@ -8,6 +8,9 @@
   },
   "scripts": {
     "doctor": "node tools/brain-service/doctor.mjs",
+    "serve": "node tools/brain-service/serve.mjs",
+    "status": "node tools/brain-service/status.mjs",
+    "qq": "node tools/qq-connect/bridge.mjs",
     "test": "node scripts/test-current.mjs",
     "demo:learning": "node experiments/conditional-learning/run.mjs",
     "demo": "node scripts/demo.mjs",

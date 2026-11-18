@@ -19,6 +19,7 @@ import {keepAttention} from './attention.mjs';
 import {toolContract} from './tool-contracts.mjs';
 import {generationSets} from './prompt-generations.mjs';
 import {deliveredStateRefs} from './revision-derivation.mjs';
+import {formatRelativeTime,resolveSpeakerName} from './social-projection.mjs';
 
 export const INTENT_STAGE='intent-v1';
 const PROMPTS=generationSets(read=>({intent:read('intent-v1.zh.md'),anti:read('anti-assistant.zh.md')}));
@@ -30,10 +31,21 @@ const fail=(code,message,details)=>ensure(false,code,message,details);
 const plain=v=>v&&typeof v==='object'&&!Array.isArray(v);
 const str=(v,name,max)=>{ensure(typeof v==='string'&&v.trim().length>0,'INTENT_SHAPE',`${name} must be nonempty text`);ensure([...v].length<=max,'INTENT_LIMIT',`${name} longer than ${max}`);return v;};
 
-// Packets this protocol can carry. Reflection, task steps and packets with a host
-// instruction suffix (task results, re-admission) keep the full protocol for now.
+// Packets this protocol can carry. Reflection, task steps and packets with unsupported host
+// instruction suffixes (task results, re-admission) keep the full protocol.
+const UNSUPPORTED_SUFFIX_MARKERS=['这是 AgentTask 单步执行','本轮 current 是 AgentTask','【显式重新准入】'];
 export function intentEligible(packet){
-  return DECISION_STAGES.includes(packet?.stage)&&!!packet.payload?.current&&!packet.payload?.task&&!!packet.payload?.continuity?.attention&&!packet.instructionSuffix;
+  if(!DECISION_STAGES.includes(packet?.stage)||!packet.payload?.current||packet.payload?.task||!packet.payload?.continuity?.attention)return false;
+  const suffix=packet.instructionSuffix??'';
+  return !UNSUPPORTED_SUFFIX_MARKERS.some(m=>suffix.includes(m));
+}
+
+function parseHostFeedback(suffix){
+  if(typeof suffix!=='string')return null;
+  const marker='【宿主操作反馈】';const idx=suffix.indexOf(marker);
+  if(idx===-1)return null;
+  const rest=suffix.slice(idx+marker.length).split('\n\n')[0].trim();
+  try{return JSON.parse(rest);}catch{return null;}
 }
 
 function toolView(name){
@@ -46,21 +58,36 @@ function toolView(name){
 // Deterministic projection of a sealed base packet. Returns the model view and the handle table.
 export function intentView(base){
   const p=base.payload,c=p.continuity,handles={E0:{kind:'event',ref:{id:p.current.id,revision:p.current.revision}}};
-  const view={};
+  const view={},nowMs=Number.isSafeInteger(p.now)?p.now:null,social=c.social??null;
   if(p.identity)view.you=p.identity;
   if(p.style?.text)view.style=p.style.text;
-  if(Number.isSafeInteger(p.now))view.now=new Date(p.now).toISOString();
+  if(nowMs!==null)view.now=new Date(nowMs).toISOString();
   const cur=p.current;
-  view.current={handle:'E0',from:cur.actor??null,where:cur.scene??null,
-    kind:cur.origin==='tool_receipt'?'tool-result':cur.origin==='observed'?'observation':'message',text:cur.body,
+  const curFrom=cur.origin==='tool_receipt'?'host':(social?.currentMeta?.senderName??resolveSpeakerName(null,{sender:cur.sender,actor:cur.actor}));
+  const curAgo=social?.currentMeta?.ago??formatRelativeTime(cur.occurredAt??cur.recordedAt??null,nowMs);
+  view.current={handle:'E0',from:curFrom,where:cur.scene??null,
+    kind:cur.origin==='tool_receipt'?'tool-result':cur.origin==='observed'?'observation':'message',
+    ...(curAgo?{ago:curAgo}:{}),
+    ...(social?.currentMeta?.pendingInScene>0?{pendingInChat:social.currentMeta.pendingInScene}:{}),
+    text:cur.body,
     attachable:(c.attention.eventProcessSupport?.enabled===true)&&(c.attention.eventProcessSupport.events??[]).some(e=>e.id===cur.id&&e.revision===cur.revision),
     ...(cur.bodyDelivery?.fullBodyDelivered===false?{partial:`只交付了 ${cur.bodyDelivery.count}/${cur.bodyDelivery.total} 项`}:{})};
+  if(social?.person)view.person=social.person;
+  if(social?.elsewhere?.length)view.elsewhere=social.elsewhere;
+  if(social?.recentTools?.length)view.recentTools=social.recentTools;
   const recent=(c.recent?.items??[]).filter(i=>!(i.ref?.id===cur.id&&i.ref?.revision===cur.revision)).slice(-12)
-    .map(i=>({who:i.role==='user'?(i.sender??'对方'):i.role==='assistant'?'你':i.role,where:i.scene??null,text:i.text??'(见 current)'}));
+    .map(i=>{
+      const who=i.role==='user'?(i.senderName??resolveSpeakerName(null,{sender:i.sender,actor:i.actor})):(i.role==='assistant'||i.role==='her'?'你':i.role);
+      const ago=formatRelativeTime(i.at??null,nowMs);
+      return {who,where:i.scene??null,...(ago?{ago}:{}),text:i.text??'(见 current)'};
+    });
   if(recent.length)view.recent=recent;
   const last=c.lastReaction;
-  if(last)view.lastAction={type:last.kind==='respond'?'reply':last.kind,...(last.utterance?{text:last.utterance}:{}),
-    ...(last.responseStatus?{status:STATUS[last.responseStatus]??last.responseStatus}:{}),...(last.fromScene?{where:last.fromScene}:{})};
+  if(last){
+    const lastAgo=formatRelativeTime(last.at??null,nowMs);
+    view.lastAction={type:last.kind==='respond'?'reply':last.kind,...(last.utterance?{text:last.utterance}:{}),
+      ...(last.responseStatus?{status:STATUS[last.responseStatus]??last.responseStatus}:{}),...(last.fromScene?{where:last.fromScene}:{}),...(lastAgo?{ago:lastAgo}:{})};
+  }
 
   let n=0;const states=[];
   const cards=[...(c.foreground??[]),...(c.recalled??[]),...(c.subjectiveMemory?.recent?.items??[]),...(c.subjectiveMemory?.compressed?.items??[])];
@@ -68,9 +95,23 @@ export function intentView(base){
   for(const s of cards){
     if(!s?.ref||s.historical||seen.has(s.ref.id))continue;seen.add(s.ref.id);
     const h='S'+(++n);handles[h]={kind:'state',ref:{id:s.ref.id,revision:s.ref.revision},stateKind:s.kind};
-    states.push({handle:h,kind:s.kind,text:s.body,status:s.status,...(s.stage?{stage:s.stage}:{})});
+    const ago=formatRelativeTime(s.asOf??null,nowMs);
+    states.push({handle:h,kind:s.kind,text:s.body,status:s.status,...(s.stage?{stage:s.stage}:{}),...(s.domains?.length?{domains:s.domains}:{}),...(ago?{ago}:{})});
   }
   if(states.length)view.states=states;
+  if(c.subjectiveMemory&&((c.subjectiveMemory.recent?.omitted??0)>0||(c.subjectiveMemory.compressed?.count??0)>0)){
+    view.memoryStats={recentCount:c.subjectiveMemory.recent?.count??0,compressedCount:c.subjectiveMemory.compressed?.count??0,
+      ...(c.subjectiveMemory.recent?.omitted>0?{omittedRecent:c.subjectiveMemory.recent.omitted}:{}),
+      ...(c.subjectiveMemory.compressed?.omitted>0?{omittedCompressed:c.subjectiveMemory.compressed.omitted}:{}),
+      note:'完整主观记忆与压缩主题单元见 states；被省略条目可用 lookup 检索'};
+  }
+  if(c.mind?.unresolved?.length)view.unresolved=c.mind.unresolved.slice(0,6);
+  if(c.intents?.length){
+    view.goals=c.intents.slice(0,6).map(x=>({goal:x.goal,status:x.status,...(x.nextAction?{nextAction:x.nextAction}:{}),...(x.dueAt?{dueIn:formatRelativeTime(x.dueAt,nowMs)}:{}),}));
+  }
+  if(p.previousDecisions?.length){
+    view.priorSteps=p.previousDecisions.slice(-2).map(d=>({selected:d.selected?.kind??null,summary:d.summary}));
+  }
 
   const threads=c.threads??{},summaries=new Map([[threads.foreground?.id,threads.foreground],...(threads.background??[]).map(t=>[t.id,t])]);
   n=0;const work=[];
@@ -78,12 +119,25 @@ export function intentView(base){
     if(['completed','abandoned'].includes(proc.status))continue;
     const h='P'+(++n);handles[h]={kind:'process',ref:{id:proc.id,revision:proc.revision},process:proc};
     const t=summaries.get(proc.id),units=t?.history?.units??t?.units??[];
-    const history=units.slice(-4).map(u=>({...(u.incoming?{incoming:u.incoming.body}:{}),
-      ...(u.exchanges??[]).slice(-1).reduce((a,x)=>({...a,...(x.response?{you:x.response.body,status:STATUS[x.response.status]??x.response.status}:{}),
-        ...(x.action?{action:x.action.tool??x.action.kind??'action'}:{}),...(x.receipt?{result:String(x.receipt.body??x.receipt.status??'').slice(0,300)}:{})}),{})}));
-    work.push({handle:h,title:proc.label,status:proc.status,...(t?.summary?{note:t.summary}:{}),...(history.length?{history}:{})});
+    const history=units.slice(-4).map(u=>{
+      const uAgo=formatRelativeTime(u.incoming?.at??u.at??null,nowMs);
+      return {...(uAgo?{ago:uAgo}:{}),...(u.incoming?{incoming:u.incoming.body}:{}),
+        ...(u.exchanges??[]).slice(-1).reduce((a,x)=>({...a,...(x.response?{you:x.response.body,status:STATUS[x.response.status]??x.response.status}:{}),
+          ...(x.action?{action:x.action.tool??x.action.kind??'action'}:{}),...(x.receipt?{result:String(x.receipt.body??x.receipt.status??'').slice(0,300)}:{})}),{})};
+    });
+    const lastUnitAt=units.at(-1)?.incoming?.at??units.at(-1)?.at??proc.updatedAt??proc.recordedAt??null;
+    const updatedAgo=formatRelativeTime(lastUnitAt,nowMs);
+    work.push({handle:h,title:proc.label,status:proc.status,...(updatedAgo?{updatedAgo}:{}),...(t?.summary?{note:t.summary}:{}),...(history.length?{history}:{})});
   }
   if(work.length)view.work=work;
+
+  const emotions=Object.values(c.motivation?.projection?.emotions??[]).filter(e=>Number.isFinite(e?.intensity)&&e.intensity>0.05)
+    .sort((a,b)=>b.intensity-a.intensity).slice(0,4).map(e=>({name:e.name,target:e.target??null,intensity:Math.round(e.intensity*100)/100}));
+  if(emotions.length)view.mood=emotions;
+  if(p.apperceptionV1?.enabled===true&&c.motivation?.canAppraiseCurrent===true)view.canEvaluateMood=true;
+  const fb=parseHostFeedback(base.instructionSuffix);
+  if(fb?.recentFeedback?.length)view.hostFeedback=fb.recentFeedback.slice(0,4);
+  if(fb?.policy?.externalSend)view.sendScope=fb.policy.externalSend;
 
   n=0;const materials=[];
   for(const m of p.materials??[]){
@@ -91,10 +145,30 @@ export function intentView(base){
     materials.push({handle:h,type:m.record?.type??null,text:m.record?.body??null,...(m.historical?{historical:true}:{})});
   }
   if(materials.length)view.materials=materials;
-  n=0;const reminders=[];
-  for(const a of c.attention.associationCandidates??[]){
-    if(!a?.ref||materials.some(m=>handles[m.handle].ref.id===a.ref.id))continue;
-    const h='R'+(++n);handles[h]={kind:'reminder',ref:a.ref};reminders.push({handle:h,hint:a.label,...(a.historical?{historical:true}:{})});
+  n=0;const reminders=[],reminderById=new Map();
+  const addReminder=(ref,hint,historical=false)=>{
+    if(!ref||materials.some(m=>handles[m.handle].ref.id===ref.id))return materials.find(m=>handles[m.handle].ref.id===ref.id)?.handle??null;
+    if(reminderById.has(ref.id))return reminderById.get(ref.id);
+    const h='R'+(++n);handles[h]={kind:'reminder',ref:{id:ref.id,revision:ref.revision}};reminderById.set(ref.id,h);
+    reminders.push({handle:h,hint,...(historical?{historical:true}:{})});
+    return h;
+  };
+  for(const a of c.attention.associationCandidates??[])addReminder(a?.ref,a?.label,Boolean(a?.historical));
+  if(c.anchors?.records?.length){
+    const anchors=[];
+    for(const a of c.anchors.records.slice(0,8)){
+      const rType=a.recordType??a.type??null;
+      const handle=rType==='note'?addReminder(a.ref,`[锚点笔记 ${a.anchor?.kind??'anchor'}/${a.kind??'note'}]`,Boolean(a.historical)):null;
+      const ago=formatRelativeTime(a.asOf??null,nowMs);
+      anchors.push({...(handle?{handle}:{}),type:rType,kind:a.kind??null,...(a.domains?.length?{domains:a.domains}:{}),...(ago?{ago}:{}),...(a.historical?{historical:true}:{})});
+    }
+    if(anchors.length)view.anchors=anchors;
+  }
+  if(p.experienceLearning?.enabled&&p.experienceLearning.directory?.length){
+    view.lessons=p.experienceLearning.directory.slice(0,4).map(l=>{
+      const handle=addReminder(l.ref,`[经验] ${String(l.lesson??'').slice(0,60)}`,false);
+      return {...(handle?{handle}:{}),lesson:l.lesson,conditions:l.conditions,scope:l.scope,status:l.status};
+    });
   }
   if(reminders.length)view.reminders=reminders;
   const info=p.information?.results??[];
@@ -224,7 +298,30 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
       purposes:[{kind:'active-task',eventIds:[],questionId:null,appliesTo:null}]};});
   const attention={...keepAttention(),processes,residency:{upsert,remove:[]},...(links.length?{eventProcesses:{add:links,remove:[]}}:{})};
   const summary=typeof o.summary==='string'&&o.summary.trim()?[...o.summary].slice(0,400).join(''):'模型未提供简短说明（宿主标记）';
+
+  let apperception,affectAppraisal;
+  if(o.moodEval!==undefined&&o.moodEval!==null){
+    ensure(plain(o.moodEval),'INTENT_SHAPE','moodEval must be an object');
+    const m=o.moodEval;
+    const meaning=str(m.meaning,'moodEval.meaning',300);
+    const evLabel=m.event!==undefined?str(m.event,'moodEval.event',80):'chat';
+    const valence=m.valence??0,intensity=m.intensity??0.3,agency=m.agency??'other';
+    ensure(typeof valence==='number'&&Number.isFinite(valence)&&valence>=-1&&valence<=1,'INTENT_SHAPE','moodEval.valence must be -1..1');
+    ensure(typeof intensity==='number'&&Number.isFinite(intensity)&&intensity>=0&&intensity<=1,'INTENT_SHAPE','moodEval.intensity must be 0..1');
+    ensure(['self','other','circumstance'].includes(agency),'INTENT_SHAPE','moodEval.agency must be self/other/circumstance');
+    if(p.apperceptionV1?.enabled===true){
+      apperception={schema_version:'apperception.slice.v1',activated_cells:[{domain:p.continuity.social?.person?'relationship':'self',perspective:'meaning',content:meaning,epistemic_status:'interpretation',source_refs:[current],uncertainty:null}],integrated_understanding:meaning};
+      if(p.continuity.motivation?.canAppraiseCurrent===true){
+        affectAppraisal={schema_version:'affect.appraisal.v2',mode:'encounter',source_refs:[current],reason:summary,
+          appraisals:[{weight:1,value:{event:evLabel,summary:meaning,valence,intensity,relevance:Math.max(0.2,intensity),agency,target:p.continuity.social?.person?.who?.id??null}}]};
+      }
+    }else{
+      diagnostics.push({path:'moodEval',code:'MOOD_EVAL_IGNORED',reason:'apperception/affect not enabled for this packet'});
+    }
+  }
+
   return {packetId:base.packetId,options:[{id:'chosen',...option}],selected:'chosen',summary,used,
+    ...(apperception?{apperception}:{}),...(affectAppraisal?{affectAppraisal}:{}),
     continuity:{changes,residency:{add:[],remove:[]},expressionChoice:null,observationDisposition:'handled',attention}};
 }
 
