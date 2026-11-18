@@ -55,6 +55,22 @@ function toolView(name){
     ...(c.sideEffect&&c.sideEffect!=='read'?{effect:c.sideEffect}:{})};
 }
 
+// Her own names, taken from the identity text ("你是鲸漾…"), so the view can say whether a
+// group message is addressed to her. Deterministic from the sealed packet.
+export function selfNames(identity){
+  const names=new Set();
+  for(const m of String(identity??'').matchAll(/(?:你是|你叫|叫你|名字是|叫做)\s*[“"「]?([\p{Script=Han}A-Za-z0-9_]{1,12}?)[”"」]?(?=[，,。.！!、\s（(]|$)/gu))names.add(m[1]);
+  return [...names];
+}
+// Who a chat message is aimed at: mentionsYou (her name or @name appears) and `to`
+// (the message opens with @someone else). Only a hint; she can still join in.
+function addressing(text,names,scene){
+  const body=String(text??''),group=typeof scene==='string'&&/(^|\/)group[/:]/.test(scene);
+  if(!group)return {chat:'private'};
+  const mentionsYou=names.some(n=>body.includes(n));
+  const lead=/^\s*@([^\s@，,：:]{1,20})/.exec(body)?.[1]??null;
+  return {chat:'group',mentionsYou,...(lead&&!names.includes(lead)?{to:lead}:{})};
+}
 // Deterministic projection of a sealed base packet. Returns the model view and the handle table.
 export function intentView(base){
   const p=base.payload,c=p.continuity,handles={E0:{kind:'event',ref:{id:p.current.id,revision:p.current.revision}}};
@@ -70,6 +86,7 @@ export function intentView(base){
     ...(curAgo?{ago:curAgo}:{}),
     ...(social?.currentMeta?.pendingInScene>0?{pendingInChat:social.currentMeta.pendingInScene}:{}),
     text:cur.body,
+    ...(cur.origin==='tool_receipt'?{}:addressing(cur.body,selfNames(p.identity),cur.scene)),
     attachable:(c.attention.eventProcessSupport?.enabled===true)&&(c.attention.eventProcessSupport.events??[]).some(e=>e.id===cur.id&&e.revision===cur.revision),
     ...(cur.bodyDelivery?.fullBodyDelivered===false?{partial:`只交付了 ${cur.bodyDelivery.count}/${cur.bodyDelivery.total} 项`}:{})};
   if(social?.person)view.person=social.person;
@@ -282,16 +299,16 @@ export function expandIntent(wire,raw,{store=null,diagnostics=[]}={}){
   }
 
   // used
-  ensure(Array.isArray(o.used??[]),'INTENT_SHAPE','used must be an array of handles');
-  // used is a declaration, not a state change: only delivered materials (M) count. Other
-  // handles (the current item, a tool, an unopened reminder) are noted and left out; an
-  // unknown handle is still an error.
-  const used=(o.used??[]).filter((h,i)=>{
+  if(o.used!==undefined&&!Array.isArray(o.used)){diagnostics.push({path:'used',code:'USED_NOT_A_LIST_IGNORED'});o.used=[];}
+  // used is a declaration, not a state change: only delivered materials (M) count. Any other
+  // entry (the current item, a tool, an unopened reminder, a handle that does not exist) is
+  // noted and left out; it never discards the turn. Handles in decision/states/work stay strict.
+  const used=[];
+  for(const [i,h] of (o.used??[]).entries()){
     const t=wire.handles[h];
-    if(h==='E0'){diagnostics.push({path:`used[${i}]`,code:'CURRENT_NOT_A_MATERIAL_IGNORED'});return false;}
-    if(t&&t.kind!=='material'||/^T\d+$/.test(h)&&(p.allowedActionTools??[]).length>=Number(h.slice(1))){diagnostics.push({path:`used[${i}]`,code:'NOT_A_MATERIAL_IGNORED',handle:h});return false;}
-    return true;}).map((h,i)=>{const m=handle(wire,h,'material',`used[${i}]`);return {ref:m.ref,aspect:m.aspects[0],effect:'context'};});
-  ensure(new Set(used.map(u=>u.ref.id)).size===used.length,'INTENT_SHAPE','used lists each material once');
+    if(t?.kind==='material'&&!used.some(u=>u.ref.id===t.ref.id))used.push({ref:t.ref,aspect:t.aspects[0],effect:'context'});
+    else diagnostics.push({path:`used[${i}]`,code:h==='E0'?'CURRENT_NOT_A_MATERIAL_IGNORED':'NOT_A_MATERIAL_IGNORED',handle:h});
+  }
 
   const upsert=keep.map(k=>{const old=residences.find(r=>r.target?.kind==='state'&&r.target.ref?.id===k.id);
     return {id:old?.id??`residence:${k.id}`,target:{kind:'state',ref:{id:k.id,revision:k.revision}},cue:[...(k.cue??old?.cue??'')].slice(0,160).join('')||'自己的状态',
