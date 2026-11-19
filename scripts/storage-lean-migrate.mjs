@@ -84,14 +84,17 @@ function migrateBody(row) {
 }
 
 db.exec('PRAGMA foreign_keys=ON');
-db.exec(SCHEMA);
 const rows = db.prepare(`SELECT o.type AS type,o.id AS id,v.revision AS revision,v.body AS body
   FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
   WHERE o.type IN ('decision','review','decision_attempt','affect_turn','extension_record')`).all();
 let changed = 0, packets = 0, skipped = 0;
 const update = db.prepare('UPDATE versions SET body=? WHERE id=? AND revision=?');
+// Keep both the additive table and PRAGMA user_version inside this transaction.
+// A collision or I/O failure must leave the source at schema 11, not a
+// half-migrated database that looks like schema 12 to the new reader.
 db.exec('BEGIN IMMEDIATE');
 try {
+  db.exec(SCHEMA);
   for (const row of rows) {
     const result = migrateBody(row);
     if (result.changed) {

@@ -38,7 +38,7 @@ Never migrate the live database in place.
 5. Check the JSON result: `schemaVersion` must be `12`, `integrity` must be `ok`, and `foreignKeyViolations` must be `0`.
 6. Start the new code against the migrated copy and verify Event, Note, personal_state, Intent and AgentTask reads, plus one restart.
 
-The migration script refuses schemas other than 11 or 12. It creates the additive `model_packets` table, replaces only the reviewed packet fields, and runs `VACUUM` after the transaction.
+The migration script refuses schemas other than 11 or 12. It creates the additive `model_packets` table and replaces only the reviewed packet fields inside one transaction. The schema-version change is committed with that same transaction, so a collision or I/O failure leaves the database at schema 11. `VACUUM` runs only after a successful commit.
 
 ## Rollback
 
