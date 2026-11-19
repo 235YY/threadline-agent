@@ -119,6 +119,27 @@ test('task references retain their decision packets beyond the hot window',t=>{
   assert.equal(store.read('d0').input.packetUnavailable,true);
 });
 
+test('blocked tasks keep their origin packet for a possible resume',t=>{
+  const store=new ContinuityStore(temp(t),{hotDecisionPackets:2});t.after(()=>store.close());
+  setup(store);event(store,'e0');
+  const session=new ContinuitySession({store,subjectId:'s',attention:true});
+  const packet=prepare(session,'e0');
+  session.commit({packet,output:proposal(packet),requestId:'d0',decisionId:'d0'});
+  store.execute({requestId:'blocked-task',commands:[{op:'put_agent_task',expectedRevision:0,task:{
+    format:'agent-task-v1',id:'task:blocked',goal:'blocked task',status:'blocked',stepCount:0,callCount:0,
+    observations:[],interrupts:[],originDecisionRef:{id:'d0',revision:1}}}]});
+  for(let i=1;i<=10;i++){
+    event(store,'blocked-e'+i,'later'+i);
+    const p=prepare(session,'blocked-e'+i,T+i);
+    session.commit({packet:p,output:proposal(p),requestId:'d'+i,decisionId:'d'+i});
+  }
+  const origin=store.read('d0');
+  assert.equal(origin.input.packetUnavailable,undefined);
+  assert.ok(origin.input.messages);
+  assert.equal(store.read('task:blocked').status,'blocked');
+  assert.equal(store.read('task:blocked').originDecisionRef.id,'d0');
+});
+
 test('terminal affect turns do not retain a duplicate preview snapshot',async t=>{
   const store=new ContinuityStore(':memory:',{hotDecisionPackets:1});t.after(()=>store.close());
   setup(store);

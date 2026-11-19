@@ -312,7 +312,7 @@ export class ContinuityStore {
     for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
       WHERE o.type='agent_task'`).all()){
       try{const task=JSON.parse(row.body);
-        if(['done','blocked','failed','cancelled'].includes(task.status)&&!activeProcesses.has(task.processId))continue;
+        if(['done','failed','cancelled'].includes(task.status)&&!activeProcesses.has(task.processId))continue;
         addTaskRef(task.originDecisionRef);for(const ref of task.decisionRefs??[])addTaskRef(ref);}catch{}
     }
     for(const [id,revision] of taskRefs){
