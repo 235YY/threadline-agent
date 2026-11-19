@@ -50,11 +50,12 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 ## Verification performed
 
 - Full default regression: 912 passed, 0 failed.
-- Storage Lean focused suite: 10 passed, 0 failed (commit `880bd5c`).
+- Storage Lean focused suite: 11 passed, 0 failed (commit `f840a02`).
 - Schema 11 explicit-upgrade protection: covered by the focused suite.
 - Old reader vs schema 12: rejected with `REJECTED SCHEMA_VERSION`.
 - Migrated-copy memory read, object/relation comparison, restart and diagnostic lookup: covered by the frozen acceptance audit.
-- Clean clone at `880bd5c`: 912/912 default regression, 10/10 Storage Lean, migration `1,770` rewrites / `846` packets / `87,347,200` bytes, integrity ok, FK 0.
+- Clean clone at `f840a02`: 912/912 default regression, 11/11 Storage Lean, migration `1,770` rewrites / `846` packets / `87,347,200` bytes, integrity ok, FK 0.
+- Missing legacy recovery source: migration aborts with `MIGRATION_RECOVERY_MISSING`, rolls back, and leaves `user_version=11`.
 - No real QQ, model call, production database, or live process was touched.
 
 ## Revision 4 review fixes
