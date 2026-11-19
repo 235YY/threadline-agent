@@ -50,11 +50,21 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 ## Verification performed
 
 - Full default regression: 912 passed, 0 failed.
-- Storage Lean focused suite: 5 passed, 0 failed.
+- Storage Lean focused suite: 10 passed, 0 failed (commit `880bd5c`).
 - Schema 11 explicit-upgrade protection: covered by the focused suite.
 - Old reader vs schema 12: rejected with `REJECTED SCHEMA_VERSION`.
 - Migrated-copy memory read, object/relation comparison, restart and diagnostic lookup: covered by the frozen acceptance audit.
+- Clean clone at `880bd5c`: 912/912 default regression, 10/10 Storage Lean, migration `1,770` rewrites / `846` packets / `87,347,200` bytes, integrity ok, FK 0.
 - No real QQ, model call, production database, or live process was touched.
+
+## Revision 4 review fixes
+
+- Retired review stubs are rejected by `#packetize` and `#adoptReview`; review and terminal affect packets are protected from pruning.
+- `readReaction` / `readMindTrace` degrade explicitly when a retired decision input is unavailable, instead of throwing `TypeError`.
+- `DebugArchive` distinguishes `INPUT_SNAPSHOT_UNAVAILABLE` from `INPUT_INTEGRITY_MISMATCH`, and resolves extension `$recoveryFrom`.
+- Debug packet capture evicts the oldest snapshot when the quota is full rather than stopping permanently.
+- The migration parser resolves legacy `$recoveryFrom` chains recursively; a missing source is reported as `recovery-missing` and left untouched.
+- Current database has zero current affect bodies using `$recoveryFrom`; historical revisions outside the migration path are not rewritten.
 
 ## Known limitations
 
