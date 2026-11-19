@@ -14,7 +14,9 @@ import {DebugArchive} from '../src/debug-reader.mjs';
 import {event as seedEvent,frame as seedFrame,note as seedNote,put as seedPut,ref as seedRef} from './helpers.mjs';
 import {DatabaseSync} from 'node:sqlite';
 
-process.env.JY_AFFECT_PYTHON ??= 'C:\\Users\\杨耀钧\\AppData\\Local\\Programs\\Python\\Python312\\python.exe';
+// Affect-backed cases require a Python 3.10+ worker. Set JY_AFFECT_PYTHON in
+// the test environment before importing this file; do not hard-code a local
+// Windows path into the repository.
 const T=1794400000000;
 function setup(store,id='w'){
   store.execute({requestId:'seed:'+id,commands:[{op:'set_workspace',id:'w',expectedRevision:0,scene:'synthetic',focus:{id:'now',label:'合成'}}]});
@@ -86,6 +88,26 @@ test('only the hot decision window keeps full packet bodies',t=>{
   assert.ok(store.debugHealth().modelPackets<40);
   assert.equal(store.read('d0:attempt',1),null);
   assert.equal(store.read('d0:attempt').status,'adopted');
+});
+
+test('task references retain their decision packets beyond the hot window',t=>{
+  const store=new ContinuityStore(temp(t),{hotDecisionPackets:2});t.after(()=>store.close());
+  setup(store);event(store,'e0');
+  const session=new ContinuitySession({store,subjectId:'s',attention:true});
+  const packet=prepare(session,'e0');
+  session.commit({packet,output:proposal(packet),requestId:'d0',decisionId:'d0'});
+  store.execute({requestId:'task',commands:[{op:'put_agent_task',expectedRevision:0,task:{
+    format:'agent-task-v1',id:'task:long',goal:'long task',status:'running',stepCount:0,callCount:0,
+    observations:[],interrupts:[],originDecisionRef:{id:'d0',revision:1}}}]});
+  for(let i=1;i<=10;i++){
+    event(store,'task-e'+i,'later'+i);
+    const p=prepare(session,'task-e'+i,T+i);
+    session.commit({packet:p,output:proposal(p),requestId:'d'+i,decisionId:'d'+i});
+  }
+  const origin=store.read('d0');
+  assert.equal(origin.input.packetUnavailable,undefined);
+  assert.ok(origin.input.messages);
+  assert.equal(store.read('task:long').originDecisionRef.id,'d0');
 });
 
 test('terminal affect turns do not retain a duplicate preview snapshot',async t=>{

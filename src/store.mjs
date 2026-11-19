@@ -292,6 +292,25 @@ export class ContinuityStore {
       WHERE o.type IN ('decision','review','decision_attempt','affect_turn') AND v.body LIKE '%"$packetRef"%'`).all();
     const recent=new Set(this.#db.prepare(`SELECT json_extract(v.body,'$.input."$packetRef"') AS packetId FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
       WHERE o.type='decision' ORDER BY o.rowid DESC LIMIT ?`).all(this.#hotDecisionPackets).map(r=>r.packetId).filter(Boolean));
+    // A live task keeps its origin/step decisions addressable even after the
+    // generic prompt window moves on. Protect the exact packet versions those
+    // task references point at, not just the latest decision body.
+    const taskPackets=new Set(),taskRefs=new Map();
+    const addTaskRef=ref=>{
+      if(typeof ref==='string'&&ref)taskRefs.set(ref,null);
+      else if(ref&&typeof ref.id==='string'&&ref.id)
+        taskRefs.set(ref.id,Number.isSafeInteger(ref.revision)?ref.revision:null);
+    };
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='agent_task'`).all()){
+      try{const task=JSON.parse(row.body);addTaskRef(task.originDecisionRef);for(const ref of task.decisionRefs??[])addTaskRef(ref);}catch{}
+    }
+    for(const [id,revision] of taskRefs){
+      const rows=revision===null
+        ?this.#db.prepare('SELECT body FROM versions WHERE id=?').all(id)
+        :this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').all(id,revision);
+      for(const row of rows){try{const packetId=JSON.parse(row.body).input?.[PACKET_REF];if(packetId)taskPackets.add(packetId);}catch{}}
+    }
     const terminalAffect=new Set();
     for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
       WHERE o.type='affect_turn' AND json_extract(v.body,'$.status') IN ('committed','superseded') ORDER BY o.rowid DESC LIMIT ?`).all(this.#terminalAffectPackets)){
@@ -302,7 +321,7 @@ export class ContinuityStore {
       const packetIds=[];
       for(const field of MODEL_PACKET_FIELDS[record.type]??[])if(holder[field]?.[PACKET_REF])packetIds.push(holder[field][PACKET_REF]);
       if(!packetIds.length)continue;
-      let protect=packetIds.some(id=>recent.has(id));
+      let protect=packetIds.some(id=>recent.has(id)||taskPackets.has(id));
       if(!protect&&record.type==='decision_attempt'&&['captured','quarantined','deferred'].includes(record.status))protect=true;
       if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain'].includes(record.status))protect=true;
       if(!protect&&record.type==='affect_turn'&&['committed','superseded'].includes(record.status))protect=packetIds.some(id=>terminalAffect.has(id));
