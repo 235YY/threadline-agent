@@ -51,11 +51,11 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 ## Verification performed
 
 - Full default regression: 912 passed, 0 failed.
-- Storage Lean focused suite: 12 passed, 0 failed (code commit `a0d0a74`).
+- Storage Lean focused suite: 13 passed, 0 failed at `cfd37a5`.
 - Schema 11 explicit-upgrade protection: covered by the focused suite.
 - Old reader vs schema 12: rejected with `REJECTED SCHEMA_VERSION`.
 - Migrated-copy memory read, object/relation comparison, restart and diagnostic lookup: covered by the frozen acceptance audit.
-- Clean clone at `f840a02`: 912/912 default regression, 11/11 Storage Lean, migration `1,770` rewrites / `846` packets / `87,347,200` bytes, integrity ok, FK 0.
+- Clean clone at `cfd37a5`: 912/912 default regression, 13/13 Storage Lean, migration `1,770` rewrites / `846` packets / `87,347,200` bytes, integrity ok, FK 0.
 - Missing legacy recovery source: migration aborts with `MIGRATION_RECOVERY_MISSING`, rolls back, and leaves `user_version=11`.
 - No real QQ, model call, production database, or live process was touched.
 
@@ -74,6 +74,12 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 - The final independent review found that a long-running AgentTask could lose its origin/step decision packets after the hot window, causing `taskThreads` typed task evidence to disappear silently.
 - The pruning path now resolves `originDecisionRef` and `decisionRefs` from every current `agent_task`, including older revisions, and protects the exact referenced model packets.
 - A focused regression test keeps an origin decision packet readable after later decisions exceed the hot window.
+
+## Revision 6 review fix
+
+- The final review found that `blocked` was treated as terminal for packet retirement, although `resumeAgentTask` and `redirectAgentTask` accept blocked tasks.
+- `blocked` tasks now retain their origin/step decision packets until the task actually reaches `done`, `failed` or `cancelled`; the process-aware release path applies only to those terminal states.
+- A focused regression keeps a blocked task's origin packet readable after the hot window; the existing done-task regression still confirms release.
 
 ## Known limitations
 
