@@ -84,7 +84,12 @@ export class DebugArchive {
       const value=holder?.[field];
       if(!value||typeof value!=='object'||!value.$packetRef)continue;
       let row;try{row=this.#db.prepare('SELECT body FROM model_packets WHERE packet_id=?').get(value.$packetRef);}catch{row=null;}
-      if(!row)continue;
+      if(!row){
+        const meta=value.$packetMeta??{};
+        holder[field]={...meta,packetId:value.$packetRef,packetUnavailable:true,payload:{}};
+        record.$packetUnavailable=true;
+        continue;
+      }
       holder[field]=JSON.parse(gunzipSync(Buffer.from(row.body)).toString('utf8'));
     }
     return record;
@@ -96,12 +101,15 @@ export class DebugArchive {
     if(!row)return null;
     const record=JSON.parse(row.body);
     this.#hydrate(record);
-    if(record.type==='decision_attempt'&&record.$recoveryFrom){
+    if(record.$recoveryFrom){
+      const holder=record.type==='extension_record'?record.value:record;
       for(const [field,rev] of Object.entries(record.$recoveryFrom)){
         const saved=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,rev);
         const source=saved?JSON.parse(saved.body):null;
-        ensure(source&&Object.hasOwn(source,field),'MISSING_REFERENCE','fixed attempt source is unavailable');
-        record[field]=source[field];
+        const sourceHolder=source?.type==='extension_record'?source.value:source;
+        ensure(sourceHolder&&Object.hasOwn(sourceHolder,field),'MISSING_REFERENCE','fixed recovery source is unavailable');
+        this.#hydrate(source);
+        holder[field]=sourceHolder[field];
       }
       delete record.$recoveryFrom;
     }
@@ -177,10 +185,12 @@ export class DebugArchive {
       const query=decision&&choice?.kind==='lookup'?this.#read(lookupResultId(ref(decision))):null;
       const warnings=[];const flag=(code,level,details={})=>warnings.push({code,level,...details});
       for(const e of journal)if(e.status==='rejected'||e.status==='uncertain')flag(e.data.errorCode??e.stage,'attention',{seq:e.seq});
-      const integrity=checkStoredInput(packet);if(packet&&[integrity.fingerprint,integrity.messageBinding,integrity.byteCount,integrity.withinBudget].some(v=>v===false))flag('INPUT_INTEGRITY_MISMATCH','error');
+      const unavailable=packet?.packetUnavailable===true;
+      const integrity=unavailable?{fingerprint:null,messageBinding:null,byteCount:null,withinBudget:null}:checkStoredInput(packet);
+      if(!unavailable&&packet&&[integrity.fingerprint,integrity.messageBinding,integrity.byteCount,integrity.withinBudget].some(v=>v===false))flag('INPUT_INTEGRITY_MISMATCH','error');
       const starts=journal.filter(e=>e.stage==='model.started').length,ends=journal.filter(e=>['model.completed','model.failed'].includes(e.stage)).length;
       if(starts>ends)flag('CALL_OUTCOME_UNCONFIRMED','attention',{count:starts-ends});
-      if(!packet)flag('INPUT_SNAPSHOT_UNAVAILABLE','attention');
+      if(!packet||unavailable)flag('INPUT_SNAPSHOT_UNAVAILABLE','attention');
       if(journal.some(e=>['quota-exceeded','capture-failed','snapshot-too-large'].includes(e.data.snapshot)))flag('INPUT_CAPTURE_DEGRADED','attention');
       if(list(p?.knowledge?.presentation?.omitted).length)flag(p.knowledge.presentation.stop==='required-overflow'?'REQUIRED_OVERFLOW':'MATERIAL_NOT_DELIVERED','info',{count:p.knowledge.presentation.omitted.length});
       if(list(context?.mind?.gaps).length)flag('UNEXPANDED_OR_STALE_DEPENDENCY','info',{count:context.mind.gaps.length});

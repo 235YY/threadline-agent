@@ -57,12 +57,36 @@ function putPacket(packet, at) {
   return packetMeta(packet, {bytes, fingerprint});
 }
 
+function resolveRecovery(record, id, seen) {
+  if (!record.$recoveryFrom) return true;
+  const holder = record.type === 'extension_record' ? record.value : record;
+  if (!holder || typeof holder !== 'object') return false;
+  const resolved = {};
+  for (const [field, rev] of Object.entries(record.$recoveryFrom)) {
+    const key = `${id}@${rev}`;
+    if (seen.has(key)) return false;
+    const saved = db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id, rev);
+    if (!saved) return false;
+    const source = JSON.parse(saved.body);
+    if (!resolveRecovery(source, id, new Set(seen).add(key))) return false;
+    const sourceHolder = source.type === 'extension_record' ? source.value : source;
+    if (!sourceHolder || !Object.hasOwn(sourceHolder, field)) return false;
+    resolved[field] = sourceHolder[field];
+  }
+  Object.assign(holder, resolved);
+  delete record.$recoveryFrom;
+  return true;
+}
+
 function migrateBody(row) {
   const record = JSON.parse(row.body);
-  if (record.$recoveryFrom) return {changed: false, reason: 'recovery'};
+  const hadRecovery = !!record.$recoveryFrom;
+  if (hadRecovery && !resolveRecovery(record, row.id, new Set([`${row.id}@${row.revision}`]))) {
+    return {changed: false, reason: 'recovery-missing'};
+  }
   const holder = record.type === 'extension_record' ? record.value : record;
   if (!holder || typeof holder !== 'object') return {changed: false};
-  let changed = false;
+  let changed = hadRecovery;
   const at = Number.isSafeInteger(record.recordedAt) ? record.recordedAt : Date.now();
   for (const field of FIELDS[record.type] ?? []) {
     const value = holder[field];

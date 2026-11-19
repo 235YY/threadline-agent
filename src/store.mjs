@@ -123,8 +123,20 @@ export class ContinuityStore {
       ensure(packet&&/^[a-f0-9]{64}$/.test(packet.packetId),'DEBUG_SHAPE','prepared packet required');
       const body=canonical(packet),bytes=Buffer.byteLength(body),fingerprint=digest(body);
       if(bytes>524288)return 'snapshot-too-large';
+      if(this.#maxDebugPacketBytes===0)return 'quota-exceeded';
       const old=this.#db.prepare('SELECT fingerprint FROM debug_packets WHERE packet_id=?').get(packet.packetId);
       if(old){ensure(old.fingerprint===fingerprint,'DEBUG_PACKET_COLLISION','prepared packet content changed');return 'already-captured';}
+      if(bytes>this.#maxDebugPacketBytes)return 'snapshot-too-large';
+      let used=this.#db.prepare('SELECT coalesce(sum(body_bytes),0) AS n FROM debug_packets').get().n;
+      if(bytes+used>this.#maxDebugPacketBytes){
+        const evict=this.#db.prepare('SELECT packet_id,body_bytes FROM debug_packets ORDER BY at,rowid').all();
+        const remove=this.#db.prepare('DELETE FROM debug_packets WHERE packet_id=?');
+        for(const row of evict){
+          if(bytes+used<=this.#maxDebugPacketBytes)break;
+          remove.run(row.packet_id);used-=row.body_bytes;
+        }
+      }
+      if(bytes+used>this.#maxDebugPacketBytes)return 'quota-exceeded';
       this.#db.prepare(`INSERT OR IGNORE INTO debug_packets(packet_id,fingerprint,at,body_bytes,body)
         SELECT ?,?,?,?,? WHERE ?+(SELECT coalesce(sum(body_bytes),0) FROM debug_packets)<=?`)
         .run(packet.packetId,fingerprint,this.#now(),bytes,body,bytes,this.#maxDebugPacketBytes);
@@ -218,6 +230,7 @@ export class ContinuityStore {
       algorithmV011:payload.algorithmV011??null,format:payload.format??null};
   }
   #putModelPacket(packet){
+    ensure(packet&&packet.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','retired model packet cannot be persisted');
     const body=canonical(packet),bytes=Buffer.byteLength(body),fingerprint=digest(body);
     if(bytes>this.#maxModelPacketBytes)return null;
     const old=this.#db.prepare('SELECT fingerprint FROM model_packets WHERE packet_id=?').get(packet.packetId);
@@ -255,6 +268,7 @@ export class ContinuityStore {
     for(const field of MODEL_PACKET_FIELDS[record.type]){
       const packet=holder[field];
       if(!packet||typeof packet!=='object'||!/^[a-f0-9]{64}$/.test(packet.packetId??''))continue;
+      ensure(packet.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','retired model packet cannot be re-persisted',{packetId:packet.packetId});
       const meta=this.#putModelPacket(packet);
       if(meta)holder[field]={[PACKET_REF]:packet.packetId,[PACKET_META]:meta};
     }
@@ -282,8 +296,8 @@ export class ContinuityStore {
       if(!packetIds.length)continue;
       let protect=packetIds.some(id=>recent.has(id));
       if(!protect&&record.type==='decision_attempt'&&['captured','quarantined','deferred'].includes(record.status))protect=true;
-      if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain'].includes(record.status))protect=true;
-      if(!protect&&record.type==='review'&&recent.size===0)protect=true;
+      if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain','committed','superseded'].includes(record.status))protect=true;
+      if(!protect&&record.type==='review'&&['proposed','deferred','needs-information'].includes(record.status))protect=true;
       if(protect)for(const id of packetIds)keep.add(id);
     }
     const ids=JSON.stringify([...keep]);
@@ -835,6 +849,7 @@ export class ContinuityStore {
   #adoptReview(c) {
     const review=this.#require(c.review,['review']);
     ensure(this.#read(review.id).revision===review.revision,'VERSION_CONFLICT','review changed');
+    ensure(review.input?.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','review input packet is unavailable');
     ensure(review.status==='proposed'&&review.output.updates.length>0,'REVIEW_NOT_PENDING','review has no pending updates');
     this.#checkCognitionMaterials(review.materials);
     const results=review.output.updates.map(u=>this.#note(u));
