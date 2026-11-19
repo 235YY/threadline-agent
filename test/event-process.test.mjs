@@ -87,9 +87,9 @@ test('completed A keeps stored associations and B history; background is bounded
  assert.equal(history(s,'A').length,1);assert.equal(history(s,'B').length,1);const q=prepare(s);assert.equal(q.payload.continuity.threads.foreground.id,'B');
  assert.equal(record(s,source,'A').value.status,'active');
 });
-test('Schema11 restart preserves withdrawn A/active B and pinned historical source',t=>{
+test('Schema12 restart preserves withdrawn A/active B and pinned historical source',t=>{
  const file=disk(t),s=setup(t,file),source=s.e;commit(s,delta([proc('A'),proc('B')],[pair(source,'A'),pair(source,'B')]));next(s);commit(s,delta([],[],[pair(source,'A')]),{materials:[material(source)]});
- s.store.close();const reopened=new ContinuityStore(file);try{assert.equal(SCHEMA_VERSION,11);const ss={...s,store:reopened};assert.equal(history(ss,'A').length,0);assert.equal(history(ss,'B').length,1);assert.equal(reopened.read(record(ss,source,'A').id,1).value.status,'active');}finally{reopened.close();}
+ s.store.close();const reopened=new ContinuityStore(file);try{assert.equal(SCHEMA_VERSION,12);const ss={...s,store:reopened};assert.equal(history(ss,'A').length,0);assert.equal(history(ss,'B').length,1);assert.equal(reopened.read(record(ss,source,'A').id,1).value.status,'active');}finally{reopened.close();}
 });
 test('reflection uses the same explicit contract and atomic commit',t=>{
  const s=setup(t),source=s.e;commit(s,delta([proc('A')]));

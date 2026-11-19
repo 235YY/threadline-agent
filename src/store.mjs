@@ -1,5 +1,6 @@
 import * as sqlite from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
+import {gzipSync, gunzipSync} from 'node:zlib';
 import {APPLICATION_ID, SCHEMA, SCHEMA_VERSION} from './schema.mjs';
 import {canonical, digest, ensure, oneOf, refKey, revision, text, time, uniqueRefs} from './contracts.mjs';
 import {normalizeStateDelta,personalStateChange,stateIds,normalizeDomains,normalizeAbout} from './personal-state.mjs';
@@ -23,21 +24,37 @@ const NOTE_KINDS = ['fact_claim', 'interpretation', 'value', 'preference', 'drea
 const TYPES = ['event', 'note', 'workspace', 'link', 'action', 'decision', 'review', 'subject', 'personal_state', 'decision_attempt', 'response', 'lookup_round', 'lookup_result','attention_frame','maintenance_schedule','maintenance_job','entity','binding','agent_task','motivation_state','affect_turn','extension_record','intent'];
 const asRef = record => ({id: record.id, revision: record.revision});
 const REPLAY_REF='$version';
-const DEBUG_EVENTS_LIMIT=2048;
+const DEFAULT_DEBUG_EVENTS_LIMIT=512;
+const DEFAULT_DEBUG_PACKET_BYTES=8*1024*1024;
+const DEFAULT_HOT_DECISION_PACKETS=64;
+const DEFAULT_TERMINAL_AFFECT_PACKETS=64;
+const MODEL_PACKET_FIELDS=Object.freeze({
+  decision:['input'], review:['input'], decision_attempt:['input'], affect_turn:['packet']
+});
+const PACKET_REF='$packetRef', PACKET_META='$packetMeta';
 
 // Local persistence and consistency only. This class neither calls a model nor executes actions.
 export class ContinuityStore {
-  #db; #clock; #readDepth = 0; #closed = false; #transactionWrites=null; #debugFailures=0; #debugFailureCode=null; #maxDebugPacketBytes;
-  constructor(path = ':memory:', {clock = Date.now, migrateV1 = false, migrateV2 = false, migrateV3 = false, migrateV4 = false, migrateV5 = false, migrateV6 = false, migrateV7 = false,migrateV8 = false,migrateV9 = false,migrateV10 = false,maxDebugPacketBytes=64*1024*1024} = {}) {
+  #db; #clock; #readDepth = 0; #closed = false; #transactionWrites=null; #debugFailures=0; #debugFailureCode=null; #maxDebugPacketBytes; #maxDebugEvents; #hotDecisionPackets; #terminalAffectPackets; #maxModelPacketBytes; #packetWrites=0;
+  constructor(path = ':memory:', {clock = Date.now, migrateV1 = false, migrateV2 = false, migrateV3 = false, migrateV4 = false, migrateV5 = false, migrateV6 = false, migrateV7 = false,migrateV8 = false,migrateV9 = false,migrateV10 = false,migrateV11 = false,maxDebugPacketBytes=DEFAULT_DEBUG_PACKET_BYTES,maxDebugEvents=DEFAULT_DEBUG_EVENTS_LIMIT,hotDecisionPackets=DEFAULT_HOT_DECISION_PACKETS,terminalAffectPackets=DEFAULT_TERMINAL_AFFECT_PACKETS,maxModelPacketBytes=DEFAULT_DEBUG_PACKET_BYTES} = {}) {
     this.#clock = clock;
     ensure(Number.isSafeInteger(maxDebugPacketBytes)&&maxDebugPacketBytes>=0&&maxDebugPacketBytes<=1024*1024*1024,'DEBUG_LIMIT','bounded debug snapshot quota required');
+    ensure(Number.isSafeInteger(maxDebugEvents)&&maxDebugEvents>=0&&maxDebugEvents<=1000000,'DEBUG_LIMIT','bounded debug event retention required');
+    ensure(Number.isSafeInteger(hotDecisionPackets)&&hotDecisionPackets>=0&&hotDecisionPackets<=100000,'MODEL_PACKET_LIMIT','bounded hot packet window required');
+    ensure(Number.isSafeInteger(maxModelPacketBytes)&&maxModelPacketBytes>=1024&&maxModelPacketBytes<=1024*1024*1024,'MODEL_PACKET_LIMIT','bounded model packet size required');
+    ensure(Number.isSafeInteger(terminalAffectPackets)&&terminalAffectPackets>=0&&terminalAffectPackets<=100000,'MODEL_PACKET_LIMIT','bounded terminal affect packet window required');
     this.#maxDebugPacketBytes=maxDebugPacketBytes;
+    this.#maxDebugEvents=maxDebugEvents;
+    this.#hotDecisionPackets=hotDecisionPackets;
+    this.#terminalAffectPackets=terminalAffectPackets;
+    this.#maxModelPacketBytes=maxModelPacketBytes;
     this.#db = new Database(path, {timeout: 3000});
     try {
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;');
       const version = this.#db.prepare('PRAGMA user_version').get().user_version;
       const applicationId = this.#db.prepare('PRAGMA application_id').get().application_id;
-      ensure([0,1,2,3,4,5,6,7,8,9,10,SCHEMA_VERSION].includes(version), 'SCHEMA_VERSION', 'unsupported database schema');
+      ensure([0,1,2,3,4,5,6,7,8,9,10,11,SCHEMA_VERSION].includes(version), 'SCHEMA_VERSION', 'unsupported database schema');
+      ensure(version !== 11 || migrateV11 === true, 'MIGRATION_REQUIRED', 'schema 11 requires explicit migrateV11=true on a reviewed copy; schema 12 packet references cannot be interpreted by an old reader');
       ensure(version === 0 ? applicationId === 0 : applicationId === APPLICATION_ID,
         'FOREIGN_DATABASE', 'database does not belong to the new core');
       ensure(version !== 1 || migrateV1 === true, 'MIGRATION_REQUIRED', 'schema 1 requires explicit migrateV1=true; no live database is selected automatically');
@@ -65,14 +82,19 @@ export class ContinuityStore {
     } catch (error) { this.#db.close(); throw error; }
   }
   close() { if(!this.#closed){this.#db.close();this.#closed=true;} }
-  debugHealth(){return {failedWrites:this.#debugFailures,lastErrorCode:this.#debugFailureCode,maxPacketBytes:this.#maxDebugPacketBytes};}
+  debugHealth(){
+    const packets=this.#db.prepare('SELECT count(*) AS n,coalesce(sum(body_bytes),0) AS bytes,coalesce(sum(compressed_bytes),0) AS compressed FROM model_packets').get();
+    return {failedWrites:this.#debugFailures,lastErrorCode:this.#debugFailureCode,maxPacketBytes:this.#maxDebugPacketBytes,
+      maxEvents:this.#maxDebugEvents,hotDecisionPackets:this.#hotDecisionPackets,terminalAffectPackets:this.#terminalAffectPackets,
+      modelPackets:packets.n,modelPacketBytes:packets.bytes,modelPacketCompressedBytes:packets.compressed};
+  }
   #logDebug(value){
     const entry=diagnostic(value),c=entry.context;
     const result=this.#db.prepare('INSERT INTO debug_events(at,stage,status,subject_id,decision_id,packet_id,job_id,entry) VALUES(?,?,?,?,?,?,?,?)')
       .run(this.#now(),entry.stage,entry.status,c.subjectId,c.decisionId,c.packetId,c.jobId,canonical(entry));
     // This journal is diagnostic metadata, not crash recovery or subject memory.
-    if(Number(result.lastInsertRowid)%128===0)
-      this.#db.prepare('DELETE FROM debug_events WHERE seq<=?').run(Number(result.lastInsertRowid)-DEBUG_EVENTS_LIMIT);
+    if(Number(result.lastInsertRowid)%128===0||this.#maxDebugEvents===0)
+      this.#db.prepare('DELETE FROM debug_events WHERE seq<=?').run(Number(result.lastInsertRowid)-this.#maxDebugEvents);
   }
   #debugTransactionContext(args,results=[]){
     const context=transactionContext(args),records=[...results];
@@ -104,8 +126,20 @@ export class ContinuityStore {
       ensure(packet&&/^[a-f0-9]{64}$/.test(packet.packetId),'DEBUG_SHAPE','prepared packet required');
       const body=canonical(packet),bytes=Buffer.byteLength(body),fingerprint=digest(body);
       if(bytes>524288)return 'snapshot-too-large';
+      if(this.#maxDebugPacketBytes===0)return 'quota-exceeded';
       const old=this.#db.prepare('SELECT fingerprint FROM debug_packets WHERE packet_id=?').get(packet.packetId);
       if(old){ensure(old.fingerprint===fingerprint,'DEBUG_PACKET_COLLISION','prepared packet content changed');return 'already-captured';}
+      if(bytes>this.#maxDebugPacketBytes)return 'snapshot-too-large';
+      let used=this.#db.prepare('SELECT coalesce(sum(body_bytes),0) AS n FROM debug_packets').get().n;
+      if(bytes+used>this.#maxDebugPacketBytes){
+        const evict=this.#db.prepare('SELECT packet_id,body_bytes FROM debug_packets ORDER BY at,rowid').all();
+        const remove=this.#db.prepare('DELETE FROM debug_packets WHERE packet_id=?');
+        for(const row of evict){
+          if(bytes+used<=this.#maxDebugPacketBytes)break;
+          remove.run(row.packet_id);used-=row.body_bytes;
+        }
+      }
+      if(bytes+used>this.#maxDebugPacketBytes)return 'quota-exceeded';
       this.#db.prepare(`INSERT OR IGNORE INTO debug_packets(packet_id,fingerprint,at,body_bytes,body)
         SELECT ?,?,?,?,? WHERE ?+(SELECT coalesce(sum(body_bytes),0) FROM debug_packets)<=?`)
         .run(packet.packetId,fingerprint,this.#now(),bytes,body,bytes,this.#maxDebugPacketBytes);
@@ -169,24 +203,177 @@ export class ContinuityStore {
   // Repeated recovery fields point to their first full version on this same
   // record. Fixed reads and replay still return complete values.
   #decode(body){
-    const row=JSON.parse(body);
-    if(!row.$recoveryFrom)return row;
-    const holder=row.type==='extension_record'?row.value:row;
-    for(const [field,rev] of Object.entries(row.$recoveryFrom)){
-      const source=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(row.id,rev);
-      const record=source?JSON.parse(source.body):null,origin=row.type==='extension_record'?record?.value:record;
-      ensure(origin&&Object.hasOwn(origin,field),'MISSING_REFERENCE','fixed recovery field is unavailable');
-      holder[field]=origin[field];
+    let row=JSON.parse(body);
+    if(row.$recoveryFrom){
+      const holder=row.type==='extension_record'?row.value:row;
+      for(const [field,rev] of Object.entries(row.$recoveryFrom)){
+        const source=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(row.id,rev);
+        const record=source?this.#decode(source.body):null,origin=row.type==='extension_record'?record?.value:record;
+        ensure(origin&&Object.hasOwn(origin,field),'MISSING_REFERENCE','fixed recovery field is unavailable');
+        holder[field]=origin[field];
+      }
+      delete row.$recoveryFrom;
     }
-    delete row.$recoveryFrom;
+    return this.#hydratePackets(row);
+  }
+  #packetMeta(packet,{bytes,fingerprint}={}) {
+    const payload=packet.payload??{},continuity=payload.continuity??{};
+    const current=payload.current??null,workspace=payload.workspace??null;
+    const compact=value=>{
+      if(value==null)return null;
+      const encoded=canonical(value);
+      if(Buffer.byteLength(encoded)<=4096)return value;
+      return {id:value.id??null,type:value.type??null,revision:value.revision??null,scene:value.scene??null,
+        ref:value.ref??null,summary:value.summary??null,compact:true,bytes:Buffer.byteLength(encoded)};
+    };
+    return {packetId:packet.packetId,stage:packet.stage??null,bytes:bytes??Buffer.byteLength(canonical(packet)),
+      fingerprint:fingerprint??digest(canonical(packet)),instructionHash:packet.instruction?digest(packet.instruction):null,
+      messageHash:Array.isArray(packet.messages)?digest(canonical(packet.messages)):null,
+      current:compact(current),workspace:compact(workspace),subject:continuity.subject??null,
+      algorithmV011:payload.algorithmV011??null,format:payload.format??null};
+  }
+  #putModelPacket(packet){
+    ensure(packet&&packet.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','retired model packet cannot be persisted');
+    const body=canonical(packet),bytes=Buffer.byteLength(body),fingerprint=digest(body);
+    if(bytes>this.#maxModelPacketBytes)return null;
+    const old=this.#db.prepare('SELECT fingerprint FROM model_packets WHERE packet_id=?').get(packet.packetId);
+    if(old){ensure(old.fingerprint===fingerprint,'MODEL_PACKET_COLLISION','model packet content changed');return this.#packetMeta(packet,{bytes,fingerprint});}
+    const compressed=gzipSync(Buffer.from(body,'utf8'),{level:6});
+    this.#db.prepare('INSERT INTO model_packets(packet_id,fingerprint,at,body_bytes,compressed_bytes,body) VALUES(?,?,?,?,?,?)')
+      .run(packet.packetId,fingerprint,this.#now(),bytes,compressed.byteLength,compressed);
+    return this.#packetMeta(packet,{bytes,fingerprint});
+  }
+  #readModelPacket(packetId){
+    const row=this.#db.prepare('SELECT body FROM model_packets WHERE packet_id=?').get(packetId);
+    if(!row)return null;
+    return JSON.parse(gunzipSync(Buffer.from(row.body)).toString('utf8'));
+  }
+  #packetMissing(ref){
+    const meta=ref?.[PACKET_META]??{};
+    return {...meta,packetId:meta.packetId??ref?.[PACKET_REF]??null,packetUnavailable:true,
+      payload:{current:meta.current??null,workspace:meta.workspace??null,
+        continuity:meta.subject?{subject:meta.subject}:{}}};
+  }
+  #hydratePackets(row){
+    const holder=row.type==='extension_record'?row.value:row;
+    for(const field of MODEL_PACKET_FIELDS[row.type]??[]){
+      const value=holder?.[field];
+      if(!value||typeof value!=='object'||!value[PACKET_REF])continue;
+      const packet=this.#readModelPacket(value[PACKET_REF]);
+      holder[field]=packet??this.#packetMissing(value);
+    }
     return row;
+  }
+  #packetize(record){
+    if(!MODEL_PACKET_FIELDS[record.type])return record;
+    const next=record.type==='extension_record'?{...record,value:{...record.value}}:{...record};
+    const holder=record.type==='extension_record'?next.value:next;
+    for(const field of MODEL_PACKET_FIELDS[record.type]){
+      const packet=holder[field];
+      if(!packet||typeof packet!=='object'||!/^[a-f0-9]{64}$/.test(packet.packetId??''))continue;
+      ensure(packet.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','retired model packet cannot be re-persisted',{packetId:packet.packetId});
+      const meta=this.#putModelPacket(packet);
+      if(meta)holder[field]={[PACKET_REF]:packet.packetId,[PACKET_META]:meta};
+    }
+    if(record.type==='affect_turn'&&holder.preview&&!['prepared','dispatched','captured'].includes(holder.status)){
+      const preview=holder.preview;
+      holder.preview={baseRef:preview.baseRef??null,baseHash:preview.baseHash??null,
+        previewHash:preview.previewHash??(preview.snapshot?digest(canonical(preview.snapshot)):null),
+        snapshotHash:preview.snapshotHash??(preview.snapshot?digest(canonical(preview.snapshot)):null),
+        compact:true};
+    }
+    return next;
+  }
+  #pruneModelPackets(){
+    const total=this.#db.prepare('SELECT count(*) AS n FROM model_packets').get().n;
+    if(total<=this.#hotDecisionPackets)return;
+    const keep=new Set();
+    const rows=this.#db.prepare(`SELECT o.type AS type,v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type IN ('decision','review','decision_attempt','affect_turn') AND v.body LIKE '%"$packetRef"%'`).all();
+    const recent=new Set(this.#db.prepare(`SELECT json_extract(v.body,'$.input."$packetRef"') AS packetId FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='decision' ORDER BY o.rowid DESC LIMIT ?`).all(this.#hotDecisionPackets).map(r=>r.packetId).filter(Boolean));
+    // A live task keeps its origin/step decisions addressable even after the
+    // generic prompt window moves on. Protect the exact packet versions those
+    // task references point at, not just the latest decision body.
+    // A task keeps its evidence only while it is live, or while its process
+    // is still in the working frame. Once the task is terminal and its process
+    // has completed, old task packets must be allowed to retire.
+    const activeProcesses=new Set();
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='attention_frame'`).all()){
+      try{for(const process of JSON.parse(row.body).processes??[])if(!['completed','abandoned'].includes(process.status))activeProcesses.add(process.id);}catch{}
+    }
+    const taskPackets=new Set(),taskRefs=new Map();
+    const addTaskRef=ref=>{
+      if(typeof ref==='string'&&ref)taskRefs.set(ref,null);
+      else if(ref&&typeof ref.id==='string'&&ref.id)
+        taskRefs.set(ref.id,Number.isSafeInteger(ref.revision)?ref.revision:null);
+    };
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='agent_task'`).all()){
+      try{const task=JSON.parse(row.body);
+        if(['done','failed','cancelled'].includes(task.status)&&!activeProcesses.has(task.processId))continue;
+        addTaskRef(task.originDecisionRef);for(const ref of task.decisionRefs??[])addTaskRef(ref);}catch{}
+    }
+    for(const [id,revision] of taskRefs){
+      const rows=revision===null
+        ?this.#db.prepare('SELECT body FROM versions WHERE id=?').all(id)
+        :this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').all(id,revision);
+      for(const row of rows){try{const packetId=JSON.parse(row.body).input?.[PACKET_REF];if(packetId)taskPackets.add(packetId);}catch{}}
+    }
+    const terminalAffect=new Set();
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='affect_turn' AND json_extract(v.body,'$.status') IN ('committed','superseded') ORDER BY o.rowid DESC LIMIT ?`).all(this.#terminalAffectPackets)){
+      try{const packetId=JSON.parse(row.body).packet?.[PACKET_REF];if(packetId)terminalAffect.add(packetId);}catch{}
+    }
+    for(const row of rows){
+      const record=JSON.parse(row.body),holder=record.type==='extension_record'?record.value:record;
+      const packetIds=[];
+      for(const field of MODEL_PACKET_FIELDS[record.type]??[])if(holder[field]?.[PACKET_REF])packetIds.push(holder[field][PACKET_REF]);
+      if(!packetIds.length)continue;
+      let protect=packetIds.some(id=>recent.has(id)||taskPackets.has(id));
+      if(!protect&&record.type==='decision_attempt'&&['captured','quarantined','deferred'].includes(record.status))protect=true;
+      if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain'].includes(record.status))protect=true;
+      if(!protect&&record.type==='affect_turn'&&['committed','superseded'].includes(record.status))protect=packetIds.some(id=>terminalAffect.has(id));
+      if(!protect&&record.type==='review'&&['proposed','deferred','needs-information'].includes(record.status))protect=true;
+      if(protect)for(const id of packetIds)keep.add(id);
+    }
+    const ids=JSON.stringify([...keep]);
+    this.#db.prepare('DELETE FROM model_packets WHERE packet_id NOT IN (SELECT value FROM json_each(?))').run(ids);
+  }
+  #pruneVersions(){
+    // Execution records can retire the intermediate snapshots that are no
+    // longer referenced by any current record. Memory records are never
+    // selected here; they keep their append-only history.
+    const current=new Map(),keep=new Set();
+    const heads=this.#db.prepare(`SELECT o.id AS id,o.type AS type,o.current_revision AS revision,v.body AS body
+      FROM objects o JOIN versions v ON o.id=v.id AND v.revision=o.current_revision
+      WHERE o.type IN ('decision_attempt','affect_turn')`).all();
+    for(const row of heads)current.set(row.id,{type:row.type,revision:row.revision,status:JSON.parse(row.body).status});
+    const refs=this.#db.prepare(`SELECT o.id AS id,v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND v.revision=o.current_revision
+      WHERE v.body LIKE '%"$recoveryFrom"%'`).all();
+    for(const row of refs){
+      const body=JSON.parse(row.body);
+      for(const revision of Object.values(body.$recoveryFrom??{}))keep.add(`${row.id}@${revision}`);
+    }
+    for(const [id,head] of current){
+      const versions=this.#db.prepare('SELECT revision,body FROM versions WHERE id=? ORDER BY revision').all(id);
+      for(const row of versions){
+        if(row.revision===head.revision||keep.has(`${id}@${row.revision}`))continue;
+        const old=JSON.parse(row.body);
+        const safe=head.type==='decision_attempt'
+          ? head.status==='adopted'&&old.status==='captured'
+          : ['committed','superseded'].includes(head.status)&&['prepared','dispatched','captured'].includes(old.status);
+        if(safe)this.#db.prepare('DELETE FROM versions WHERE id=? AND revision=?').run(id,row.revision);
+      }
+    }
   }
   #encode(record,previous){
     if(!previous||!(record.type==='decision_attempt'||record.type==='affect_turn'||record.type==='extension_record'&&record.theory==='runtime'&&record.stateType==='turn-activity'))return record;
     const next=record.type==='extension_record'?{...record,value:{...record.value}}:{...record};
     const [before,after]=record.type==='extension_record'?[previous.value,next.value]:[previous,next];
     const stored=JSON.parse(this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(previous.id,previous.revision).body);
-    const refs={},fields={affect_turn:['packet','preview','rawOutput'],decision_attempt:['input','output'],extension_record:['packet','context','output']};
+    const refs={},fields={affect_turn:['rawOutput'],decision_attempt:[],extension_record:['packet','context','output']};
     for(const field of fields[record.type]){
       if(after[field]!=null&&before?.[field]!=null&&canonical(after[field])===canonical(before[field])){
         refs[field]=stored.$recoveryFrom?.[field]??previous.revision;
@@ -218,9 +405,10 @@ export class ContinuityStore {
     const next = {id, type, revision: expected + 1, ...fields};
     if (old) this.#db.prepare('UPDATE objects SET current_revision=? WHERE id=?').run(next.revision, id);
     else this.#db.prepare('INSERT INTO objects(id,type,current_revision) VALUES(?,?,?)').run(id, type, next.revision);
-    this.#db.prepare('INSERT INTO versions(id,revision,body) VALUES(?,?,?)').run(id, next.revision, canonical(this.#encode(next,old)));
+    this.#db.prepare('INSERT INTO versions(id,revision,body) VALUES(?,?,?)').run(id, next.revision, canonical(this.#packetize(this.#encode(next,old))));
     this.#indexGraph(next);
     this.#transactionWrites?.push(debugRef(next));
+    if(++this.#packetWrites%32===0){this.#pruneModelPackets();this.#pruneVersions();}
     return next;
   }
   #indexGraph(record) {
@@ -699,6 +887,7 @@ export class ContinuityStore {
   #adoptReview(c) {
     const review=this.#require(c.review,['review']);
     ensure(this.#read(review.id).revision===review.revision,'VERSION_CONFLICT','review changed');
+    ensure(review.input?.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','review input packet is unavailable');
     ensure(review.status==='proposed'&&review.output.updates.length>0,'REVIEW_NOT_PENDING','review has no pending updates');
     this.#checkCognitionMaterials(review.materials);
     const results=review.output.updates.map(u=>this.#note(u));

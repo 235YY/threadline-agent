@@ -222,7 +222,7 @@ test('旧schema8默认拒绝写入升级；显式副本迁移保留全部原版�
  const DB=sqlite.Database??sqlite.DatabaseSync,db=new DB(path);db.exec('PRAGMA user_version=8');db.close();
  assert.throws(()=>new ContinuityStore(path),code('MIGRATION_REQUIRED'));
  const check=new DB(path,{readOnly:true});assert.equal(check.prepare('PRAGMA user_version').get().user_version,8);check.close();
- const upgraded=new ContinuityStore(path,{migrateV8:true});try{assert.equal(canonical(upgraded.read('a')),original);assert.equal(SCHEMA_VERSION,11);}finally{upgraded.close();}
+ const upgraded=new ContinuityStore(path,{migrateV8:true});try{assert.equal(canonical(upgraded.read('a')),original);assert.equal(SCHEMA_VERSION,12);}finally{upgraded.close();}
 });
 
 const cleanupProc=(id,status='active',expectedRevision=0)=>({...process(status,expectedRevision),id});

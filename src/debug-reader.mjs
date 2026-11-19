@@ -1,4 +1,5 @@
 import * as sqlite from 'node:sqlite';
+import {gunzipSync} from 'node:zlib';
 import {APPLICATION_ID,SCHEMA_VERSION} from './schema.mjs';
 import {canonical,digest,ensure,refKey} from './contracts.mjs';
 import {lookupResultId,normalizeLookupQuery} from './local-query.mjs';
@@ -74,18 +75,43 @@ export class DebugArchive {
   }
   close(){this.#db.close();}
   #view(fn){const outer=this.#depth===0;if(outer)this.#db.exec('BEGIN');this.#depth++;try{const result=fn();if(outer)this.#db.exec('COMMIT');return result;}catch(e){if(outer)this.#db.exec('ROLLBACK');throw e;}finally{this.#depth--;}}
+  #hydrate(record){
+    const fields=record.type==='decision'||record.type==='decision_attempt'?['input']:
+      record.type==='affect_turn'?['packet','preview']:
+      record.type==='extension_record'?['packet','context','output']:[];
+    const holder=record.type==='extension_record'?record.value:record;
+    for(const field of fields){
+      const value=holder?.[field];
+      if(!value||typeof value!=='object'||!value.$packetRef)continue;
+      let row;try{row=this.#db.prepare('SELECT body FROM model_packets WHERE packet_id=?').get(value.$packetRef);}catch{row=null;}
+      if(!row){
+        const meta=value.$packetMeta??{};
+        holder[field]={...meta,packetId:value.$packetRef,packetUnavailable:true,
+          payload:{...(meta.current?{current:meta.current}:{}),...(meta.workspace?{workspace:meta.workspace}:{}),
+            ...(meta.subject?{continuity:{subject:meta.subject}}:{})}};
+        record.$packetUnavailable=true;
+        continue;
+      }
+      holder[field]=JSON.parse(gunzipSync(Buffer.from(row.body)).toString('utf8'));
+    }
+    return record;
+  }
   #read(id,revision){
     if(typeof id!=='string')return null;
     const row=revision===undefined?this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.id=?').get(id)
       :this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,revision);
     if(!row)return null;
     const record=JSON.parse(row.body);
-    if(record.type==='decision_attempt'&&record.$recoveryFrom){
+    this.#hydrate(record);
+    if(record.$recoveryFrom){
+      const holder=record.type==='extension_record'?record.value:record;
       for(const [field,rev] of Object.entries(record.$recoveryFrom)){
         const saved=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,rev);
         const source=saved?JSON.parse(saved.body):null;
-        ensure(source&&Object.hasOwn(source,field),'MISSING_REFERENCE','fixed attempt source is unavailable');
-        record[field]=source[field];
+        const sourceHolder=source?.type==='extension_record'?source.value:source;
+        ensure(sourceHolder&&Object.hasOwn(sourceHolder,field),'MISSING_REFERENCE','fixed recovery source is unavailable');
+        this.#hydrate(source);
+        holder[field]=sourceHolder[field];
       }
       delete record.$recoveryFrom;
     }
@@ -121,8 +147,8 @@ export class DebugArchive {
       for(const r of rows){const d=this.#read(r.id);if(d?.type==='decision')return d;}
     }
     const row=this.#db.prepare(`SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
-      WHERE o.type='decision' AND json_extract(v.body,'$.input.packetId')=? ORDER BY v.rowid DESC LIMIT 1`).get(packetId);
-    return row?JSON.parse(row.body):null;
+      WHERE o.type='decision' AND (json_extract(v.body,'$.input.packetId')=? OR json_extract(v.body,'$.input."$packetRef"')=?) ORDER BY v.rowid DESC LIMIT 1`).get(packetId,packetId);
+    return row?this.#hydrate(JSON.parse(row.body)):null;
   }
   inspect({decisionId=null,packetId=null,includeContent=false,nextDecisionId=null}={}){
     ensure(typeof includeContent==='boolean'&&(decisionId===null||typeof decisionId==='string'&&decisionId.trim().length>0)
@@ -161,10 +187,12 @@ export class DebugArchive {
       const query=decision&&choice?.kind==='lookup'?this.#read(lookupResultId(ref(decision))):null;
       const warnings=[];const flag=(code,level,details={})=>warnings.push({code,level,...details});
       for(const e of journal)if(e.status==='rejected'||e.status==='uncertain')flag(e.data.errorCode??e.stage,'attention',{seq:e.seq});
-      const integrity=checkStoredInput(packet);if(packet&&[integrity.fingerprint,integrity.messageBinding,integrity.byteCount,integrity.withinBudget].some(v=>v===false))flag('INPUT_INTEGRITY_MISMATCH','error');
+      const unavailable=packet?.packetUnavailable===true;
+      const integrity=unavailable?{fingerprint:null,messageBinding:null,byteCount:null,withinBudget:null}:checkStoredInput(packet);
+      if(!unavailable&&packet&&[integrity.fingerprint,integrity.messageBinding,integrity.byteCount,integrity.withinBudget].some(v=>v===false))flag('INPUT_INTEGRITY_MISMATCH','error');
       const starts=journal.filter(e=>e.stage==='model.started').length,ends=journal.filter(e=>['model.completed','model.failed'].includes(e.stage)).length;
       if(starts>ends)flag('CALL_OUTCOME_UNCONFIRMED','attention',{count:starts-ends});
-      if(!packet)flag('INPUT_SNAPSHOT_UNAVAILABLE','attention');
+      if(!packet||unavailable)flag('INPUT_SNAPSHOT_UNAVAILABLE','attention');
       if(journal.some(e=>['quota-exceeded','capture-failed','snapshot-too-large'].includes(e.data.snapshot)))flag('INPUT_CAPTURE_DEGRADED','attention');
       if(list(p?.knowledge?.presentation?.omitted).length)flag(p.knowledge.presentation.stop==='required-overflow'?'REQUIRED_OVERFLOW':'MATERIAL_NOT_DELIVERED','info',{count:p.knowledge.presentation.omitted.length});
       if(list(context?.mind?.gaps).length)flag('UNEXPANDED_OR_STALE_DEPENDENCY','info',{count:context.mind.gaps.length});

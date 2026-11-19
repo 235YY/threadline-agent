@@ -149,8 +149,10 @@ export function continuityInput({store,subjectId,stateRefs=[],detail=false,evide
     if(subject.lastDecision){
       const reaction=readReaction({store,subjectId,decision:subject.lastDecision});
       const decision=store.read(subject.lastDecision.id,subject.lastDecision.revision);
-      lastReaction={decision:subject.lastDecision,fromScene:decision.input.payload.workspace.scene,kind:reaction.choice.kind,
-        utterance:reaction.choice.kind==='respond'?reaction.choice.payload.text:null,expressionChoice:reaction.expressionChoice??null,
+      const unavailable=decision.input?.packetUnavailable===true;
+      lastReaction={decision:subject.lastDecision,fromScene:unavailable?null:decision.input.payload?.workspace?.scene??null,
+        kind:reaction.choice?.kind??'unavailable',packetUnavailable:unavailable,
+        utterance:reaction.choice?.kind==='respond'?reaction.choice.payload?.text??null:null,expressionChoice:reaction.expressionChoice??null,
         responseStatus:reaction.response?.status??'no-response-intent',at:decision.recordedAt??null};
     }
     const projection=mind?mindProjection({records:[...foreground,...recalled].map(x=>store.read(x.ref.id,x.ref.revision)),readHead:id=>store.read(id)}):null;
@@ -173,13 +175,15 @@ export function continuityInput({store,subjectId,stateRefs=[],detail=false,evide
 export function readReaction({store,subjectId,decision}) {
   uniqueRefs([decision]);const record=store.read(decision.id,decision.revision);
   ensure(record?.type==='decision'&&record.input.payload.continuity?.subject.id===subjectId,'MISSING_REACTION','unknown own reaction');
+  const unavailable=record.input?.packetUnavailable===true;
   const selected=record.output.options.find(o=>o.id===record.output.selected),response=store.read(`${record.id}:response`);
   const before=record.input.payload.continuity.subject,after=store.read(before.id,before.revision+1);
   ensure(after?.type==='subject'&&after.lastDecision?.id===record.id,'MISSING_CONTINUATION','missing committed state checkpoint');
-  return {decision:ref(record),currentEvent:record.currentEvent,workspace:record.workspace,
-    stateBefore:[...record.input.payload.continuity.foreground,...record.input.payload.continuity.recalled].map(x=>x.ref),
+  return {decision:ref(record),currentEvent:record.currentEvent,workspace:record.workspace,packetUnavailable:unavailable,
+    stateBefore:unavailable?[]:[...(record.input.payload.continuity.foreground??[]),...(record.input.payload.continuity.recalled??[])].map(x=>x.ref),
     stateAfter:{subject:ref(after),foreground:after.foreground,changed:after.changedStates},
-    expressionChoice:record.output.continuity.expressionChoice,choice:selected,
+    expressionChoice:record.output.continuity?.expressionChoice??null,
+    choice:unavailable?{kind:'unavailable',payload:{reason:'input-snapshot-unavailable'}}:selected??{kind:'unavailable',payload:{reason:'input-snapshot-unavailable'}},
     response:response?{ref:ref(response),status:response.status,receipts:response.receipts}:null};
 }
 export function claimResponse({store,response,claimId,worker,requestId}) {

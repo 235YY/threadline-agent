@@ -99,13 +99,13 @@ function firstText(messages){
   return last?.content??'';
 }
 
-export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false}={}){
+export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false,storage={}}={}){
   ensure(typeof storePath==='string'&&storePath.length>0,'BRAIN_SERVICE','store path required');
   const cognitiveKeys=['algorithmV011','apperceptionV1','subjectiveDomains','subjectiveMemory','subjectiveMemoryV2','taskThreads','anchorDirectory','memoryScopeV1','investigationContinuityV1','experienceLearningV1'];
   ensure(cognition&&Object.getPrototypeOf(cognition)===Object.prototype&&Object.entries(cognition).every(([key,value])=>cognitiveKeys.includes(key)&&typeof value==='boolean'),'COGNITION_CONFIG','explicit known boolean cognition flags required');
   cognition=Object.freeze({...cognition});
   const blobs=blobDirectory??join(stateDirectory??'.','blobs');
-  const store=new ContinuityStore(storePath);
+  const store=new ContinuityStore(storePath,storage);
   new ContinuitySession({store,subjectId,attention:true,maxForeground:16});
   const scheduler=new SceneScheduler({clock});
   const drivers=new Map();
