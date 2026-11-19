@@ -18,6 +18,7 @@ Do not merge this branch into `main` before `JY-MIND-CLEAN-001` is merged.
 - Reads hydrate the referenced packet transparently. A missing retired packet returns an explicit `packetUnavailable` record instead of silently returning an empty input.
 - Terminal affect turns keep only hashes and base references for their preview; active turns still keep the full preview snapshot.
 - The store keeps a bounded hot window of recent successful decision packets. Failed, uncertain, quarantined and active execution evidence is protected from retirement.
+- Decision packets referenced by current AgentTask `originDecisionRef` / `decisionRefs` are protected beyond the hot window, so typed task evidence can still be reconstructed for long-running tasks.
 - Execution-record versions can retire only redundant intermediate `decision_attempt` and `affect_turn` revisions. Memory records such as Event, Note and personal_state are never selected by that pruning path.
 - Debug defaults are reduced to 8 MiB of debug-packet storage and 512 debug events. Both are configurable through environment variables and constructor options.
 - Schema 11 is not opened silently. A reviewed copy must pass `migrateV11: true`; after migration it is schema 12. Old schema-11 code rejects schema 12 with `REJECTED SCHEMA_VERSION`.
@@ -50,7 +51,7 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 ## Verification performed
 
 - Full default regression: 912 passed, 0 failed.
-- Storage Lean focused suite: 11 passed, 0 failed (commit `f840a02`).
+- Storage Lean focused suite: 12 passed, 0 failed (code commit `a0d0a74`).
 - Schema 11 explicit-upgrade protection: covered by the focused suite.
 - Old reader vs schema 12: rejected with `REJECTED SCHEMA_VERSION`.
 - Migrated-copy memory read, object/relation comparison, restart and diagnostic lookup: covered by the frozen acceptance audit.
@@ -67,6 +68,12 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 - Debug packet capture evicts the oldest snapshot when the quota is full rather than stopping permanently; debug events may then reference an evicted snapshot.
 - The migration parser resolves legacy `$recoveryFrom` chains recursively; an unresolved source now aborts and rolls back the migration rather than committing a half-migrated schema 12.
 - Current database has zero current affect bodies using `$recoveryFrom`; historical revisions outside the migration path are not rewritten.
+
+## Revision 5 review fix
+
+- The final independent review found that a long-running AgentTask could lose its origin/step decision packets after the hot window, causing `taskThreads` typed task evidence to disappear silently.
+- The pruning path now resolves `originDecisionRef` and `decisionRefs` from every current `agent_task`, including older revisions, and protects the exact referenced model packets.
+- A focused regression test keeps an origin decision packet readable after later decisions exceed the hot window.
 
 ## Known limitations
 
