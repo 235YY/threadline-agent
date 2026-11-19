@@ -1,6 +1,6 @@
 export const APPLICATION_ID = 0x4a594331;
 // Guard derived graph indexes and query semantics as well as mind and attention contracts.
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS objects (
   id TEXT PRIMARY KEY, type TEXT NOT NULL,
@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS debug_packets (
   packet_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
   at INTEGER NOT NULL, body_bytes INTEGER NOT NULL,
   body TEXT NOT NULL CHECK(json_valid(body))
+) STRICT;
+-- One compressed canonical copy of a model packet. Records refer to it by
+-- packetId; old full-field versions remain readable without this table.
+CREATE TABLE IF NOT EXISTS model_packets (
+  packet_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+  at INTEGER NOT NULL, body_bytes INTEGER NOT NULL,
+  compressed_bytes INTEGER NOT NULL, body BLOB NOT NULL
 ) STRICT;
 PRAGMA user_version = ${SCHEMA_VERSION};
 PRAGMA application_id = ${APPLICATION_ID};

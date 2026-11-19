@@ -1,4 +1,5 @@
 import * as sqlite from 'node:sqlite';
+import {gunzipSync} from 'node:zlib';
 import {APPLICATION_ID,SCHEMA_VERSION} from './schema.mjs';
 import {canonical,digest,ensure,refKey} from './contracts.mjs';
 import {lookupResultId,normalizeLookupQuery} from './local-query.mjs';
@@ -74,12 +75,27 @@ export class DebugArchive {
   }
   close(){this.#db.close();}
   #view(fn){const outer=this.#depth===0;if(outer)this.#db.exec('BEGIN');this.#depth++;try{const result=fn();if(outer)this.#db.exec('COMMIT');return result;}catch(e){if(outer)this.#db.exec('ROLLBACK');throw e;}finally{this.#depth--;}}
+  #hydrate(record){
+    const fields=record.type==='decision'||record.type==='decision_attempt'?['input']:
+      record.type==='affect_turn'?['packet','preview']:
+      record.type==='extension_record'?['packet','context','output']:[];
+    const holder=record.type==='extension_record'?record.value:record;
+    for(const field of fields){
+      const value=holder?.[field];
+      if(!value||typeof value!=='object'||!value.$packetRef)continue;
+      let row;try{row=this.#db.prepare('SELECT body FROM model_packets WHERE packet_id=?').get(value.$packetRef);}catch{row=null;}
+      if(!row)continue;
+      holder[field]=JSON.parse(gunzipSync(Buffer.from(row.body)).toString('utf8'));
+    }
+    return record;
+  }
   #read(id,revision){
     if(typeof id!=='string')return null;
     const row=revision===undefined?this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.id=?').get(id)
       :this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,revision);
     if(!row)return null;
     const record=JSON.parse(row.body);
+    this.#hydrate(record);
     if(record.type==='decision_attempt'&&record.$recoveryFrom){
       for(const [field,rev] of Object.entries(record.$recoveryFrom)){
         const saved=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id,rev);
@@ -121,8 +137,8 @@ export class DebugArchive {
       for(const r of rows){const d=this.#read(r.id);if(d?.type==='decision')return d;}
     }
     const row=this.#db.prepare(`SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
-      WHERE o.type='decision' AND json_extract(v.body,'$.input.packetId')=? ORDER BY v.rowid DESC LIMIT 1`).get(packetId);
-    return row?JSON.parse(row.body):null;
+      WHERE o.type='decision' AND (json_extract(v.body,'$.input.packetId')=? OR json_extract(v.body,'$.input."$packetRef"')=?) ORDER BY v.rowid DESC LIMIT 1`).get(packetId,packetId);
+    return row?this.#hydrate(JSON.parse(row.body)):null;
   }
   inspect({decisionId=null,packetId=null,includeContent=false,nextDecisionId=null}={}){
     ensure(typeof includeContent==='boolean'&&(decisionId===null||typeof decisionId==='string'&&decisionId.trim().length>0)

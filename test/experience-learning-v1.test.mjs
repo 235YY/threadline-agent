@@ -48,10 +48,10 @@ test('formation is optional; receipt persistence does not automatically create a
   assert.equal(note.confidence,'tentative');assert.equal(note.kind,'skill');
 });
 
-test('restart retains the exact note, provenance and schema 11 without migration',t=>{
+test('restart retains the exact note, provenance and schema 12 without migration',t=>{
   const f=fixture(t);f.commit(f.prep(),{lessons:[lesson({id:'r',revision:1})]});const note=f.readNote();f.reopen();
   assert.deepEqual(f.store.read(note.id,1),note);
-  const db=new DatabaseSync(f.path,{readOnly:true});try{assert.equal(db.prepare('PRAGMA user_version').get().user_version,11);}finally{db.close();}
+  const db=new DatabaseSync(f.path,{readOnly:true});try{assert.equal(db.prepare('PRAGMA user_version').get().user_version,12);}finally{db.close();}
 });
 
 test('recent directory is not body delivery: lookup must read pinned note before use or revision',t=>{
