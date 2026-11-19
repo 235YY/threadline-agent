@@ -82,7 +82,7 @@ function migrateBody(row) {
   const record = JSON.parse(row.body);
   const hadRecovery = !!record.$recoveryFrom;
   if (hadRecovery && !resolveRecovery(record, row.id, new Set([`${row.id}@${row.revision}`]))) {
-    return {changed: false, reason: 'recovery-missing'};
+    throw new Error(`MIGRATION_RECOVERY_MISSING ${row.id}@${row.revision}`);
   }
   const holder = record.type === 'extension_record' ? record.value : record;
   if (!holder || typeof holder !== 'object') return {changed: false};

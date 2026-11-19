@@ -74,7 +74,7 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
    sessionFactory,theoryStatus:()=>config.affect.enabled?{enabled:true,available:true,version:'limbic-v1',fusion:config.affect.fusion}:{enabled:false,available:false,version:null},
    capabilities:['remember','open','relate','say','do','wait',...allowed],
    officialSpend,agentTools,hostAllowedTools:effectiveHostTools,lifePolicy:config.openLife?dependencies.lifePolicy:null,allowedActionTools:allowed,adapter,
-   storage:{maxDebugPacketBytes:Number(env.JY_DEBUG_PACKET_BYTES??8*1024*1024),maxDebugEvents:Number(env.JY_DEBUG_EVENTS??512),hotDecisionPackets:Number(env.JY_MODEL_PACKET_HOT??64),maxModelPacketBytes:Number(env.JY_MODEL_PACKET_MAX_BYTES??8*1024*1024)}});
+   storage:{maxDebugPacketBytes:Number(env.JY_DEBUG_PACKET_BYTES??8*1024*1024),maxDebugEvents:Number(env.JY_DEBUG_EVENTS??512),hotDecisionPackets:Number(env.JY_MODEL_PACKET_HOT??64),terminalAffectPackets:Number(env.JY_TERMINAL_AFFECT_PACKETS??64),maxModelPacketBytes:Number(env.JY_MODEL_PACKET_MAX_BYTES??8*1024*1024)}});
   if(affectAdapter)affectAdapter.verifyStoredAffect({store:service.store,subjectId:'jingyang'});
   ensure(runtimeSourceIdentity(config.root).fingerprint===build.fingerprint,'SOURCE_CHANGED_DURING_BOOT','startup inventory changed; no ready instance published');
   const instance=guard.publish({format:'jingyang-brain-instance-v1',status:'ready',mode:config.mode,affect:config.affect.enabled,fusion:config.affect.fusion,

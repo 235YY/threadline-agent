@@ -19,7 +19,7 @@ export function readMindTrace({store,subjectId,decision}){
       delivered:{currentEvent:d.currentEvent,workspace:d.workspace,mind:unavailable?null:d.input.payload.continuity.mind??null,
         states:cards.map(c=>({ref:c.ref,historical:c.historical})),materials:unavailable?[]:(d.input.payload.materials??[]).map(m=>m.ref),
         grantedTools:unavailable?[]:d.input.payload.allowedActionTools},
-      proposed:unavailable?[]:d.output.continuity.changes,
+      proposed:d.output?.continuity?.changes??[],
       accepted:states.map(s=>({ref:ref(s),kind:s.kind,body:s.body,scope:s.scope,nature:s.nature,reason:s.reason,basis:s.basis,
         predecessor:s.predecessor,...(s.mind?{mind:s.mind}:{})})),
       keptDelivered:cards.filter(c=>!states.some(s=>s.id===c.ref.id)).map(c=>c.ref),

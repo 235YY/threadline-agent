@@ -106,6 +106,21 @@ test('terminal affect turns do not retain a duplicate preview snapshot',async t=
   assert.ok(kept.packet.messages);
 });
 
+test('terminal affect packets are retained only inside the bounded window',async t=>{
+  const store=new ContinuityStore(':memory:',{hotDecisionPackets:0,terminalAffectPackets:0});t.after(()=>store.close());
+  setup(store);
+  const session=new AffectSession({store,subjectId:'s',fusion:true,clock:()=>T});
+  event(store);
+  const packet=await session.prepare({currentEvent:{id:'e',revision:1},workspace:{id:'w',revision:1},now:T,budgetBytes:131072,mind:true,unified:true,attention:true,localLookupPolicy:{maxReads:2,maxHits:4},allowedActionTools:[]});
+  const raw=await session.invoke(packet,()=>proposal(packet));
+  await session.commit({packet,output:raw,requestId:'a-bound',decisionId:'a-bound'});
+  const turn=[...store.all('affect_turn')].at(-1);
+  assert.equal(store.debugHealth().terminalAffectPackets,0);
+  for(let i=0;i<32;i++)event(store,'bound-e'+i,'后续输入'+i);
+  const retired=store.read(turn.id);
+  assert.equal(retired.packet.packetUnavailable,true);
+});
+
 test('debug defaults are bounded and configurable',t=>{
   const store=new ContinuityStore(':memory:');t.after(()=>store.close());
   assert.equal(store.debugHealth().maxPacketBytes,8*1024*1024);

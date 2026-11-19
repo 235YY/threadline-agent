@@ -27,6 +27,7 @@ const REPLAY_REF='$version';
 const DEFAULT_DEBUG_EVENTS_LIMIT=512;
 const DEFAULT_DEBUG_PACKET_BYTES=8*1024*1024;
 const DEFAULT_HOT_DECISION_PACKETS=64;
+const DEFAULT_TERMINAL_AFFECT_PACKETS=64;
 const MODEL_PACKET_FIELDS=Object.freeze({
   decision:['input'], review:['input'], decision_attempt:['input'], affect_turn:['packet']
 });
@@ -34,16 +35,18 @@ const PACKET_REF='$packetRef', PACKET_META='$packetMeta';
 
 // Local persistence and consistency only. This class neither calls a model nor executes actions.
 export class ContinuityStore {
-  #db; #clock; #readDepth = 0; #closed = false; #transactionWrites=null; #debugFailures=0; #debugFailureCode=null; #maxDebugPacketBytes; #maxDebugEvents; #hotDecisionPackets; #maxModelPacketBytes; #packetWrites=0;
-  constructor(path = ':memory:', {clock = Date.now, migrateV1 = false, migrateV2 = false, migrateV3 = false, migrateV4 = false, migrateV5 = false, migrateV6 = false, migrateV7 = false,migrateV8 = false,migrateV9 = false,migrateV10 = false,migrateV11 = false,maxDebugPacketBytes=DEFAULT_DEBUG_PACKET_BYTES,maxDebugEvents=DEFAULT_DEBUG_EVENTS_LIMIT,hotDecisionPackets=DEFAULT_HOT_DECISION_PACKETS,maxModelPacketBytes=DEFAULT_DEBUG_PACKET_BYTES} = {}) {
+  #db; #clock; #readDepth = 0; #closed = false; #transactionWrites=null; #debugFailures=0; #debugFailureCode=null; #maxDebugPacketBytes; #maxDebugEvents; #hotDecisionPackets; #terminalAffectPackets; #maxModelPacketBytes; #packetWrites=0;
+  constructor(path = ':memory:', {clock = Date.now, migrateV1 = false, migrateV2 = false, migrateV3 = false, migrateV4 = false, migrateV5 = false, migrateV6 = false, migrateV7 = false,migrateV8 = false,migrateV9 = false,migrateV10 = false,migrateV11 = false,maxDebugPacketBytes=DEFAULT_DEBUG_PACKET_BYTES,maxDebugEvents=DEFAULT_DEBUG_EVENTS_LIMIT,hotDecisionPackets=DEFAULT_HOT_DECISION_PACKETS,terminalAffectPackets=DEFAULT_TERMINAL_AFFECT_PACKETS,maxModelPacketBytes=DEFAULT_DEBUG_PACKET_BYTES} = {}) {
     this.#clock = clock;
     ensure(Number.isSafeInteger(maxDebugPacketBytes)&&maxDebugPacketBytes>=0&&maxDebugPacketBytes<=1024*1024*1024,'DEBUG_LIMIT','bounded debug snapshot quota required');
     ensure(Number.isSafeInteger(maxDebugEvents)&&maxDebugEvents>=0&&maxDebugEvents<=1000000,'DEBUG_LIMIT','bounded debug event retention required');
     ensure(Number.isSafeInteger(hotDecisionPackets)&&hotDecisionPackets>=0&&hotDecisionPackets<=100000,'MODEL_PACKET_LIMIT','bounded hot packet window required');
     ensure(Number.isSafeInteger(maxModelPacketBytes)&&maxModelPacketBytes>=1024&&maxModelPacketBytes<=1024*1024*1024,'MODEL_PACKET_LIMIT','bounded model packet size required');
+    ensure(Number.isSafeInteger(terminalAffectPackets)&&terminalAffectPackets>=0&&terminalAffectPackets<=100000,'MODEL_PACKET_LIMIT','bounded terminal affect packet window required');
     this.#maxDebugPacketBytes=maxDebugPacketBytes;
     this.#maxDebugEvents=maxDebugEvents;
     this.#hotDecisionPackets=hotDecisionPackets;
+    this.#terminalAffectPackets=terminalAffectPackets;
     this.#maxModelPacketBytes=maxModelPacketBytes;
     this.#db = new Database(path, {timeout: 3000});
     try {
@@ -82,7 +85,7 @@ export class ContinuityStore {
   debugHealth(){
     const packets=this.#db.prepare('SELECT count(*) AS n,coalesce(sum(body_bytes),0) AS bytes,coalesce(sum(compressed_bytes),0) AS compressed FROM model_packets').get();
     return {failedWrites:this.#debugFailures,lastErrorCode:this.#debugFailureCode,maxPacketBytes:this.#maxDebugPacketBytes,
-      maxEvents:this.#maxDebugEvents,hotDecisionPackets:this.#hotDecisionPackets,
+      maxEvents:this.#maxDebugEvents,hotDecisionPackets:this.#hotDecisionPackets,terminalAffectPackets:this.#terminalAffectPackets,
       modelPackets:packets.n,modelPacketBytes:packets.bytes,modelPacketCompressedBytes:packets.compressed};
   }
   #logDebug(value){
@@ -289,6 +292,11 @@ export class ContinuityStore {
       WHERE o.type IN ('decision','review','decision_attempt','affect_turn') AND v.body LIKE '%"$packetRef"%'`).all();
     const recent=new Set(this.#db.prepare(`SELECT json_extract(v.body,'$.input."$packetRef"') AS packetId FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
       WHERE o.type='decision' ORDER BY o.rowid DESC LIMIT ?`).all(this.#hotDecisionPackets).map(r=>r.packetId).filter(Boolean));
+    const terminalAffect=new Set();
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='affect_turn' AND json_extract(v.body,'$.status') IN ('committed','superseded') ORDER BY o.rowid DESC LIMIT ?`).all(this.#terminalAffectPackets)){
+      try{const packetId=JSON.parse(row.body).packet?.[PACKET_REF];if(packetId)terminalAffect.add(packetId);}catch{}
+    }
     for(const row of rows){
       const record=JSON.parse(row.body),holder=record.type==='extension_record'?record.value:record;
       const packetIds=[];
@@ -296,7 +304,8 @@ export class ContinuityStore {
       if(!packetIds.length)continue;
       let protect=packetIds.some(id=>recent.has(id));
       if(!protect&&record.type==='decision_attempt'&&['captured','quarantined','deferred'].includes(record.status))protect=true;
-      if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain','committed','superseded'].includes(record.status))protect=true;
+      if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain'].includes(record.status))protect=true;
+      if(!protect&&record.type==='affect_turn'&&['committed','superseded'].includes(record.status))protect=packetIds.some(id=>terminalAffect.has(id));
       if(!protect&&record.type==='review'&&['proposed','deferred','needs-information'].includes(record.status))protect=true;
       if(protect)for(const id of packetIds)keep.add(id);
     }

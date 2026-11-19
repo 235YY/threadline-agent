@@ -86,7 +86,9 @@ export class DebugArchive {
       let row;try{row=this.#db.prepare('SELECT body FROM model_packets WHERE packet_id=?').get(value.$packetRef);}catch{row=null;}
       if(!row){
         const meta=value.$packetMeta??{};
-        holder[field]={...meta,packetId:value.$packetRef,packetUnavailable:true,payload:{}};
+        holder[field]={...meta,packetId:value.$packetRef,packetUnavailable:true,
+          payload:{...(meta.current?{current:meta.current}:{}),...(meta.workspace?{workspace:meta.workspace}:{}),
+            ...(meta.subject?{continuity:{subject:meta.subject}}:{})}};
         record.$packetUnavailable=true;
         continue;
       }

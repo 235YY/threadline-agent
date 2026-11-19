@@ -59,15 +59,17 @@ The migration script refuses schemas other than 11 or 12. It creates the additiv
 
 ## Revision 4 review fixes
 
-- Retired review stubs are rejected by `#packetize` and `#adoptReview`; review and terminal affect packets are protected from pruning.
-- `readReaction` / `readMindTrace` degrade explicitly when a retired decision input is unavailable, instead of throwing `TypeError`.
-- `DebugArchive` distinguishes `INPUT_SNAPSHOT_UNAVAILABLE` from `INPUT_INTEGRITY_MISMATCH`, and resolves extension `$recoveryFrom`.
-- Debug packet capture evicts the oldest snapshot when the quota is full rather than stopping permanently.
-- The migration parser resolves legacy `$recoveryFrom` chains recursively; a missing source is reported as `recovery-missing` and left untouched.
+- Retired review stubs are rejected by `#packetize` and `#adoptReview`; pending review packets are protected from pruning.
+- Terminal `committed`/`superseded` affect packets are retained for a bounded window (`JY_TERMINAL_AFFECT_PACKETS`, default 64); older terminal packets may be unavailable, while failed/uncertain/active turns are always protected.
+- `readReaction` / `readMindTrace` degrade explicitly when a retired decision input is unavailable, instead of throwing `TypeError`; stored `proposed` changes remain reported when the output survives.
+- `DebugArchive` distinguishes `INPUT_SNAPSHOT_UNAVAILABLE` from `INPUT_INTEGRITY_MISMATCH`, preserves packet metadata in unavailable stubs, and resolves extension `$recoveryFrom`.
+- Debug packet capture evicts the oldest snapshot when the quota is full rather than stopping permanently; debug events may then reference an evicted snapshot.
+- The migration parser resolves legacy `$recoveryFrom` chains recursively; an unresolved source now aborts and rolls back the migration rather than committing a half-migrated schema 12.
 - Current database has zero current affect bodies using `$recoveryFrom`; historical revisions outside the migration path are not rewritten.
 
 ## Known limitations
 
 - The object store has no unified provider cost or request-id ledger. Only a subset of affect records contain `resolution.actualMicros`; total provider fees cannot be reconstructed from this database.
-- Successful decisions outside the hot window lose their old prompt body; Event, Note and personal_state memory remain readable.
+- Successful decisions outside the hot window lose their old prompt body; Event, Note and personal_state memory remain readable. Terminal affect prompts use the separate bounded terminal window above.
 - Historical revision gaps created before this migration are preserved as they were and are not repaired by this change.
+- Migration must finish with `skipped: 0`; a missing recovery source is now a hard error and leaves the database at schema 11.
