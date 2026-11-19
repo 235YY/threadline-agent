@@ -108,6 +108,15 @@ test('task references retain their decision packets beyond the hot window',t=>{
   assert.equal(origin.input.packetUnavailable,undefined);
   assert.ok(origin.input.messages);
   assert.equal(store.read('task:long').originDecisionRef.id,'d0');
+  store.execute({requestId:'task-done',commands:[{op:'put_agent_task',expectedRevision:1,task:{
+    format:'agent-task-v1',id:'task:long',goal:'long task',status:'done',stepCount:0,callCount:0,
+    observations:[],interrupts:[],originDecisionRef:{id:'d0',revision:1}}}]});
+  for(let i=11;i<=20;i++){
+    event(store,'task-e'+i,'later'+i);
+    const p=prepare(session,'task-e'+i,T+i);
+    session.commit({packet:p,output:proposal(p),requestId:'d'+i,decisionId:'d'+i});
+  }
+  assert.equal(store.read('d0').input.packetUnavailable,true);
 });
 
 test('terminal affect turns do not retain a duplicate preview snapshot',async t=>{

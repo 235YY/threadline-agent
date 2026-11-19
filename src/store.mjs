@@ -295,6 +295,14 @@ export class ContinuityStore {
     // A live task keeps its origin/step decisions addressable even after the
     // generic prompt window moves on. Protect the exact packet versions those
     // task references point at, not just the latest decision body.
+    // A task keeps its evidence only while it is live, or while its process
+    // is still in the working frame. Once the task is terminal and its process
+    // has completed, old task packets must be allowed to retire.
+    const activeProcesses=new Set();
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='attention_frame'`).all()){
+      try{for(const process of JSON.parse(row.body).processes??[])if(!['completed','abandoned'].includes(process.status))activeProcesses.add(process.id);}catch{}
+    }
     const taskPackets=new Set(),taskRefs=new Map();
     const addTaskRef=ref=>{
       if(typeof ref==='string'&&ref)taskRefs.set(ref,null);
@@ -303,7 +311,9 @@ export class ContinuityStore {
     };
     for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
       WHERE o.type='agent_task'`).all()){
-      try{const task=JSON.parse(row.body);addTaskRef(task.originDecisionRef);for(const ref of task.decisionRefs??[])addTaskRef(ref);}catch{}
+      try{const task=JSON.parse(row.body);
+        if(['done','blocked','failed','cancelled'].includes(task.status)&&!activeProcesses.has(task.processId))continue;
+        addTaskRef(task.originDecisionRef);for(const ref of task.decisionRefs??[])addTaskRef(ref);}catch{}
     }
     for(const [id,revision] of taskRefs){
       const rows=revision===null
