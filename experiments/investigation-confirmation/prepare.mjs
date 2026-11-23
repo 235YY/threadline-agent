@@ -1,0 +1,15 @@
+import fs from 'node:fs';import {join} from 'node:path';import {createHash} from 'node:crypto';
+const base='_local/acceptance/investigation-confirmation-20261113',e=JSON.parse(fs.readFileSync(join(base,'ENTERED.json'))),root=e.root,sha=b=>createHash('sha256').update(b).digest('hex'),write=(name,x)=>fs.writeFileSync(join(root,name),JSON.stringify(x,null,2)+'\n',{flag:'wx'});
+if(process.argv[2]==='freeze'){
+ const draft=JSON.parse(fs.readFileSync(join(root,'CANDIDATE-DRAFT.json'))),reg=fs.readFileSync(join(root,'REGRESSION.txt'),'utf8'),off=JSON.parse(fs.readFileSync(join(root,'offline-REPORT.json')));
+ if(!reg.includes('pass 641')||!reg.includes('fail 0')||off.errors.length)throw Error('free gates not passed');
+ for(const f of draft.files)if(sha(fs.readFileSync(join(draft.copy,f.file)))!==f.sha256)throw Error('draft changed '+f.file);
+ write('FREEZE.json',{...draft,at:new Date().toISOString(),regression:{tests:641,pass:641,fail:0,newTests:12,originalTests:629},configuration:{investigationContinuityV1:true,memoryScopeV1:false,apperceptionV1:true,affect:false,model:'deepseek-flash',reasoning:'low',maxTokens:6000,budgetBytes:131072},limits:{maxCalls:24,maxNewMicros:750000,parentMaxMicros:20000000},ledgerPath:join(process.cwd(),'_local/acceptance/rc-stability-20261113/paid/budget.json'),ledgerBeforeSha256:sha(fs.readFileSync(join(root,'LEDGER-BEFORE.json'))),credentialModule:join(process.cwd(),'src/model-credential.mjs'),credentialSha256:sha(fs.readFileSync('src/model-credential.mjs')),planSha256:sha(fs.readFileSync('experiments/investigation-confirmation/PLAN.md'))});
+ console.log('Frozen after 641/641 and offline host gates');
+}else{
+ const previous=JSON.parse(fs.readFileSync('_local/acceptance/investigation-adversarial-20261113/continuity-live-070928f0-5cfa-4d47-81e1-7f114c161bc0/FREEZE.json'));
+ const files=new Set(previous.source.map(f=>f.file));for(const f of ['src/proposal-normalization.mjs','scripts/current-test-files.json','test/investigation-confirmation.test.mjs','experiments/investigation-confirmation/executor.mjs','experiments/investigation-confirmation/limits.mjs','experiments/investigation-confirmation/prepare.mjs','experiments/investigation-confirmation/run.mjs','experiments/investigation-confirmation/PLAN.md'])files.add(f);
+ const failed='_local/acceptance/investigation-adversarial-20261113/continuity-live-070928f0-5cfa-4d47-81e1-7f114c161bc0';for(const f of ['live-request-003.json','live-response-003.json','live-ABC/subject.sqlite'])files.add(join(failed,f).replaceAll('\\','/'));
+ const copy=join(root,'candidate');fs.mkdirSync(copy);const rows=[...files].sort().map(file=>{const b=fs.readFileSync(file),dest=join(copy,file);fs.mkdirSync(join(dest,'..'),{recursive:true});fs.writeFileSync(dest,b,{flag:'wx'});return {file,sha256:sha(b)};});
+ write('CANDIDATE-DRAFT.json',{copy,files:rows,at:new Date().toISOString(),node:process.version,meaning:'draft for offline gates; final freeze only after full regression'});console.log(JSON.stringify({copy,files:rows.length}));
+}

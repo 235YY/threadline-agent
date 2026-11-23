@@ -1,0 +1,13 @@
+import {readFileSync} from 'node:fs';import {ContinuityStore} from '../../src/store.mjs';import {ContinuitySession} from '../../src/continuity-session.mjs';import {LocalLookupSession} from '../../src/local-lookup.mjs';import {keepAttention} from '../../src/attention.mjs';
+export const delta=readFileSync(new URL('../../prompts/memory-scope-v1.zh.md',import.meta.url),'utf8');
+export const ref=x=>({id:x.id,revision:x.revision});
+export const output=(p,kind,payload,changes=[])=>({packetId:p.packetId,options:[{id:'next',kind,payload}],selected:'next',summary:'根据实际取得的材料判断',used:[],continuity:{changes,residency:{add:[],remove:[]},expressionChoice:null,observationDisposition:'handled',attention:keepAttention()}});
+export function makeCase(name,{path=':memory:',optimized=false}={}){
+ const store=new ContinuityStore(path,{clock:()=>1800000000000}),session=new ContinuitySession({store,subjectId:'synthetic',attention:true});const policy={maxReads:name==='C'?1:4,maxHits:4};
+ const notes=name==='F'?[['lin-a','林岚A蓝组代号K11'],['lin-b','林岚B绿组代号G42']]:name==='E'?[['inventory','明确限定：这是南库第1版完整清单，仅有红箱和绿箱，不含蓝箱。本清单不涵盖北库或其他版本。']]:name==='B'?[]:[['tuesday','合成展会周二场次入口在南门；周一入口北门不能替代周二。']];
+ store.execute({requestId:'seed',commands:[{op:'set_workspace',id:'w',expectedRevision:0,scene:'synthetic',focus:{id:'now',label:'合成安排'}},{op:'append_event',id:'q',body:name==='F'?'林岚的代号是什么？未说明是哪位。':name==='E'?'仅就南库第1版清单，有蓝箱吗？不要推广到别处。':'周二合成展会从哪个门进？请依据实际材料判断，可查阅、保留未决或更新认识，不混用周一。',scene:'synthetic',actor:'observer',origin:'reported',occurredAt:1800000000000,source:{system:'fixture',key:'q'}},...notes.map(([id,body])=>({op:'write_note',id:'note:'+id,expectedRevision:0,body,kind:'fact_claim',change:'self_report',evidence:[]}))]});
+ const args={currentEvent:{id:'q',revision:1},workspace:{id:'w',revision:1},identity:'你是澄河，虚构数字主体。材料全部合成。',now:1800000000000,mind:true,unified:true,apperceptionV1:true,localLookupPolicy:policy,budgetBytes:131072};let seq=0;const lookup=query=>{const p=session.prepare(args),id='seed-lookup-'+(++seq);const d=session.commit({packet:p,decisionId:id,requestId:id,output:output(p,'lookup',query)});return new LocalLookupSession({store,subjectId:'synthetic',policy}).execute({decision:ref(d)});};let result=null;
+ if(name==='B')result=lookup({terms:['周二']});if(name==='C'){lookup({terms:['无匹配词项']});result=lookup({terms:['周二']});}
+ const materials=['D','E','F'].includes(name)?notes.map(([id])=>({ref:{id:'note:'+id,revision:1},aspect:'belief'})):[];
+ const packet=session.prepare({...args,materials,...(result?{lookupResults:[ref(result)]}:{}),...(optimized?{instructionSuffix:delta}:{})});return {store,session,packet,result,policy};
+}

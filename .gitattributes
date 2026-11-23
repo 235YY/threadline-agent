@@ -1,0 +1,3 @@
+# Keep checkouts byte-identical on every OS (no autocrlf rewriting), so file hashes and
+# the runtime build identity match across Windows and Linux.
+* -text

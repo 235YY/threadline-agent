@@ -1,0 +1,17 @@
+import {existsSync,readFileSync,mkdirSync,openSync,closeSync,unlinkSync,writeFileSync} from 'node:fs';import {dirname} from 'node:path';
+import {writeLedgerAtomically} from '../../src/ledger-io.mjs';import {validateBudgetRows} from '../../src/budget-integrity.mjs';import {ensure,canonical} from '../../src/contracts.mjs';
+// Separate, fixed twenty-yuan research authorization; no daily reset or call cap.
+export class PhaseLedger{
+ constructor(path){this.path=path;mkdirSync(dirname(path),{recursive:true});const auth=JSON.parse(readFileSync(dirname(path)+'/AUTHORIZATION.json'));ensure(auth.scope==='rc-stability-20261113'&&auth.maxMicros===20000000&&auth.maxCalls===null,'BUDGET_POLICY','explicit research authorization required');
+ this.fd=openSync(path+'.lock','wx');try{this.data=existsSync(path)?JSON.parse(readFileSync(path)): {format:'jingyang-daily-brain-budget-v1',phaseId:auth.scope,authorization:auth,dailyMicros:20000000,dailyCalls:null,requests:[],halted:null};ensure(canonical(this.data.authorization)===canonical(auth),'BUDGET_POLICY','authorization changed');validateBudgetRows(this.data.requests);if(this.data.requests.some(r=>!['settled','released'].includes(r.status)))this.data.halted='recovered unknown reservation';this.save();}catch(e){this.close();throw e;}}
+ save(){ensure(this.fd!==undefined&&!this.poisoned,'LEDGER_UNAVAILABLE','closed or failed ledger cannot write');try{writeLedgerAtomically(this.path,this.data);}catch(e){this.poisoned=true;throw e;}}
+ row(id){const r=this.data.requests.find(r=>r.id===id);ensure(r,'REQUEST_STATE','request missing');return r;}
+ find(id){return this.row(id);}
+ reserve(id,fingerprint,reserveMicros){ensure(this.fd!==undefined&&!this.poisoned&&!this.data.halted,'BUDGET_HALTED','closed ledger or unknown charges stop research');ensure(!this.data.requests.some(r=>r.id===id),'ALREADY_REQUESTED','no automatic resend');ensure(Number.isSafeInteger(reserveMicros)&&reserveMicros>0,'RESERVE_AMOUNT','invalid reservation');ensure(validateBudgetRows(this.data.requests).held+reserveMicros<=20000000,'SPEND_LIMIT','twenty-yuan cap reached');this.data.requests.push({id,fingerprint,reserveMicros,status:'reserved'});this.save();}
+ dispatch(id){const r=this.row(id);ensure(r.status==='reserved','REQUEST_STATE','expected reservation');r.status='dispatched';this.save();}
+ release(id){const r=this.row(id);ensure(r.status==='reserved','REQUEST_STATE','only proven unsent reservation may release');r.status='released';this.save();}
+ settle(id,usage){const r=this.row(id);ensure(r.status==='dispatched'&&Number.isSafeInteger(usage.upperMicros)&&usage.upperMicros>=0,'REQUEST_STATE','invalid settlement');r.status='settled';r.actualMicros=usage.upperMicros;r.usage=usage;if(r.actualMicros>r.reserveMicros)this.data.halted='reservation overrun';this.save();ensure(!this.data.halted,'RESERVATION_OVERRUN','retained actual amount; stop');}
+ uncertain(id,code){const r=this.row(id);ensure(r.status==='dispatched','REQUEST_STATE','only dispatched request may be uncertain');r.status='uncertain';r.error=code;this.data.halted='unknown provider charge';this.save();}
+ capture(id,response){const r=this.row(id);ensure(r.status==='settled','REQUEST_STATE','settled response required');r.providerResult={complete:response.complete,finishReason:response.finishReason,output:response.output};r.output=response.output;this.save();}
+ close(){if(this.fd!==undefined){closeSync(this.fd);this.fd=undefined;unlinkSync(this.path+'.lock');}}
+}
