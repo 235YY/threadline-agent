@@ -144,7 +144,7 @@ test('unknown delivery is retained and cannot be corrected or re-sent by the ope
 test('action closure cannot declare success and replay writes no second receipt', async t => {
   const f = fixture(t), s = await f.start();
   f.state.plan = act('probe');
-  await s.reply({scene: 'qq/private/3', key: 'private:3', message_id: 'm3', messages: [{role: 'user', content: '合成任务'}]});
+  await s.reply({scene: 'qq/private/3', key: 'private:3', message_id: 'm3', execute: false, messages: [{role: 'user', content: '合成任务'}]});
   const pending = s.pendingEffects().actions.find(a => a.tool === 'probe');
   assert.ok(pending, 'fixture must leave a proposed action');
   const id = pending.action.id;

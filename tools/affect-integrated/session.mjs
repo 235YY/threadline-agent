@@ -208,11 +208,11 @@ export class AffectSession {
   if(this.degraded)return this.core.prepareReflection(args);
   return this.#prepare(args,true).catch(error=>{if(this.degraded)return this.core.prepareReflection(args);throw error;});
  }
- // Autonomy opportunities have no current world observation to appraise, and no
- // affect-specific packet exists for them; delegate to the core autonomy opportunity
- // rather than inventing affect state (or crashing when a session factory is wired).
+ // Autonomy may see the last stored snapshot. There is no encounter appraisal or
+ // worker transition to invoke or adopt when the subject chooses what to do here.
  prepareAutonomy(args){
-  return this.core.prepareAutonomy(args);
+  const motivationProjection=this.degraded?null:motivationInput({store:this.store,subjectId:this.subjectId});
+  return this.core.prepareAutonomy({...args,motivationProjection});
  }
  async supersede(packet,error){
   if(this.degraded)return;
@@ -221,6 +221,7 @@ export class AffectSession {
  }
  capturedOutput(packet){if(this.degraded)return null;const t=this.store.read(affectTurnId(packet));return t?.status==='captured'&&canonical(t.packet)===canonical(packet)?t.rawOutput:null;}
  async invoke(packet,fn){
+  if(packet.payload.internal?.kind==='autonomy')return this.core.invoke(packet,fn);
   if(this.degraded)return fn(packet);
   let turn=this.store.read(affectTurnId(packet));ensure(turn&&turn.subject===this.subjectId,'AFFECT_TURN','prepared input required');
   ensure(canonical(packet)===canonical(turn.packet),'AFFECT_PACKET_CHANGED','use the exact stored input');
@@ -310,6 +311,7 @@ export class AffectSession {
   return this.core.commitCaptured({...args,output:this.#stripAffectOutput(output)});
  }
  async commit(args){
+  if(args.packet.payload.internal?.kind==='autonomy')return this.core.commit(args);
   if(this.degraded)return this.#fallbackCommit(args);
   try{return await this.#commitAffect(args);}
   catch(error){if(this.degraded)return this.#fallbackCommit(args);throw error;}

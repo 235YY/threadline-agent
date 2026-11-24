@@ -1,15 +1,365 @@
 <!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Threadline · 本地工作台</title><link rel="stylesheet" href="./style.css"><script src="./app.js" defer></script>
-<body><aside><a class="brand" href="#chat">◎ <span>Threadline<small>本地工作台</small></span></a>
-<nav aria-label="功能"><button data-tab="chat" class="on">对话</button><button data-tab="model">模型与额度</button><button data-tab="identity">人设与语言包</button><button data-tab="memory">记忆库</button><button data-tab="affect">Limbic</button><button data-tab="qq">QQ 连接</button></nav>
-<div class="local">● 本机运行<br><small>配置和记忆保存在本机</small></div></aside>
-<main><header><div><span class="eyebrow">PERSONAL AGENT STUDIO</span><h1 id="heading">对话</h1></div><span id="mode" class="badge">加载中</span></header>
-<p id="notice" role="status" aria-live="polite"></p>
-<section id="chat" class="card"><div class="section-title"><h2>与自己的主体聊聊</h2><span class="tag">当前窗口记录</span></div><div id="messages" aria-live="polite" class="messages"><div class="hint">离线也可以体验保存消息。想收到 AI 回复，请先配置模型。</div></div><form id="chatForm" class="composer"><textarea id="message" maxlength="1000" required rows="2" placeholder="写一条消息…" aria-label="对话输入"></textarea><button class="primary">发送</button></form></section>
-<section id="model" class="card" hidden><h2>连接 DeepSeek</h2><p>API 密钥只在当前进程使用。关闭应用后需重新输入。</p><label>DeepSeek API Key <input id="key" autocomplete="off" type="password" placeholder="sk-…"></label><label>每日用量估算上限（元）<input type="number" step="0.1" min="0.1" max="20" id="daily" value="5"></label><label class="check"><input id="live" type="checkbox"> 启用真实模型调用，发送消息可能产生费用</label><p class="muted">额度按本工作台使用量估算，不等同于服务商账单，不涵盖其他应用的调用。<span id="spend"></span></p><div class="actions"><button id="checkKey">检查凭据</button><button data-save class="primary">保存并应用</button></div></section>
-<section id="identity" class="card" hidden><h2>设定一个属于你的主体</h2><p>用人设卡说明身份、偏好和边界；语言包单独管表达风格。</p><label>人设卡（最多 4,000 字符） <textarea id="persona" maxlength="4000" rows="7"></textarea></label><label class="upload">从 TXT / Markdown 读取人设卡 <input data-file="persona" type="file" accept=".txt,.md,text/plain,text/markdown"></label><label>语言包（最多 16,000 字符） <textarea id="style" maxlength="16000" rows="7" placeholder="例如：简短自然，解释复杂问题时先给例子。"></textarea></label><label class="upload">从 TXT / Markdown 读取语言包 <input data-file="style" type="file" accept=".txt,.md,text/plain,text/markdown"></label><div class="actions"><button data-save class="primary">保存并应用</button></div></section>
-<section id="memory" class="card" hidden><h2>导入自己的记忆</h2><p>支持纯文本（空行分隔笔记）或 Threadline 笔记 JSON。每次最多 128 条，重复笔记会跳过；不会覆盖数据库。</p><label>选择笔记文件 <input id="memoryFile" type="file" accept=".txt,.md,.json"></label><label>或者直接粘贴文字 <textarea id="memoryText" rows="8" placeholder="每段是一条独立笔记。"></textarea></label><div class="actions"><button id="export">导出笔记 JSON</button><button id="import" class="primary">导入笔记</button></div><p class="muted">不导入旧数据库、对话账本或情绪快照。请确认有权将导入内容交给所选模型。</p></section>
-<section id="affect" class="card" hidden><h2>Limbic 情绪引擎</h2><p id="affectStatus"></p><div class="checks"><label class="check"><input id="affectEnabled" type="checkbox"> 启用 Limbic</label><label class="check"><input id="fusion" type="checkbox"> 与统觉联动</label></div><div class="grid"><label>Python 3.13 可执行文件<input id="python" placeholder="python 或可执行文件完整路径"></label><label>时区偏移（分钟）<input id="timezone" type="number" min="-720" max="840" value="480"></label></div><details open><summary>情绪参数（留空使用引擎默认值）</summary><div id="parameters" class="grid params"></div></details><p class="muted">参数在首次生成情绪状态前设置。已有状态使用原参数，不会静默迁移或重置。</p><div class="actions"><button data-save class="primary">保存并应用</button></div></section>
-<section id="qq" class="card" hidden><h2>连接自己的 QQ</h2><p>先安装并登录 SnowLuma / OneBot，再填本机 SDK 路径和账号。设置完成后，可以从这里一键启动或断开连接器。</p><p id="qqStatus" class="tag"></p><div class="grid"><label>Bot 账号<input id="bot" inputmode="numeric" autocomplete="off"></label><label>允许私聊的账号<input id="owner" inputmode="numeric" autocomplete="off"></label></div><label>SnowLuma 数据目录<input id="home" placeholder="含 config 目录的完整路径"></label><label>SnowLuma SDK JS 入口<input id="sdk" placeholder="已安装 SDK 的完整路径"></label><p class="muted">只处理指定账号的私聊与回复；群聊和主动外发关闭。请只填写你信任的本地 SDK，不会安装或自动登录。</p><div class="actions"><button id="disconnect">断开</button><button id="connect" class="primary">保存并连接 QQ</button></div></section>
-<footer>Threadline Agent · Local first</footer></main></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threadline · 玻璃箱工作台</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#chat">
+      <span class="brand-orb" aria-hidden="true">◎</span>
+      <span>Threadline<small>玻璃箱赛博生命工作台</small></span>
+    </a>
+
+    <nav aria-label="功能">
+      <button data-tab="chat" class="on" aria-current="page">陪伴与玻璃箱</button>
+      <button data-tab="memory">记忆结构</button>
+      <button data-tab="affect">情绪与 DIY 参数</button>
+      <button data-tab="identity">人设与语言包</button>
+      <button data-tab="model">模型与额度</button>
+      <button data-tab="qq">QQ 连接</button>
+    </nav>
+
+    <div class="sidebar-vitals" id="sidebarVitals">
+      <div class="vital-row"><span>主体状态</span><strong id="vitalMode">离线</strong></div>
+      <div class="vital-row"><span>前台桌面</span><strong id="vitalAttention">0 / 16</strong></div>
+      <div class="vital-row"><span>心智认识</span><strong id="vitalStates">0 条</strong></div>
+      <div class="vital-row"><span>记忆档案</span><strong id="vitalNotes">0 条</strong></div>
+    </div>
+
+    <div class="local">
+      ● 本机运行<br>
+      <small>配置、事件流与记忆全部留在你的硬盘</small>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <span class="eyebrow">GLASS-BOX CYBER COMPANION</span>
+        <h1 id="heading">陪伴与玻璃箱</h1>
+      </div>
+      <div class="topbar-right">
+        <button id="nightlightBtn" class="ghost" aria-pressed="false" title="缩成桌角小夜灯极简陪伴卡片">桌角小夜灯</button>
+        <button id="journalBtn" class="ghost" title="立刻入梦整理：运行双轨道慢脑整理记忆、更新记忆地图、埋下好奇种子并写手账">立刻做一次梦</button>
+        <button id="autonomyBtn" class="ghost" title="推进一个进行中的长链任务，或给它一次自由决定想做什么的机会">自主活动一步</button>
+        <button id="reflectBtn" class="ghost" title="让它在没有新消息时自己静静整理记忆或反思">让它想一会儿</button>
+        <button id="toggleXray" class="ghost" aria-pressed="true">透视玻璃箱：开</button>
+        <span id="mode" class="badge">加载中</span>
+      </div>
+    </header>
+
+    <p id="notice" role="status" aria-live="polite"></p>
+
+    <!-- 1. 陪伴与玻璃箱 -->
+    <section id="chat" class="chat-shell">
+      <div class="card chat-panel">
+        <div class="section-title">
+          <div class="lamp-header">
+            <span id="lampDot" class="lamp-dot" aria-hidden="true"></span>
+            <div>
+              <h2>与自己的主体聊聊</h2>
+              <p class="sub" id="moodCapsule">当前心境：等待观察中</p>
+            </div>
+          </div>
+          <span class="tag" id="chatStage">待机</span>
+        </div>
+
+        <div id="messages" aria-live="polite" class="messages">
+          <div class="hint">离线模式下也可以体验保存事件流与整理记忆。想收到 AI 回复并观察实时决策，请先在「模型与额度」启用模型。</div>
+        </div>
+
+        <form id="chatForm" class="composer">
+          <textarea id="message" maxlength="1000" required rows="2" placeholder="写一条消息…（Enter 发送，Shift+Enter 换行）" aria-label="对话输入"></textarea>
+          <button class="primary" type="submit">发送</button>
+        </form>
+        <details id="turnDetails" hidden>
+          <summary>这轮发生了什么</summary>
+          <p id="turnTrace"></p>
+        </details>
+      </div>
+
+      <aside id="glassboxPanel" class="glassbox-panel" aria-label="玻璃箱实时透视">
+        <div class="card mini-card">
+          <div class="mini-head">
+            <h3>它在想什么</h3>
+            <span class="pill" id="thoughtCount">0 轮</span>
+          </div>
+          <div id="thoughtStream" class="mini-list">
+            <div class="empty">还没有决策记录，聊一句就能看到它的思考与取舍。</div>
+          </div>
+        </div>
+
+        <div class="card mini-card">
+          <div class="mini-head">
+            <h3>情绪与需求脉搏</h3>
+            <span class="pill" id="affectMiniTag">未启用</span>
+          </div>
+          <div id="affectMiniBody" class="mini-list">
+            <div class="empty">启用 Limbic 后，这里会实时展示它的心境（PAD）、6 项内在需求与当前情绪诱因。</div>
+          </div>
+        </div>
+
+        <div class="card mini-card">
+          <div class="mini-head">
+            <h3>目标与注意力桌面</h3>
+            <span class="pill" id="attentionMiniTag">0 / 16</span>
+          </div>
+          <div id="goalsMiniBody" class="mini-list">
+            <div class="empty">当前没有活跃目标或挂念事项。</div>
+          </div>
+        </div>
+
+        <div class="card mini-card">
+          <div class="mini-head">
+            <h3>睡前手账 &amp; 好奇种子</h3>
+            <span class="pill" id="journalCount">0 篇</span>
+          </div>
+          <div id="journalMiniBody" class="mini-list">
+            <div class="empty">点击顶部「慢脑整理 &amp; 手账」，让她用自己的口吻整理今日记忆、写日记并埋下好奇种子。</div>
+          </div>
+        </div>
+
+        <div class="card mini-card">
+          <div class="mini-head">
+            <h3>她的书桌（沙盒工作区）</h3>
+            <span class="pill" id="officeCount">0 个文件</span>
+          </div>
+          <div id="officeMiniBody" class="mini-list">
+            <div class="empty">她可以在书桌里写随笔、读书笔记或草稿，生成的文件会出现在这里。</div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- 2. 记忆结构（三层联动） -->
+    <section id="memory" class="card" hidden>
+      <div class="section-title">
+        <div>
+          <h2>三层记忆结构</h2>
+          <p class="sub">事件底片永不篡改；记忆档案可版本化整理；心智认识默认通过“温和协商”交由它亲自修订。</p>
+        </div>
+        <div class="subtabs" role="tablist">
+          <button type="button" class="subtab on" data-memtab="states">心智认识 <span id="cntStates">0</span></button>
+          <button type="button" class="subtab" data-memtab="notes">记忆档案 <span id="cntNotes">0</span></button>
+          <button type="button" class="subtab" data-memtab="events">事件底片 <span id="cntEvents">0</span></button>
+          <button type="button" class="subtab" data-memtab="io">批量导入/导出</button>
+        </div>
+      </div>
+
+      <!-- 2A: 心智认识 (Personal State / BCRZ) -->
+      <div id="mem-states" class="mem-pane">
+        <div class="toolbar">
+          <input id="stateSearch" type="search" placeholder="搜索心智认识正文、角色或原因…">
+          <select id="stateDomainFilter" aria-label="按领域筛选">
+            <option value="">全部领域</option>
+            <option value="self">自我 (self)</option>
+            <option value="relationship">关系 (relationship)</option>
+            <option value="world">世界 (world)</option>
+            <option value="normative">规范 (normative)</option>
+          </select>
+          <select id="stateStatusFilter" aria-label="按状态筛选">
+            <option value="">全部状态</option>
+            <option value="open">开放 (open)</option>
+            <option value="suspended">挂起 (suspended)</option>
+            <option value="closed">已结束 (closed)</option>
+          </select>
+        </div>
+        <div id="stateList" class="card-grid"></div>
+      </div>
+
+      <!-- 2B: 记忆档案 (Notes) -->
+      <div id="mem-notes" class="mem-pane" hidden>
+        <div class="toolbar">
+          <input id="noteSearch" type="search" placeholder="搜索记忆档案…">
+          <select id="noteKindFilter" aria-label="按类型筛选">
+            <option value="">全部类型</option>
+            <option value="fact_claim">事实 (fact_claim)</option>
+            <option value="preference">偏好 (preference)</option>
+            <option value="interpretation">理解 (interpretation)</option>
+            <option value="value">价值 (value)</option>
+            <option value="feeling">感受 (feeling)</option>
+            <option value="skill">技能 (skill)</option>
+            <option value="dream">愿望 (dream)</option>
+            <option value="tension">张力 (tension)</option>
+          </select>
+          <button type="button" id="newNoteBtn" class="primary">+ 新建笔记</button>
+        </div>
+
+        <form id="noteEditor" class="editor-box" hidden>
+          <div class="editor-head">
+            <strong id="noteEditorTitle">新建记忆笔记</strong>
+            <button type="button" id="cancelNoteEdit" class="ghost">取消</button>
+          </div>
+          <input type="hidden" id="editNoteId">
+          <input type="hidden" id="editNoteRev">
+          <div class="grid-3">
+            <label>类型
+              <select id="editNoteKind">
+                <option value="preference">偏好 (preference)</option>
+                <option value="fact_claim">事实 (fact_claim)</option>
+                <option value="interpretation">理解 (interpretation)</option>
+                <option value="value">价值 (value)</option>
+                <option value="feeling">感受 (feeling)</option>
+                <option value="skill">技能 (skill)</option>
+                <option value="dream">愿望 (dream)</option>
+                <option value="tension">张力 (tension)</option>
+              </select>
+            </label>
+            <label>状态
+              <select id="editNoteStatus">
+                <option value="current">有效 (current)</option>
+                <option value="suspended">暂缓 (suspended)</option>
+                <option value="historical">归档/过时 (historical)</option>
+              </select>
+            </label>
+            <label>确信度
+              <select id="editNoteConfidence">
+                <option value="tentative">暂定 (tentative)</option>
+                <option value="uncertain">不确定 (uncertain)</option>
+                <option value="confident">确信 (confident)</option>
+              </select>
+            </label>
+          </div>
+          <label>笔记正文（保存时自动递增版本号，保留历史版本）
+            <textarea id="editNoteBody" rows="3" maxlength="4000" required placeholder="例如：对方写代码时喜欢先跑通最小原型再重构。"></textarea>
+          </label>
+          <div class="actions">
+            <button type="submit" class="primary">保存新版本</button>
+          </div>
+        </form>
+
+        <div id="noteList" class="card-grid"></div>
+      </div>
+
+      <!-- 2C: 事件底片 (Event Stream) -->
+      <div id="mem-events" class="mem-pane" hidden>
+        <div class="toolbar">
+          <input id="eventSearch" type="search" placeholder="搜索事件流正文、场景或来源…">
+          <span class="muted">底片只读不可篡改；可查看由它衍生的记忆，或将其移出待处理视野。</span>
+        </div>
+        <div id="eventTimeline" class="timeline"></div>
+      </div>
+
+      <!-- 2D: 批量导入与导出 -->
+      <div id="mem-io" class="mem-pane" hidden>
+        <p>支持纯文本（空行分隔笔记）或 Threadline 笔记 JSON。每次最多 128 条，重复笔记会跳过；不会覆盖数据库。</p>
+        <label>选择笔记文件 <input id="memoryFile" type="file" accept=".txt,.md,.json"></label>
+        <label>或者直接粘贴文字 <textarea id="memoryText" rows="7" placeholder="每段是一条独立笔记。"></textarea></label>
+        <div class="actions">
+          <button type="button" id="export">导出笔记 JSON</button>
+          <button type="button" id="import" class="primary">导入笔记</button>
+        </div>
+        <p class="muted">不导入旧数据库、对话账本或情绪快照。请确认有权将导入内容交给所选模型。</p>
+      </div>
+    </section>
+
+    <!-- 3. 情绪与 DIY 参数 -->
+    <section id="affect" class="card" hidden>
+      <div class="section-title">
+        <div>
+          <h2>Limbic 情绪引擎与 DIY 性格配方</h2>
+          <p id="affectStatus" class="sub"></p>
+        </div>
+        <div class="preset-bar">
+          <button type="button" class="ghost preset-btn" data-preset="warm">配方：温和陪伴</button>
+          <button type="button" class="ghost preset-btn" data-preset="curious">配方：好奇探索</button>
+          <button type="button" class="ghost preset-btn" data-preset="calm">配方：冷静观察</button>
+        </div>
+      </div>
+
+      <div id="affectLiveBoard" class="affect-board" hidden></div>
+
+      <div class="checks">
+        <label class="check"><input id="affectEnabled" type="checkbox"> 启用 Limbic 确定性情绪演化</label>
+        <label class="check"><input id="fusion" type="checkbox"> 与统觉（Apperception）联动</label>
+        <label class="check"><input id="officeDesk" type="checkbox"> 开放“沙盒书桌”（允许她在独立文件夹里写随笔、记读书笔记和草稿）</label>
+        <label class="check"><input id="windowExplore" type="checkbox"> 开一扇“看外面的小窗”（允许只读逛公开网页 / GitHub / B站）</label>
+        <label class="check"><input id="minecraft" type="checkbox"> 开放“Minecraft 游乐场”（连接本地已批准世界后可自由探索建造）</label>
+      </div>
+      <div class="grid">
+        <label>Python 3.13 可执行文件<input id="python" placeholder="python 或可执行文件完整路径"></label>
+        <label>时区偏移（分钟）<input id="timezone" type="number" min="-720" max="840" value="480"></label>
+      </div>
+      <details open>
+        <summary>DIY 情绪与需求参数（拖动滑块或留空使用默认值）</summary>
+        <div id="parameters" class="grid params"></div>
+      </details>
+      <p class="muted">参数在首次生成情绪状态前设置。已有状态使用原参数，不会静默迁移或重置。</p>
+      <div class="actions">
+        <button type="button" data-save class="primary">保存并应用</button>
+      </div>
+    </section>
+
+    <!-- 4. 人设与语言包 -->
+    <section id="identity" class="card" hidden>
+      <div class="section-title">
+        <div>
+          <h2>设定一个属于你的主体</h2>
+          <p class="sub">用人设卡说明身份、偏好和边界；语言包单独管表达风格。</p>
+        </div>
+        <div class="preset-bar">
+          <button type="button" class="ghost id-preset-btn" data-idpreset="companion">模板：桌边小伴侣</button>
+          <button type="button" class="ghost id-preset-btn" data-idpreset="researcher">模板：好奇观察员</button>
+        </div>
+      </div>
+      <label>人设卡（最多 4,000 字符） <textarea id="persona" maxlength="4000" rows="7"></textarea></label>
+      <label class="upload">从 TXT / Markdown 读取人设卡 <input data-file="persona" type="file" accept=".txt,.md,text/plain,text/markdown"></label>
+      <label>语言包（最多 16,000 字符） <textarea id="style" maxlength="16000" rows="7" placeholder="例如：简短自然，解释复杂问题时先给例子。"></textarea></label>
+      <label class="upload">从 TXT / Markdown 读取语言包 <input data-file="style" type="file" accept=".txt,.md,text/plain,text/markdown"></label>
+      <div class="actions">
+        <button type="button" data-save class="primary">保存并应用</button>
+      </div>
+    </section>
+
+    <!-- 5. 模型与额度 -->
+    <section id="model" class="card" hidden>
+      <h2>连接 DeepSeek</h2>
+      <p>API 密钥只在当前进程使用。关闭应用后需重新输入。</p>
+      <label>DeepSeek API Key <input id="key" autocomplete="off" type="password" placeholder="sk-…"></label>
+      <div class="grid">
+        <label>每日用量估算上限（元）<input type="number" step="0.1" min="0.1" max="20" id="daily" value="5"></label>
+        <label>长链推理思考（DeepSeek Thinking）
+          <select id="reasoning">
+            <option value="low">轻度深度思考（推荐，兼顾速度与思考力）</option>
+            <option value="high">高强度长链思考（复杂推理与规划）</option>
+            <option value="off">关闭深度思考（最快、最省额度）</option>
+          </select>
+        </label>
+      </div>
+      <label class="check"><input id="live" type="checkbox"> 启用真实模型调用，发送消息可能产生费用</label>
+      <label class="check"><input id="longChain" type="checkbox"> 启用长链执行能力（允许她自己立项、分步执行、暂停或重规划 AgentTask）</label>
+      <label class="check"><input id="autonomy" type="checkbox"> 启用后台自主节律与心跳（空闲时自动推进任务与自由思考，23:00–07:00 自动静默）</label>
+      <label class="check"><input id="autoDream" type="checkbox"> 启用夜间自动入梦（Auto-Dream：23:00–07:00 攒够新对话自动悄悄整理记忆、刷新记忆地图并写手账，每晚最多一次）</label>
+      <p class="muted">额度按本工作台使用量估算，不等同于服务商账单，不涵盖其他应用的调用。<span id="spend"></span></p>
+      <div class="actions">
+        <button type="button" id="checkKey">检查凭据</button>
+        <button type="button" data-save class="primary">保存并应用</button>
+      </div>
+    </section>
+
+    <!-- 6. QQ 连接 -->
+    <section id="qq" class="card" hidden>
+      <h2>连接自己的 QQ</h2>
+      <p>先安装并登录 SnowLuma / OneBot，再填本机 SDK 路径和账号。设置完成后，可以从这里一键启动或断开连接器。</p>
+      <p id="qqStatus" class="tag"></p>
+      <div class="grid">
+        <label>Bot 账号<input id="bot" inputmode="numeric" autocomplete="off"></label>
+        <label>允许私聊的账号<input id="owner" inputmode="numeric" autocomplete="off"></label>
+      </div>
+      <label>SnowLuma 数据目录<input id="home" placeholder="含 config 目录的完整路径"></label>
+      <label>SnowLuma SDK JS 入口<input id="sdk" placeholder="已安装 SDK 的完整路径"></label>
+      <p class="muted">只处理指定账号的私聊与回复；群聊和主动外发关闭。请只填写你信任的本地 SDK，不会安装或自动登录。</p>
+      <div class="actions">
+        <button type="button" id="disconnect">断开</button>
+        <button type="button" id="connect" class="primary">保存并连接 QQ</button>
+      </div>
+    </section>
+
+    <footer>Threadline Agent · Glass-Box Local Terrarium</footer>
+  </main>
+</body>
+</html>

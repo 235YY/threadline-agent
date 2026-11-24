@@ -47,6 +47,8 @@ import {selectedModelOutput} from '../../src/model-output-recovery.mjs';
 import {validateToolArguments} from '../../src/tool-contracts.mjs';
 import {authorizeProactiveContact,PROACTIVE_DAILY_SOFT_LIMIT} from '../../src/proactive-contact.mjs';
 import {assertProactiveHostSend,PROACTIVE_HOST_TOOL} from '../../src/proactive-contact-host.mjs';
+import {selectGatedMaterials} from '../../src/memory-gating.mjs';
+import {memoryAudience} from '../../src/memory-access.mjs';
 
 const MAX_BODY=1024*1024;
 export const READ_ONLY_HOST_TOOLS=Object.freeze(['qq_list_friends','qq_list_groups','qq_list_stickers','qq_get_group_history','qq_get_friend_history','qq_get_group_members','qq_get_forward_msg','anchor_recall','attention_status','web_search','web_fetch','style_status','office_status','office_list','office_read','office_search','office_audit','github_status','github_repo','github_issues','github_issue','github_pulls','github_branches']);
@@ -130,7 +132,7 @@ function firstText(messages){
   return last?.content??'';
 }
 
-export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是一个具有连续记忆的数字主体。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,autonomy=false,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false,storage={},inboundScenePolicy=null,attentionPolicy=null}={}){
+export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是一个具有连续记忆的数字主体。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,autonomy=false,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false,timezoneMinutes=480,semanticMemory=null,storage={},inboundScenePolicy=null,attentionPolicy=null}={}){
   ensure(typeof storePath==='string'&&storePath.length>0,'BRAIN_SERVICE','store path required');
   const cognitiveKeys=['algorithmV011','apperceptionV1','subjectiveDomains','subjectiveMemory','subjectiveMemoryV2','taskThreads','anchorDirectory','memoryScopeV1','investigationContinuityV1','experienceLearningV1'];
   ensure(cognition&&Object.getPrototypeOf(cognition)===Object.prototype&&Object.entries(cognition).every(([key,value])=>cognitiveKeys.includes(key)&&typeof value==='boolean'),'COGNITION_CONFIG','explicit known boolean cognition flags required');
@@ -139,14 +141,8 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   // a rhythm interval hint: by default she is not woken at night for reflection or
   // autonomy. Explicit observations are still processed by the normal queue.
   const quietHours=rhythmConfig(rhythm);
-  const automaticScheduling=heartbeatMs>0;
-  const localHour=()=>{
-    const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',hourCycle:'h23'})
-      .formatToParts(new Date(clock()));
-    return Number(parts.find(part=>part.type==='hour')?.value??0);
-  };
-  const inQuietHours=()=>{
-    const hour=localHour();
+  const inQuietHours=(now=clock())=>{
+    const hour=new Date(now+timezoneMinutes*60_000).getUTCHours();
     return quietHours.quietFrom<=quietHours.quietTo
       ? hour>=quietHours.quietFrom&&hour<quietHours.quietTo
       : hour>=quietHours.quietFrom||hour<quietHours.quietTo;
@@ -155,6 +151,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   const store=new ContinuityStore(storePath,storage);
   const reportSchedulerFailure=createSchedulerFailureReporter({subjectId,recordDiagnostic:value=>store.recordDiagnostic(value),clock});
   new ContinuitySession({store,subjectId,attention:true,maxForeground:16});
+  if(intentProtocol)semanticMemory?.warm({store,subjectId});
   // Service-level attention capacity policy: one frozen object, created once, shared
   // by every production TurnDriver (global/scene/autonomy). No per-entry flags.
   const attentionCapacityPolicy=normalizeAttentionCapacityPolicy(attentionPolicy??createAttentionCapacityPolicy());
@@ -242,16 +239,26 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       ]});return true;
     }catch(error){try{store.recordDiagnostic({stage:'agent.result-pending',status:'failed',context:{subjectId,taskId:current.id},data:{errorCode:error.code??'RESULT_PERSIST_FAILED'}});}catch{}return false;}
   }
+  const conversationMaterials=args=>{
+    const base=cognition.investigationContinuityV1?(focusedProcessMaterials(args)??[]):[];
+    if(intentProtocol)return base;
+    const event=store.read(args.event.id,args.event.revision);
+    if(!event)return base;
+    const allowed=memoryAudience({...args,event});
+    const gated=selectGatedMaterials({...args,event,accept:allowed});
+    const seen=new Set(base.map(material=>material.ref.id));
+    return [...base,...gated.filter(material=>!seen.has(material.ref.id))];
+  };
   const driverFor=scene=>{
     if(global){
       if(globalDriver)return globalDriver;
       const workspace=ensureWorkspace(store,'global');
-      globalDriver=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null,attentionPolicy:attentionCapacityPolicy});
+      globalDriver=new TurnDriver({...cognition,intentProtocol,timezoneMinutes,semanticMemory,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:conversationMaterials,attentionPolicy:attentionCapacityPolicy});
       globalDriver.loadState();if(rhythmReset){globalDriver.restore({state:{lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null},outbox:[]});globalDriver.persistState();}return globalDriver;
     }
     if(drivers.has(scene))return drivers.get(scene);
     const workspace=ensureWorkspace(store,scene);
-    const driver=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null,attentionPolicy:attentionCapacityPolicy});
+    const driver=new TurnDriver({...cognition,intentProtocol,timezoneMinutes,semanticMemory,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:conversationMaterials,attentionPolicy:attentionCapacityPolicy});
     driver.loadState();if(rhythmReset){driver.restore({state:{lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null},outbox:[]});driver.persistState();}
     drivers.set(scene,driver);return driver;
   };
@@ -259,7 +266,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function autonomyDriver(){
     if(autonomyDriverCache)return autonomyDriverCache;
     const workspace=ensureWorkspace(store,'agent/autonomy');
-    autonomyDriverCache=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass:false,decide,rhythm,capabilities,allowedActionTools:['start_agent_task'],materialsFor:null,attentionPolicy:attentionCapacityPolicy});
+    autonomyDriverCache=new TurnDriver({...cognition,intentProtocol,timezoneMinutes,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass:false,decide,rhythm,capabilities,allowedActionTools,attentionPolicy:attentionCapacityPolicy});
     autonomyDriverCache.loadState();
     return autonomyDriverCache;
   }
@@ -306,12 +313,12 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }
     return recovered;
   }
-  async function autonomyTick({now=clock()}={}){
+  async function autonomyTick({now=clock(),manual=false}={}){
     if(!autonomy)return {skipped:true,reason:'disabled'};
     if(draining||agentBusy||reflectionBusy||scheduler.active()!==null||autonomyBusy)return {skipped:true,reason:'busy'};
     if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'budget'};
     if(scheduler.pending().length)return {skipped:true,reason:'pending'};
-    if(automaticScheduling&&inQuietHours())return {skipped:true,reason:'quiet-hours'};
+    if(!manual&&scheduleIntervalMs>0&&inQuietHours(now))return {skipped:true,reason:'quiet-hours'};
     autonomyBusy=true;
     try{
       await recoverAutonomyActions();
@@ -353,7 +360,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
         store.execute({requestId:'autonomy-failure:'+slot,commands:[{op:'put_extension_record',id:failureId,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'autonomy-slot',slot,error:error.code??error.name??'AUTONOMY_FAILURE',message:String(error.message??'').slice(0,2000),terminal:true}}]});
         throw error;
       }
-      if(result.actionOut)await executeAction(result.actionOut.action);
+      if(result.actionOut)await dispatch([{kind:'act',tool:result.actionOut.tool,args:result.actionOut.args,action:result.actionOut.action}],{scene:'agent/autonomy',execute:true});
       return {ok:true,slot,kind,decision:result.decision,choice:result.choice,focus:focus?{id:focus.id,revision:focus.revision}:null};
     } finally {autonomyBusy=false;}
   }
@@ -597,7 +604,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     cursor={...cursor,lastEventId:`obs:${normalized.key}`,lastAt:at,eventsSince:cursor.eventsSince+1};saveCursor();
     scheduler.enqueue(queueKey,{eventId:ev.id,key:normalized.key,body:normalized.body,scene:normalized.scene,actor,at,threadId:normalized.threadId});
     saveState();
-    return {queued:true,scene:normalized.scene,pending:scheduler.pending()};
+    return {queued:true,scene:normalized.scene,pending:scheduler.pending(),eventId:ev.id};
   }
   function mute(prefix){return policy.mute(prefix);}
   function unmute(prefix,{load=false}={}){const next=policy.unmute(prefix);if(load)loadBacklog(prefix,50);return next;}
@@ -637,10 +644,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       if(processId!==null)ensure(taskProcessSource({store,subjectId,processId,originDecisionRef}),'UNDELIVERED_PROCESS','Task Process must be explicitly selected from the delivered own directory');
       const plan=Array.isArray(args.plan)?args.plan.join('；'):String(args.plan??'');
       const tools=args.allowedTools===undefined?[...DEFAULT_TASK_TOOLS]:[...new Set(args.allowedTools)];
-      // Autonomy sources cannot reach QQ at all: the tool menu and the host
-      // dispatch both drop QQ tools, even when the model names them.
       const autonomyOrigin=String(action.id).startsWith('decision:autonomy:');
-      const grantedTools=autonomyOrigin?tools.filter(name=>!String(name).startsWith('qq_')):tools;
+      // The shared autonomy desk can use authorized actions directly. Task
+      // grants must also match the QQ adapter's autonomous-task boundary.
+      const grantedTools=autonomyOrigin?tools.filter(tool=>!tool.startsWith('qq_')):tools;
       let task=store.read('task:'+action.id),intentRef=null;
       if(!task&&args.intentId){
         const intent=store.read(args.intentId);ensure(intent?.type==='intent'&&intent.subject===subjectId&&['open','pursuing'].includes(intent.status),'INTENT','open own intent required');
@@ -678,7 +685,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }
     if(action.tool==='remember_note'){
       const args=action.args??{};
-      const note=rememberNote({store,id:`note:${randomUUID()}`,body:args.body,kind:args.kind??'fact_claim',scene:args.scene??null,anchor:args.anchor??null});
+      const parent=[...store.all('decision')].find(d=>d.action?.id===action.id&&d.input?.payload?.continuity?.subject?.id===subjectId);
+      const evidence=parent?[parent.currentEvent,...parent.output.used.map(x=>x.ref)].filter(ref=>ref&&
+        ['event','note'].includes(store.read(ref.id,ref.revision)?.type)):[];
+      rememberNote({store,id:`note:${randomUUID()}`,body:args.body,kind:args.kind??'fact_claim',scene:args.scene??null,anchor:args.anchor??null,evidence});
       const eventId=`remember-receipt:${action.id}`;
       return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:'succeeded',eventId,body:'已记下',source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});
     }
@@ -719,6 +729,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       return {decision:d,...(action?{action}:{}),...(response?{response}:{})};
     });
   }
+  const PROACTIVE_COOLDOWN_MS=30*60*1000;
+  const PROACTIVE_MAX_UNANSWERED=2;
+  const PROACTIVE_UNANSWERED_WINDOW_MS=24*60*60*1000;
+  const PROACTIVE_ACTIVE_EXEMPT_MS=15*60*1000;
   function authorizeProactiveAction(action,now=clock()){
     const args=action.args??{};
     const targetScene=String(args.targetScene??'');
@@ -726,6 +740,32 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     try{validateToolArguments(PROACTIVE_HOST_TOOL,args);}catch(error){error.transportInvoked=false;error.nativePreflight=true;throw error;}
     const entries=proactiveLedgerEntries(now);
     const host=assertProactiveHostSend({subjectId,entries,action,timezoneMinutes:PROACTIVE_TIMEZONE_MINUTES});
+    // 1. Separated recipient quiet hours (23:00-07:00): allow internal thinking/autonomy,
+    //    but block outbound proactive messages unless recipient was active in last 15 min.
+    const inboundEvents=[...store.all('event')].filter(e=>e.scene===targetScene&&['observed','reported'].includes(e.origin)&&e.actor!=='host'&&e.actor!==subjectId);
+    const lastInboundAt=inboundEvents.reduce((max,e)=>Math.max(max,Number(e.occurredAt??e.recordedAt??0)),0);
+    if(inQuietHours(now)&&(!lastInboundAt||(now-lastInboundAt)>PROACTIVE_ACTIVE_EXEMPT_MS)){
+      throw Object.assign(new Error('收件人处于夜间勿扰时段（23:00–07:00），暂不主动外发；内部思考与记忆整理不受影响'),{code:'POLICY_QUIET_HOURS',transportInvoked:false,nativePreflight:true,quietFrom:quietHours.quietFrom,quietTo:quietHours.quietTo});
+    }
+    // 2. Cross-entry target cooldown, unanswered backoff cap, and inputRefs dedup.
+    const priorProactive=[...store.all('action')]
+      .filter(a=>a.id!==action.id&&a.tool===PROACTIVE_HOST_TOOL&&a.args?.targetScene===targetScene&&a.status!=='failed')
+      .sort((a,b)=>(b.recordedAt??0)-(a.recordedAt??0));
+    const latestPrior=priorProactive[0]??null;
+    if(latestPrior&&Number.isSafeInteger(latestPrior.recordedAt)&&(now-latestPrior.recordedAt)<PROACTIVE_COOLDOWN_MS){
+      const retryAfterMs=PROACTIVE_COOLDOWN_MS-(now-latestPrior.recordedAt);
+      throw Object.assign(new Error(`同一对象主动联系冷却中，约 ${Math.ceil(retryAfterMs/60000)} 分钟后再试`),{code:'POLICY_COOLDOWN',retryAfterMs,transportInvoked:false,nativePreflight:true});
+    }
+    const unansweredSince=Math.max(lastInboundAt,now-PROACTIVE_UNANSWERED_WINDOW_MS);
+    const unansweredCount=priorProactive.filter(a=>Number.isSafeInteger(a.recordedAt)&&a.recordedAt>unansweredSince).length;
+    if(unansweredCount>=PROACTIVE_MAX_UNANSWERED){
+      throw Object.assign(new Error(`对方尚未回复前最多主动联系 ${PROACTIVE_MAX_UNANSWERED} 次，已触发未回复退避保护`),{code:'POLICY_UNANSWERED_CAP',unansweredCount,limit:PROACTIVE_MAX_UNANSWERED,transportInvoked:false,nativePreflight:true});
+    }
+    const basisSig=JSON.stringify((action.inputRefs??[]).map(r=>`${r.id}@${r.revision}`).sort());
+    const dupBasis=priorProactive.find(a=>Number.isSafeInteger(a.recordedAt)&&(now-a.recordedAt)<PROACTIVE_UNANSWERED_WINDOW_MS&&JSON.stringify((a.inputRefs??[]).map(r=>`${r.id}@${r.revision}`).sort())===basisSig);
+    if(dupBasis){
+      throw Object.assign(new Error('24 小时内已基于同一组记忆依据发起过主动联系，跳过重复打扰'),{code:'POLICY_DUPLICATE_BASIS',priorActionId:dupBasis.id,transportInvoked:false,nativePreflight:true});
+    }
     const used=host.moduleInput.attempts.length;
     const confirmation=used>=PROACTIVE_DAILY_SOFT_LIMIT
       ?Object.freeze({approved:true,evidence:`host-auto-confirm:v1:${host.dayKey}:${used}`})
@@ -798,7 +838,15 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
           try{body=JSON.stringify(await adapter.act({scene,tool:item.tool,args:item.args,action:claim.action}));status='succeeded';}catch(error){if(error.transportInvoked===false){status='failed';body=JSON.stringify({error:error.code,message:error.message,transportInvoked:false});}else body=error.message;}
           receipt({scene,action:claim.action,claimId:claim.claimId,status,body:body??'',eventId:'host-action:'+item.action.id});item.execution={status};sent.push({kind:'act',status});
         }
-        else sent.push({kind:'act',tool:item.tool,delivered:false});
+        else {
+          if(execute&&item.action){
+            const current=store.read(item.action.id);
+            if(current?.status==='proposed'){
+              try{receipt({scene,action:{id:current.id,revision:current.revision},status:'failed',body:JSON.stringify({error:'ENV_TOOL_UNAVAILABLE',message:'外部通道未连接或当前环境未提供该工具，未发起发送',transportInvoked:false}),eventId:'host-action:'+current.id});}catch{}
+            }
+          }
+          sent.push({kind:'act',tool:item.tool,delivered:false,error:{code:'ENV_TOOL_UNAVAILABLE',message:'外部通道未连接或当前环境未提供该工具'}});
+        }
       }
     }
     return sent;
@@ -937,7 +985,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       ensure((policy.allowedGroups??[]).map(String).includes(id),'INBOUND_SCENE_NOT_AUTHORIZED','group scene is not whitelisted');
     }
   }
-  async function reply(input){
+  async function reply(input,{includeEvent=false}={}){
     const execute=input.execute!==false;
     const scene=String(input.scene??input.key??'');
     ensure(scene,'ADAPTER','scene required');
@@ -961,7 +1009,8 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }
     if(result?.error)return {ok:false,error:result.error,message:result.message,retryable:false,scene,outbox:[],silent:true,busy:false,...(result.processingOutcome?{processingOutcome:result.processingOutcome}: {})};
     const text=result.outbox?.find(o=>o.kind==='respond')?.text??'';
-    return {ok:true,scene,text,outbox:result.outbox??[],silent:result.silent??true,busy:result.busy??false,deferred:result.deferred??false};
+    return {ok:true,scene,text,outbox:result.outbox??[],silent:result.silent??true,busy:result.busy??false,deferred:result.deferred??false,
+      ...(includeEvent?{eventId:observed.eventId}:{})};
   }
   function receipt({scene,action,status,body,eventId,claimId=null,actor='host',occurredAt=clock()}){
     ensure(scene&&action,'ADAPTER','receipt needs scene/action');
@@ -1403,10 +1452,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function saveCursor(){if(!cursorFile)return;try{writeFileSync(cursorFile,JSON.stringify(cursor),'utf8');}catch{}}
   const memoryDue=()=>cursor.eventsSince>=50||clock()-cursor.lastMemoryAt>=2*60*60*1000;
   const idleDue=()=>clock()-cursor.lastIdleAt>=idleIntervalMs;
-  async function idleReflect(){
+  async function idleReflect({manual=false}={}){
     if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(draining||!global||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {skipped:true};
-    if(automaticScheduling&&inQuietHours())return {skipped:true,reason:'quiet-hours'};
+    if(!manual&&scheduleIntervalMs>0&&inQuietHours())return {skipped:true,reason:'quiet-hours'};
     const memory=memoryDue();
     if(lifePolicy&&!lifePolicy.canReflect(clock()))return {skipped:true,reason:'open-life-reflection-cooldown'};
     if(!memory&&!idleDue())return {skipped:true};
@@ -1562,12 +1611,13 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     if(officialSpend&&!officialSpend.gate().allow)return {status:'busy',reason:'official-spend-paused',modelCalled:false};
     ensure(typeof callback==='function','COGNITION_CALLBACK','host callback required');
     syncSchedulerInbox();
-    if(closed||draining||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {status:'busy',modelCalled:false};
+    if(closed||draining||agentBusy||reflectionBusy||autonomyBusy||(agentRuntime?.pendingExecutions()??0)>0
+      ||scheduler.active()!==null||scheduler.pending().length)return {status:'busy',modelCalled:false};
     reflectionBusy=true;try{return await callback();}finally{reflectionBusy=false;}
   }
   startScheduling();
   function beginShutdown(){draining=true;stopScheduling();}
-  function close(){if(closed)return;stopScheduling();saveState();store.close();closed=true;}
+  function close(){if(closed)return;stopScheduling();semanticMemory?.stop();saveState();store.close();closed=true;}
   const server=createServer(async (req,res)=>{
     if(req.method==='POST'&&req.url==='/v1/official-usage'&&officialSpend){try{return json(res,200,officialSpend.accept(await readBody(req),req.headers['x-usage-token']));}catch(error){return json(res,400,{error:error.code??'OFFICIAL_USAGE_INVALID'});}}
     const token=req.headers['x-brain-token'];
@@ -1681,6 +1731,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const head=store.read(pending[0].eventId);
       if(head?.origin!=='tool_receipt')return turn({preferred:null,deliver:true,execute:true});
     }
+    if(!pending.length&&scheduleIntervalMs>0&&inQuietHours())return {skipped:true,reason:'quiet-hours'};
     reflectionBusy=true;try{
     if(pending.length){
       const head=store.read(pending[0].eventId);
@@ -1713,7 +1764,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       throw error;
     }finally{reflectionBusy=false;}
   }
-  const service={server,observe,turn,reply,receipt,responseDelivered,health,stats,close,beginShutdown,startScheduling,stopScheduling,runCognitionExclusive,idleTurn,dispatch,executeAction,mute,unmute,loadBacklog,attention:()=>policy.status(),context:()=>cursor,style:()=>styles.status(),styleUpdate:(v)=>styles.update(v),styleDelete:(id)=>styles.remove(id),tick:()=>turn(),idleReflect,autonomyDriver,autonomyTick,agentTools,store,responseClaim,actionClaim,pendingEffects,recoverPendingEffects,reconcileAgentTool,recoveryTurn,closeRecoveryTurn,createAgentTask,stepAgentTask,interruptAgentTask,stopAgentTask,pauseAgentTask,redirectAgentTask,resumeAgentTask,stopAllAgentTasks,listAgent,agentTick,subjectContext,token:null};
+  const service={server,observe,turn,reply,receipt,responseDelivered,health,stats,close,beginShutdown,startScheduling,stopScheduling,runCognitionExclusive,idleTurn,dispatch,executeAction,mute,unmute,loadBacklog,attention:()=>policy.status(),context:()=>cursor,style:()=>styles.status(),styleUpdate:(v)=>styles.update(v),styleDelete:(id)=>styles.remove(id),tick:()=>turn(),idleReflect,autonomyDriver,autonomyTick,agentTools,store,responseClaim,actionClaim,pendingEffects,recoverPendingEffects,reconcileAgentTool,recoveryTurn,closeRecoveryTurn,createAgentTask,stepAgentTask,interruptAgentTask,stopAgentTask,pauseAgentTask,redirectAgentTask,resumeAgentTask,stopAllAgentTasks,listAgent,agentTick,subjectContext,semanticMemory,token:null};
   return service;
 }
 

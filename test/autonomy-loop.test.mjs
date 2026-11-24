@@ -24,7 +24,8 @@ function decide(packet){
 }
 async function boot(t,{autonomy=true,cognition={}}={}){
   seen.length=0;script.length=0;
-  const service=await startBrainService({token:'t',clock:()=>now,decide,rhythm:{minGapMs:1},autonomy,subjectTask:true,cognition,idleIntervalMs:3_600_000});
+  const service=await startBrainService({token:'t',clock:()=>now,decide,rhythm:{minGapMs:1},autonomy,subjectTask:true,
+    allowedActionTools:['start_agent_task'],cognition,idleIntervalMs:3_600_000});
   t.after(async()=>{await new Promise(r=>service.server.close(r));service.close();});
   return service;
 }

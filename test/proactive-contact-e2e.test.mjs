@@ -202,9 +202,9 @@ const proactiveOutput = (targetScene, {text = '在吗', reason = null, summary =
       observationDisposition: 'handled', attention: keepAttention()}});
 };
 async function proactiveService(t) {
-  const state = {calls: 0, plan: null}, sent = [], steps = [];
+  const state = {calls: 0, plan: null, now: PROACTIVE_TEST_T}, sent = [], steps = [];
   const service = await startBrainService({port: 0, storePath: ':memory:', stateDirectory: null, heartbeatMs: 0,
-    global: true, clock: () => PROACTIVE_TEST_T, allowedActionTools: ['proactive_contact'],
+    global: true, clock: () => state.now, storage: {clock: () => state.now}, allowedActionTools: ['proactive_contact'],
     adapter: {act: async input => {
       sent.push(input);
       const step = steps.shift();
@@ -242,10 +242,14 @@ test('E2E-H: server Action sends proactive_contact exactly once through claim/re
 test('E2E-I: the sixth same-day initiation with a reason is host-auto-confirmed and sent once', async t => {
   const f = await proactiveService(t);
   f.state.plan = proactiveOutput('qq/private/7');
-  for (let index = 1; index <= PROACTIVE_DAILY_SOFT_LIMIT; index++) assert.equal((await say(f.service, 'e2e-i' + index)).ok, true);
+  for (let index = 1; index <= PROACTIVE_DAILY_SOFT_LIMIT; index++) {
+    f.state.now += 30 * 60_000;
+    assert.equal((await say(f.service, 'e2e-i' + index)).ok, true);
+  }
   assert.equal(f.sent.length, PROACTIVE_DAILY_SOFT_LIMIT);
   const callsBefore = f.state.calls;
   f.state.plan = proactiveOutput('qq/private/7', {reason: '答应过明天问她面试结果', summary: '答应过的事'});
+  f.state.now += 30 * 60_000;
   const sixth = await say(f.service, 'e2e-i6');
   assert.equal(sixth.ok, true);
   assert.equal(f.sent.length, PROACTIVE_DAILY_SOFT_LIMIT + 1, 'the sixth initiation is sent exactly once');
@@ -260,6 +264,19 @@ test('E2E-I: the sixth same-day initiation with a reason is host-auto-confirmed 
   // decision always carries a persisted summary, which is a legal reason source, so the server
   // cannot reach PROACTIVE_REASON_REQUIRED with a well-formed decision (empty summary is rejected
   // earlier as INVALID_INPUT by proposal validation). No fake fixture is manufactured here.
+});
+
+test('the ZIP target cooldown refuses a new proactive action before claim',async t=>{
+  const f=await proactiveService(t);
+  await say(f.service,'cooldown-first');
+  f.state.now+=60_000;
+  const second=await say(f.service,'cooldown-second');
+  const out=second.outbox.find(item=>item.tool==='proactive_contact');
+  assert.equal(out?.execution?.error,'POLICY_COOLDOWN');
+  const refused=f.service.store.read(out.action.id);
+  assert.equal(refused.status,'failed');
+  assert.equal(refused.claimId??null,null);
+  assert.equal(f.sent.length,1);
 });
 
 test('E2E-J: deliveryPin mismatch or missing pin rejects before any transport', async () => {

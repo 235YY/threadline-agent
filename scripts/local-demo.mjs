@@ -1,4 +1,3 @@
-
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
@@ -26,6 +25,7 @@ export async function startDesktop({desktop=createDesktop({root})}={}){
    try{
     if(path==='api/state')return json(200,{...desktop.state(),ranges});
     if(path==='api/notes')return json(200,desktop.notes());
+    if(path==='api/glassbox')return json(200,desktop.glassbox());
    }catch(e){return json(409,{error:e.code??'SERVICE_BUSY'});}
    return json(404,{error:'NOT_FOUND'});
   }
@@ -41,6 +41,13 @@ export async function startDesktop({desktop=createDesktop({root})}={}){
     case 'api/import':return json(200,desktop.import(body.notes));
     case 'api/connect-qq':return json(200,await desktop.connectQQ());
     case 'api/disconnect-qq':await desktop.stopQQ();return json(200,{ok:true});
+    case 'api/memory/note-save':return json(200,desktop.saveNote(body));
+    case 'api/memory/state-propose':return json(200,await desktop.proposeStateEdit(body));
+    case 'api/memory/event-retire':return json(200,desktop.retireEvent(body));
+    case 'api/journal':return json(200,await desktop.writeJournal(body));
+    case 'api/office/read':return json(200,desktop.readOfficeFile(body));
+    case 'api/autonomy':return json(200,await desktop.stepAutonomy());
+    case 'api/reflect':return json(200,await desktop.reflect());
     default:return json(404,{error:'NOT_FOUND'});
    }
   }catch(e){json(400,{error:typeof e.code==='string'&&/^[A-Z_0-9]+$/.test(e.code)?e.code:'REQUEST_FAILED'});}
@@ -51,7 +58,7 @@ export async function startDesktop({desktop=createDesktop({root})}={}){
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const running=await startDesktop();
- console.log('Threadline 本地工作台：'+running.url);
+ console.log('Threadline 本地工作台（玻璃箱版）：'+running.url);
  console.log('按 Ctrl+C 正常退出。');
  if(process.argv.includes('--open')&&process.platform==='win32'){
   const child=spawn('explorer.exe',[running.url],{stdio:'ignore',windowsHide:true});child.on('error',()=>{});child.unref();
@@ -60,4 +67,3 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const stop=async()=>{if(closing)return;closing=true;try{await running.stop();}catch(e){closing=false;console.error(e.code??'SHUTDOWN_FAILED');}};
  process.on('SIGINT',()=>void stop());process.on('SIGTERM',()=>void stop());
 }
-

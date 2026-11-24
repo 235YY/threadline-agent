@@ -18,6 +18,9 @@ import {normalizeContent,contentView} from './node-content.mjs';
 import {normalizeMessage,projectText} from './message.mjs';
 import {sourceReplyRoute} from './reply-route.mjs';
 import {EVENT_PROCESS_THEORY,eventProcessId,eventProcessEvents} from './task-threads.mjs';
+import {searchMemoryIndex} from './memory-index.mjs';
+import {rankMemory} from './memory-reminders.mjs';
+import {memoryAudience} from './memory-access.mjs';
 
 const Database = sqlite.Database ?? sqlite.DatabaseSync;
 const NOTE_KINDS = ['fact_claim', 'interpretation', 'value', 'preference', 'dream', 'tension', 'feeling', 'skill'];
@@ -148,7 +151,7 @@ export class ContinuityStore {
     }catch(error){this.#debugFailures++;this.#debugFailureCode=failureMetadata(error).errorCode;return 'capture-failed';}
   }
   view(reader) {
-    const outer = this.#readDepth === 0;
+    const outer = this.#readDepth === 0&&this.#transactionWrites===null;
     if (outer) this.#db.exec('BEGIN');
     this.#readDepth++;
     try {
@@ -986,6 +989,8 @@ export class ContinuityStore {
     const selected=decision.output.options.find(o=>o.id===decision.output.selected);
     ensure(selected?.kind==='lookup','NOT_LOOKUP','execute only a committed lookup choice');
     const requested=normalizeLookupQuery(selected.payload),id=lookupResultId(asRef(decision)),roundId=lookupRoundId(subject.id,decision.currentEvent,decision.reflection?decision.input.payload.memoryAccess?.roundScope??null:null);
+    const hybrid=decision.input.payload.intentProtocol?.format==='intent-base-v5'&&decision.currentEvent
+      ?{store:this,subjectId:subject.id,event:this.#require(decision.currentEvent,['event']),now:this.#now()}:null;
     const consultEnabled=decision.input.payload.memoryAccess?.consultation?.enabled===true;
     ensure(!requested.consult||consultEnabled&&decision.input.stage==='decisionGraph','CONSULT_CAPABILITY','consultation requires an explicit unified capability');
     ensure(!requested.trace||decision.input.stage==='decisionGraph'||decision.reflection===true&&decision.input.payload.memoryAccess?.historyRecovery?.enabled===true,'UNIFIED_PROTOCOL_REQUIRED','cross-type reads require explicit unified mode');
@@ -1000,12 +1005,19 @@ export class ContinuityStore {
     if(old){ensure(old.type==='lookup_result'&&old.subject===subject.id&&sameRef(old.decision,c.decision),'LOOKUP_COLLISION','lookup result identity changed');return old;}
     if(!round)round=this.#write(roundId,'lookup_round',0,{subject:subject.id,anchor:decision.currentEvent,workspace:decision.workspace,
       policy,reads:0,seenRefs:[],queries:[],recordedAt:this.#now()});
-    const compile=q=>q.consult?consultationOperation(q.consult,{read:(id,rev)=>this.#read(id,rev),subjectId:subject.id}):q;
+    const compile=q=>q.consult&&!hybrid?consultationOperation(q.consult,{read:(id,rev)=>this.#read(id,rev),subjectId:subject.id}):q;
     const getEpoch=(q,op)=>op.trace?this.#db.prepare('SELECT epoch FROM graph_meta WHERE id=1').get().epoch:q.consult?
       this.#db.prepare("SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note','personal_state','action')").get().epoch:
-      q.workbench?(q.workbench.frame??q.workbench.source.frame).revision:q.graph?attention.revision:q.stateRef?q.stateRef.revision:this.#db.prepare("SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note')").get().epoch;
+      q.workbench?(q.workbench.frame??q.workbench.source.frame).revision:q.graph?attention.revision:q.stateRef?q.stateRef.revision:this.#db.prepare(
+        hybrid?"SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note','personal_state','link')":
+          "SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note')").get().epoch;
     let operation=compile(requested),epoch=getEpoch(requested,operation);
     let outcome=null,method=null,total=null,nextOffset=null,entries=[],novelRefs=[],repeatOf=null,readPerformed=false,query=requested,offset=0,graph=null,states=[],failure=null,trace=null,novelNodes=[],consultation=null,workbench=null,opened=null;
+    let semantic=hybrid?(c.semantic??[]):[];
+    ensure(Array.isArray(semantic)&&semantic.length<=24&&semantic.every(x=>x?.ref&&Number.isFinite(x.similarity)
+      &&x.similarity>=0&&x.similarity<=1.000001&&(x.relevance===undefined||Number.isFinite(x.relevance))),
+      'MEMORY_VECTOR_HINT','bounded host semantic candidates required');
+    uniqueRefs(semantic.map(x=>x.ref));
     if(!sameRef(subject.lastDecision,c.decision))outcome='superseded';
     else if(this.#read(decision.workspace.id).revision!==decision.workspace.revision)outcome='different-context';
     else if(!sameRef(round.workspace,decision.workspace)){
@@ -1021,9 +1033,11 @@ export class ContinuityStore {
       ensure(!previous.query.consult||consultEnabled&&decision.input.stage==='decisionGraph','CONSULT_CAPABILITY','consultation pages require explicit capability');
       query=previous.query.consult?{consult:{...previous.query.consult,need:asRef(previous)}}:previous.query.trace?{trace:{...previous.query.trace,offset:previous.nextOffset}}:previous.query.context?{context:previous.query.context}:{terms:previous.query.terms};offset=previous.nextOffset;
       operation=compile(query);epoch=getEpoch(query,operation);
+      semantic=hybrid?(previous.semanticHints??[]):[];
       if(previous.epoch!==epoch)outcome='source-changed';
     }
-    if(query.consult)consultation=consultationState(query.consult,{load:(id,rev)=>this.#read(id,rev),subjectId:subject.id,roundId,workspace:decision.workspace,resultRef:{id,revision:1}});
+    if(hybrid&&!outcome&&!operation.terms&&!operation.ref)outcome='route-not-available';
+    if(query.consult&&!hybrid)consultation=consultationState(query.consult,{load:(id,rev)=>this.#read(id,rev),subjectId:subject.id,roundId,workspace:decision.workspace,resultRef:{id,revision:1}});
     const signature=digest({query:operation,offset,epoch});
     if(operation.navigate&&!outcome){
       const source=this.#require(query.consult.need,['lookup_result']),pages=this.#consultationPages({subjectId:subject.id,root:consultation.root,currentEvent:decision.currentEvent,workspace:decision.workspace});
@@ -1051,7 +1065,14 @@ export class ContinuityStore {
       else if(!outcome){
         readPerformed=true;
         let hits=[];
-        if(operation.workbench){
+        if(hybrid&&operation.terms){
+          const {ranked,saturated}=rankMemory({...hybrid,query:operation.terms,semantic});
+          const page=ranked.slice(offset,offset+policy.maxHits);
+          hits=page.filter(hit=>hit.record.type!=='personal_state').map(hit=>({ref:hit.ref,hits:[]}));
+          states=page.filter(hit=>hit.record.type==='personal_state').map(hit=>({ref:hit.ref,historical:false}));
+          total=saturated?null:ranked.length;nextOffset=offset+page.length<ranked.length?offset+page.length:null;
+          method='audience-scoped-hybrid';outcome=nextOffset===null&&saturated?'scan-limit':page.length?'found':'empty';
+        }else if(operation.workbench){
           method='versioned-material-use-history';const q=operation.workbench;
           if(q.via==='list'){
             const snapshot=this.#require(q.frame,['attention_frame']);ensure(snapshot.subject===subject.id,'RECOVERY_SCOPE','own history only');
@@ -1089,7 +1110,8 @@ export class ContinuityStore {
           else {states=[{ref:asRef(value),historical:this.#read(value.id).revision!==value.revision}];outcome='found';total=1;}
         }else if(operation.ref){
           method='pinned-read';const record=this.#read(operation.ref.id,operation.ref.revision);
-          if(!record){outcome='not-found';total=0;}
+          if(!record||record.id==='note:slow-watermark'||hybrid&&!memoryAudience(hybrid)(record,{historical:true})){outcome='not-found';total=0;}
+          else if(hybrid&&record.type==='personal_state'){states=[{ref:asRef(record),historical:this.#read(record.id).revision!==record.revision}];total=1;outcome='found';}
           else if(!['event','note'].includes(record.type)){outcome='invalid-target';total=0;}
           else{hits=[{ref:asRef(record),hits:[]}];total=1;outcome='found';}
         }else if(operation.open){
@@ -1147,7 +1169,8 @@ export class ContinuityStore {
     return this.#write(id,'lookup_result',0,{subject:subject.id,round:asRef(round),decision:asRef(decision),anchor:decision.currentEvent,
       workspace:decision.workspace,requested,query,offset,epoch,outcome,method,total,nextOffset,entries,novelRefs,repeatOf,readPerformed,
       reads:round.reads,remainingReads:round.policy.maxReads-round.reads,...(operation.graph?{graph}:{}),...(operation.stateRef?{states}:{}),
-      ...(trace?{trace,novelNodes}:{}),...(workbench?{workbench}:{}),...(consultation?{consultation,operation}:{}),...(opened?{opened}:{}),...(failure?{failure}:{}),recordedAt:this.#now()});
+      ...(trace?{trace,novelNodes}:{}),...(workbench?{workbench}:{}),...(consultation?{consultation,operation}:{}),...(opened?{opened}:{}),...(failure?{failure}:{}),
+      ...(hybrid&&semantic.length?{semanticHints:semantic}:{}),recordedAt:this.#now()});
   }
   #consultationPages({subjectId,root,currentEvent,workspace}){
     return this.#db.prepare(`SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
@@ -1563,7 +1586,55 @@ export class ContinuityStore {
     return {items:matches.slice(offset,offset+limit).map(({ts,score,...hit})=>hit),total:matches.length,method:'recall-intersection'};
   }
   search(options) { return this.view(() => this.#search(options)); }
-  #search({terms, types = ['event', 'note'], scene, origins, from, until, limit = 20, offset = 0, excludeRefs = [],contextAnchor}) {
+  memoryLexicalRefs({terms,accept,limit=64}){
+    ensure(Number.isSafeInteger(limit)&&limit>=1&&limit<=256,'MEMORY_SEARCH_LIMIT','bounded lexical lane required');
+    try{return searchMemoryIndex(this.#db,terms,accept,limit);}
+    catch(error){
+      if(!/no such module: fts5/i.test(String(error.message)))throw error;
+      const matches=this.#search({terms,limit:100,accept});
+      return matches.items.slice(0,limit).map(row=>row.ref);
+    }
+  }
+  slowBrainInputs({subjectId,eventSeq,statePosition,since,eventLimit=24,stateLimit=16}){
+    const events=this.#db.prepare(`SELECT i.seq AS position,v.body FROM subject_inbox i
+      JOIN objects o ON o.id=i.event_id AND o.type='event'
+      JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
+      WHERE i.subject_id=? AND i.seq>? AND json_extract(v.body,'$.origin') IN ('observed','reported')
+        AND (? IS NULL OR coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt'))>=?)
+      ORDER BY i.seq LIMIT ?`).all(subjectId,eventSeq,since,since,eventLimit);
+    const states=this.#db.prepare(`SELECT v.rowid AS position,v.body FROM objects o
+      JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
+      WHERE o.type='personal_state' AND v.rowid>? AND json_extract(v.body,'$.subject')=?
+        AND json_extract(v.body,'$.status')='open' AND (? IS NULL OR json_extract(v.body,'$.recordedAt')>=?)
+      ORDER BY v.rowid LIMIT ?`).all(statePosition,subjectId,since,since,stateLimit);
+    const records=rows=>rows.map(({position,body})=>({position,record:JSON.parse(body)}));
+    return {events:records(events),states:records(states)};
+  }
+  memoryEmbeddingChanges({subjectId,after=0,limit=32}){
+    return this.#db.prepare(`SELECT o.id,o.current_revision AS revision,v.rowid AS position,
+      CASE WHEN (o.type='note' AND json_extract(v.body,'$.status')='current')
+        OR (o.type='personal_state' AND json_extract(v.body,'$.status')='open')
+        THEN substr(json_extract(v.body,'$.body'),1,1800) ELSE null END AS body
+      FROM versions v JOIN objects o ON o.id=v.id AND v.revision=o.current_revision
+      WHERE v.rowid>? AND (o.type='note' OR (o.type='personal_state' AND json_extract(v.body,'$.subject')=?))
+        AND o.id NOT LIKE 'rhythm:%' AND o.id NOT LIKE 'note:journal:%' AND o.id != 'note:slow-watermark'
+      ORDER BY v.rowid LIMIT ?`).all(after,subjectId,limit);
+  }
+  memoryPeopleRefs({people,accept}){
+    const rows=this.#db.prepare(`SELECT o.id,o.current_revision AS revision FROM versions v
+      JOIN objects o ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type IN ('note','personal_state') AND (json_extract(v.body,'$.anchor.id') IN (SELECT value FROM json_each(?))
+        OR EXISTS(SELECT 1 FROM json_each(v.body,'$.about') WHERE json_extract(value,'$.kind')='entity'
+          AND json_extract(value,'$.id') IN (SELECT value FROM json_each(?))))
+      ORDER BY v.rowid DESC LIMIT 64`);
+    const ids=JSON.stringify(people),result=[];
+    for(const {id,revision} of rows.iterate(ids,ids)){
+      const ref={id,revision};if(accept(ref))result.push(ref);
+      if(result.length===8)break;
+    }
+    return result;
+  }
+  #search({terms, types = ['event', 'note'], scene, origins, from, until, limit = 20, offset = 0, excludeRefs = [],contextAnchor,accept=null}) {
     ensure(Array.isArray(terms) && terms.length > 0 && terms.length <= 16, 'INVALID_INPUT', 'supply 1..16 explicit terms');
     terms.forEach(term => text(term, 'term')); types.forEach(type => oneOf(type, ['event', 'note'], 'search type'));
     ensure(Number.isSafeInteger(limit) && limit > 0 && limit <= 100, 'INVALID_INPUT', 'invalid search limit');
@@ -1589,7 +1660,8 @@ export class ContinuityStore {
       ?this.#db.prepare(`SELECT v.body FROM objects o CROSS JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.type=? AND (${normalized.map(()=>"instr(lower(json_extract(v.body,'$.body')),?)>0").join(' OR ')})`).all(type,...normalized).map(r=>JSON.parse(r.body))
       :this.all(type);
     for (const type of [...new Set(types)]) for (const record of candidates(type)) {
-      if(excluded.has(refKey(record)))continue;
+      if(record.id==='note:slow-watermark'||excluded.has(refKey(record)))continue;
+      if(accept&&!accept(asRef(record)))continue;
       if (record.type === 'note' && record.status !== 'current') continue;
       if (scene && (record.type === 'event' ? record.scene !== scene : record.scope.scenes.length && !record.scope.scenes.includes(scene))) continue;
       if (origins && !origins.includes(record.origin)) continue;

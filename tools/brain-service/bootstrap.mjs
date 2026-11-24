@@ -1,3 +1,4 @@
+import {localE5Encoder,localMemoryReranker,SemanticMemory} from '../../src/memory-semantic.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import {existsSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -86,7 +87,6 @@ export function deliveryPinForAction({store,subjectId='jingyang',action,decision
 }
 export function deliveryPinForTask({store,subjectId='jingyang',task}){
  ensure(task&&typeof task==='object','DELIVERY_PIN','task required');
- if(task.metadata?.origin==='autonomy')return {allowedTargets:[],denyQQ:true,reason:'autonomy-task',provenance:{kind:'task',id:task.id??null,source:'autonomy'}};
  const allowed=new Set();let source=null;
  if(task.originEventRef){
   const event=readOwnRecord(store,task.originEventRef,'event',subjectId);
@@ -98,7 +98,13 @@ export function deliveryPinForTask({store,subjectId='jingyang',task}){
   for(const scene of decisionInputTargets(origin.input,{includeContactTargets:true}))allowed.add(scene);
   source=source??'origin-decision';
  }
- if(!allowed.size)return {allowedTargets:[],denyQQ:true,reason:'no-persisted-origin',provenance:{kind:'task',id:task.id??null,source:source??'none'}};
+ // Allow an explicitly scoped private QQ target when backed by an admitted observation for that scene.
+ const explicitPrivate=typeof task.target==='string'&&/^qq\/private\/[0-9]+$/.test(task.target)?task.target:null;
+ if(explicitPrivate&&!allowed.has(explicitPrivate)){
+  const hasAdmitted=[...store.all('event')].some(e=>e.scene===explicitPrivate&&['observed','reported'].includes(e.origin)&&(typeof store.subjectObservation!=='function'||store.subjectObservation(subjectId,e.id)));
+  if(hasAdmitted){allowed.add(explicitPrivate);source=source??'explicit-private-target';}
+ }
+ if(!allowed.size)return {allowedTargets:[],denyQQ:true,reason:'TASK_SCOPE_NARROW',provenance:{kind:'task',id:task.id??null,source:source??'none'}};
  return {allowedTargets:[...allowed],denyQQ:false,provenance:{kind:'task',id:task.id??null,source}};
 }
 export function assertPinnedDelivery({tool,args,pin}){
@@ -297,7 +303,9 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
    // Explicit grants; advertised adapter names are not authority.
    const life=config.openLife?await import('../open-life/policy.mjs'):null;
    if(config.openLife)ensure(dependencies.lifePolicy,'LIFE_POLICY_REQUIRED','open life requires an explicit persistent host policy');
-   const grants=config.openLife?life.OPEN_LIFE_TOOLS.filter(name=>!tools.UNAVAILABLE_TOOLS?.includes(name)):[...core.READ_ONLY_HOST_TOOLS,'qq_send_sticker'];effectiveHostTools=grants;
+   const extraGrants=Array.isArray(dependencies.extraHostTools)?dependencies.extraHostTools:[];
+   const baseGrants=config.openLife?life.OPEN_LIFE_TOOLS.filter(name=>!tools.UNAVAILABLE_TOOLS?.includes(name)):[...core.READ_ONLY_HOST_TOOLS,'qq_send_sticker'];
+   const grants=[...new Set([...baseGrants,...extraGrants])];effectiveHostTools=grants;
    const responseTools=[...grants,'qq_send_message'];
    if(config.openLife)decide.operationPolicy.externalSend={scope:env.QQ_TEST_ONLY_OWNER?'only qq/private/'+env.QQ_TEST_ONLY_OWNER:'all actual friends and joined groups',requiresProactiveReason:true,perTargetCooldownMs:1800000,environment:dependencies.lifeEnvironment??{},idleReflectionIntervalMs:7200000,autonomousExplorationsPerDay:3,choice:'wait, none, continue or autonomous action; no action required'};
    if(config.openLife)decide.operationPolicy.life={environment:'open-life-v15',social:env.QQ_TEST_ONLY_OWNER?'only verified owner private chat':'all actual friends and joined groups; private information stays in its original context',idle:'at most one reflection per two hours and three autonomous explorations per Beijing day; wait/none allowed'};
@@ -356,8 +364,11 @@ export async function launchBrain({root=process.cwd(),env=process.env,dependenci
   const nativeActions=['remember_note','channel_control','group_peek','start_agent_task','pause_agent_task','stop_agent_task','redirect_agent_task','proactive_contact'];
   const allowedNative=dependencies.nativeActions===undefined?nativeActions:nativeActions.filter(name=>dependencies.nativeActions.includes(name));
   const allowed=config.live?[...effectiveHostTools,...allowedNative].filter(name=>allowedNative.includes(name)||registeredToolNames.includes(name)):[];
+  const memoryModels=config.semanticMemory;
+  const semanticMemory=dependencies.semanticMemory??(memoryModels?new SemanticMemory({encode:localE5Encoder(memoryModels),
+   rerank:memoryModels.rerankerDirectory?localMemoryReranker(memoryModels):null}):null);
   service=await core.startBrainService({port:config.port,token:env.BRAIN_TOKEN??null,inboundScenePolicy:scenePolicy,storePath:config.storePath,stateDirectory:config.stateDirectory,styleDirectory:config.styleDirectory,
-   heartbeatMs:0,decide,identity,rhythm:config.rhythm,cognition:effectiveCognition,runtimeInfo,autonomy:config.autonomy,shutdownControl:{token:shutdownToken,stop:async()=>{await stop();dependencies.onStopped?.();}},global:config.global,subjectTask:true,idleIntervalMs:config.idleIntervalMs,rhythmReset:config.rhythmReset,intentProtocol:config.profile.intentProtocol,
+   heartbeatMs:0,decide,identity,rhythm:config.rhythm,cognition:effectiveCognition,runtimeInfo,autonomy:config.autonomy,shutdownControl:{token:shutdownToken,stop:async()=>{await stop();dependencies.onStopped?.();}},global:config.global,subjectTask:true,idleIntervalMs:config.idleIntervalMs,rhythmReset:config.rhythmReset,intentProtocol:config.profile.intentProtocol,timezoneMinutes:config.timezoneMinutes,semanticMemory,
    sessionFactory,theoryStatus:()=>{
   if(runtimeLoss)return {enabled:false,available:false,version:null,degraded:true,code:runtimeLoss.reason??'AFFECT_RUNTIME_UNAVAILABLE',runtimeDegraded:true};
   if(affectAdapter&&affectPlan&&typeof affectAdapter.affectTheoryStatus==='function')return affectAdapter.affectTheoryStatus(affectPlan);

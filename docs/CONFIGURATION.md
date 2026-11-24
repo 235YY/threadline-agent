@@ -86,6 +86,14 @@ B站/GitHub公开阅读受真实平台可达性限制；HTTP失败或截断明�
 不使用私人仓库凭据，不执行仓库代码。基本CLI不会替运营方创建Open Life生产策略。
 
 JY_INTENT_PROTOCOL=1：普通事件决策使用精简协议（模型表达意图、宿主编译事务），见 [INTENT-PROTOCOL](INTENT-PROTOCOL.md)。
+
+精简协议在整库使用本地关键词、人物、工作过程和关系查找历史。可以同时设置 `BRAIN_MEMORY_MODEL_DIR`（本地多语言 E5 模型目录，包含 tokenizer 和 `onnx/model_int8.onnx`）及 `BRAIN_MEMORY_RUNTIME_MODULE`（本地 Transformers.js 的 Node ESM 入口，如 `dist/transformers.node.mjs`）以启用可选向量检索。工作台启动时也接受这两个环境变量。运行时使用 CPU 并从本地加载文件。向量缓存按当前版本分批生成，重启后重建；模型未就绪、超时或出错时继续使用已有检索通道。
+
+启用向量后，还可以设置 `BRAIN_MEMORY_RERANKER_DIR`，指向本地 `Xenova/bge-reranker-base` 目录，包含 tokenizer、模型配置及 `onnx/model_quantized.onnx`。经验证的组合为 `Xenova/multilingual-e5-small`、`Xenova/bge-reranker-base` 和 Transformers.js 3.8.1。普通推荐与主动查询最多让重排模型比较 8 份已授权材料，超时时保留当时已取得的检索结果。自动推荐最多交付两条相关材料，另可交付一条显式置顶摘要。当前会话可以加权，材料的适用范围和来源权限仍独立校验。默认安装无需下载模型；启用后也只读取本地文件。
+
+玻璃箱工作台的慢脑会综合多条经历。它生成或改写的正文只进入本地桌面对话，防止整理结果把私聊内容带进别的会话。夜间停止定时发起的新认知，照常处理入站消息。工作台手动发起的思考仍可使用，主动联系仍需经过收件人勿扰与发送保护。
+
+工作台的「夜间自动入梦」在联机模式下，每五分钟检查本地 23:00 至次日 07:00 是否积累至少四条新的主体观察。跨午夜属于同一晚。凌晨仍遵守现有额度，且自动尝试一晚最多一次。新增较多时按入箱顺序分批整理，手动整理可继续下一批。离线生成手账时保留待整理游标。慢脑与聊天、任务共用运行互斥和费用账本。已发送且结果不明的整理阶段保留待核对状态。
 新建空白环境可按需同时启用 `JY_APPERCEPTION_V1=1`、`JY_SUBJECTIVE_DOMAINS=1`、`JY_SUBJECTIVE_MEMORY_V2=1` 和 `JY_TASK_THREADS=1`。
 需要计算情绪时，再显式启用 `JY_AFFECT=1` 和 `JY_AFFECT_FUSION=1` 并提供 Python。
 需要空闲认知时，需运行心跳（`BRAIN_HEARTBEAT_MS>0`），以 `JY_IDLE_INTERVAL_MS` 控制间隔；空闲不等于必须行动。现有默认值不变。

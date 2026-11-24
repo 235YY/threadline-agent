@@ -2,6 +2,7 @@ import {mkdtempSync, unlinkSync, rmdirSync, existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {ContinuityStore} from '../src/store.mjs';
+import {RequestJournal} from '../src/request-journal.mjs';
 
 export const ref = record => ({id: record.id, revision: record.revision});
 export const event = (id, fields = {}) => ({op: 'append_event', id, body: `事件 ${id}`, scene: 'qq:brother',
@@ -28,3 +29,20 @@ export function disk(t) {
   return path;
 }
 export const code = expected => error => error.code === expected;
+
+export function fixtureJournal(t){
+  const dir=mkdtempSync(join(tmpdir(),'threadline-journal-test-'));
+  const path=join(dir,'requests.json'),journal=new RequestJournal(path);
+  t.after(()=>{
+    journal.close();
+    if(existsSync(path))unlinkSync(path);
+    rmdirSync(dir);
+  });
+  return journal;
+}
+
+export function modelJSON(output,{finishReason='stop',includeUsage=true}={}){
+  return new Response(JSON.stringify({id:'synthetic-reply',choices:[{finish_reason:finishReason,
+    message:{content:JSON.stringify(output)}}],
+    ...(includeUsage?{usage:{prompt_tokens:10,completion_tokens:10,prompt_cache_hit_tokens:0,prompt_cache_miss_tokens:10}}:{})}));
+}

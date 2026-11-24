@@ -16,7 +16,7 @@ test('download setup starts offline, saves private profile, imports notes, and r
  const makeModel=options=>createModelDecision({...options,networkCheck:async()=>({ok:true}),transport:async(_u,init)=>{
   const body=JSON.parse(init.body);requests.push({body,authorization:init.headers.authorization});
   const input=JSON.parse(body.messages[1].content);
-  return new Response(JSON.stringify({id:'synthetic-provider-id',created:1,model:'deepseek-flash',choices:[{finish_reason:'stop',message:{content:JSON.stringify({packetId:input.packetId,decision:{type:'reply',text:'测试回复'}})}}],
+  return new Response(JSON.stringify({id:'synthetic-provider-id',created:1,model:'deepseek-flash',choices:[{finish_reason:'stop',message:{content:JSON.stringify({packetId:input.packetId,decision:{type:'reply',text:'测试回复'},memo:'纸飞机记在生日卡上。'})}}],
    usage:{prompt_tokens:100,completion_tokens:20,prompt_cache_hit_tokens:0,prompt_cache_miss_tokens:100}}),{status:200});
  }});
  const desktop=createDesktop({root,directory,makeModel,providerFetch:async()=>new Response('{}',{status:200})});
@@ -35,10 +35,13 @@ test('download setup starts offline, saves private profile, imports notes, and r
   assert.deepEqual(await (await post('import',{notes:['喜欢纸飞机','喜欢纸飞机']})).json(),{imported:1,duplicates:1});
   assert.equal((await post('import',{notes:['有效项',{body:'',kind:'nonsense'}]})).status,400);
   assert.deepEqual((await (await fetch(url+'api/notes')).json()).notes,[{body:'喜欢纸飞机',kind:'interpretation'}]);
-  const profile={...state.profile,live:true,identity:'你是一个测试馆员。',style:'说话像一个馆员。'};
+  const profile={...state.profile,live:true,identity:'你是一个测试馆员。',style:'说话像一个馆员。',timezoneMinutes:-300};
   const apply=await post('apply',{profile,key});assert.equal(apply.status,200,await apply.clone().text());
-  const reply=await post('chat',{text:'在线一轮'});assert.equal(reply.status,200,await reply.clone().text());
-  assert.equal((await reply.json()).text,'测试回复');
+  const reply=await post('chat',{text:'还记得纸飞机吗？'});assert.equal(reply.status,200,await reply.clone().text());
+  const result=await reply.json();
+  assert.equal(result.text,'测试回复');
+  assert.deepEqual(result.trace,{choice:'respond',recalled:1,declaredUsed:0,impressions:1});
+  assert.equal(JSON.parse(requests[0].body.messages[1].content).view.timeFeel.utcOffsetMinutes,-300);
   assert.equal(requests.length,1);assert.match(JSON.stringify(requests[0].body),/测试馆员/);assert.match(JSON.stringify(requests[0].body),/像一个馆员/);
   assert.equal(requests[0].authorization,'Bearer '+key);
   assert.doesNotMatch(readFileSync(join(directory,'settings.json'),'utf8'),/sk-test/);

@@ -19,6 +19,7 @@ import {attentionId,attentionView} from './attention.mjs';
 import {eventProcessEvents} from './task-threads.mjs';
 import {generationSets} from './prompt-generations.mjs';
 import {validateToolArguments} from './tool-contracts.mjs';
+import {concreteReplyScene,sourceReplyRoute} from './reply-route.mjs';
 
 // Prompt text is part of each sealed packet. Packets are verified by rebuilding them,
 // so every prompt generation that ever sealed a packet must stay loadable: the current
@@ -83,7 +84,8 @@ function materialList(store,assignments,heads=false) {
   for(const a of assignments) {
     uniqueRefs([a.ref]);ensure(ASPECTS.includes(a.aspect),'INVALID_ASPECT','unknown personal material aspect');
     const key=refKey(a.ref), r=record(store,a.ref,['event','note']);
-    if(!map.has(key))map.set(key,{ref:asRef(r),aspects:[],record:r,historical:store.read(r.id).revision!==r.revision||r.status==='historical',needsReview:store.basisChanged(asRef(r))});
+    if(!map.has(key))map.set(key,{ref:asRef(r),aspects:[],record:r,historical:store.read(r.id).revision!==r.revision||r.status==='historical',needsReview:store.basisChanged(asRef(r)),
+      ...(['related','pinboard'].includes(a.reminder)?{reminder:a.reminder}:{})});
     if(!map.get(key).aspects.includes(a.aspect))map.get(key).aspects.push(a.aspect);
   }
   return [...map.values()].map(m=>({...m,aspects:m.aspects.sort(),...(heads&&store.read(m.ref.id).revision!==m.ref.revision?
@@ -356,7 +358,7 @@ function currentTimeProjection(epochMs){
   return {epochMs,local:new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',
     hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date).replace('T',' '),timeZone:'Asia/Shanghai'};
 }
-function buildDecision({store,currentEvent,workspace,identity='',style='',materials=[],previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,allowedActionTools=[],budgetBytes,subjectId=null,stateRefs=[],stateDetail=false,lookupResults=[],localLookupPolicy=null,mind=false,unified=false,waitSupport=false,consultation=false,consultationProgress=false,workbenchMaterials=false,workbenchFocus=false,workbenchRecovery=false,now=null,capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,socialContext=false,task=null,motivationProjection=null,internalSources=[],instructionSuffix=null,intentProtocol=false}) {
+function buildDecision({store,currentEvent,workspace,identity='',style='',materials=[],previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,allowedActionTools=[],budgetBytes,subjectId=null,stateRefs=[],stateDetail=false,lookupResults=[],localLookupPolicy=null,mind=false,unified=false,waitSupport=false,consultation=false,consultationProgress=false,workbenchMaterials=false,workbenchFocus=false,workbenchRecovery=false,now=null,capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,socialContext=false,task=null,motivationProjection=null,internalSources=[],instructionSuffix=null,intentProtocol=false,timezoneMinutes=480}) {
   ensure(typeof investigationContinuityV1==='boolean','INVALID_INPUT','investigation continuity must be boolean');
   ensure(typeof experienceLearningV1==='boolean','INVALID_INPUT','experience learning must be boolean');
   ensure(typeof intentProtocol==='boolean','INVALID_INPUT','intentProtocol must be boolean');
@@ -419,7 +421,15 @@ function buildDecision({store,currentEvent,workspace,identity='',style='',materi
       }
       ensure(!mind||attention,'MIND_PROTOCOL_REQUIRED','mind mode requires explicit purpose-based attention');
       if(intentProtocol&&attention&&!task&&!['这是 AgentTask 单步执行','本轮 current 是 AgentTask','【显式重新准入】'].some(m=>String(instructionSuffix??'').includes(m))){
-        payload.intentProtocol={format:'intent-base-v2',enabled:true};
+        payload.intentProtocol={format:'intent-base-v5',enabled:true,timezoneMinutes,verifiedZip:true};
+        const last=payload.continuity.lastReaction;
+        if(last){
+          const past=store.read(last.decision.id,last.decision.revision);
+          const route=event=>sourceReplyRoute({read:(id,revision)=>store.read(id,revision),all:type=>store.all(type),subjectId,event}).scene;
+          const previous=last.kind==='respond'?store.read(past.id+':response')?.scene:route(past.currentEvent);
+          const here=current.origin==='tool_receipt'?route(currentEvent):current.scene;
+          payload.continuity.lastReaction=concreteReplyScene(here)&&here===previous?{...last,fromScene:here}:null;
+        }
       }
       const stage=unified?'decisionGraph':mind?'decisionMind':attention?'decisionAttention':localLookupPolicy!==null?'decisionWorkbench':'decisionInformation';
       if(attention&&payload.memoryAccess){payload.memoryAccess.routes.push('graph','stateRef');payload.memoryAccess.scope='own-retained-events-notes-states-and-processes';}
@@ -558,11 +568,11 @@ export function prepareReflection({previousDecisions=[],investigationContinuityV
 
 // Host-scheduled autonomy opportunity: a small reflection-stage packet with no world
 // observation. The model sees only her own goals, work, states and granted tools.
-export function prepareAutonomy({store,subjectId,workspace,identity='',style='',allowedActionTools=[],opportunity,kind='idle',now=Date.now(),budgetBytes=131072,focus=null}){
+export function prepareAutonomy({store,subjectId,workspace,identity='',style='',allowedActionTools=[],opportunity,kind='idle',now=Date.now(),budgetBytes=131072,focus=null,timezoneMinutes=480,motivationProjection=null,materials=[]}){
   // Reuse the reflection pipeline for an authentic attention/workbench context. The model
   // only receives the compact intent view built from this base packet.
-  return prepareReflection({store,subjectId,workspace,identity,style,allowedActionTools,budgetBytes,
-    internal:{format:'reflection-frame-v1',kind:'autonomy',opportunityType:kind,opportunity,now,...(focus?{focus}:{})}});
+  return prepareReflection({store,subjectId,workspace,identity,style,allowedActionTools,budgetBytes,motivationProjection,materials,
+    internal:{format:'reflection-frame-v1',kind:'autonomy',opportunityType:kind,opportunity,now,timezoneMinutes,verifiedZip:true,...(focus?{focus}:{})}});
 }
 const APPERCEPTION_DOMAINS=new Set(['self','relationship','world','normative']);
 const APPERCEPTION_PERSPECTIVES=new Set(['relevance','meaning','coping','norm_self']);

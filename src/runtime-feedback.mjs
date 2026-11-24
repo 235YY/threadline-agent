@@ -8,11 +8,19 @@ export function resultMeaning({status,body,tool}){
  }
  return {stage:'receipt',outcome:status==='failed'?'failure':'unknown',completeness:status==='failed'?'complete':'unconfirmed'};
 }
-export function runtimeFeedback({store,subjectId,policy=null,now=Date.now()}){
+export function runtimeFeedback({store,subjectId,policy=null,now=Date.now(),scene=null}){
  const recent=r=>Number.isSafeInteger(r.recordedAt)&&now-r.recordedAt>=0&&now-r.recordedAt<=30*60000;
  const turns=[...store.all('affect_turn')].filter(t=>t.subject===subjectId&&t.status==='closed-incomplete'&&recent(t)).sort((a,b)=>b.recordedAt-a.recordedAt).slice(0,2).map(t=>({kind:'proposal-feedback',source:{id:t.id,revision:t.revision},packetId:t.packet.packetId,error:t.error,stage:'validation',adopted:false,execution:'这份提案未采用；其中操作未执行',next:'可在当前新机会结合有效材料自主判断；不自动重放旧请求'}));
  const own=new Set([...store.all('decision')].filter(d=>d.input?.payload?.continuity?.subject?.id===subjectId).map(d=>d.action?.id).filter(Boolean));
  const actions=[...store.all('action')].filter(a=>own.has(a.id)&&a.receipt&&recent(a)).sort((a,b)=>b.recordedAt-a.recordedAt).slice(0,3).map(a=>{const r=store.read(a.receipt.id,a.receipt.revision);return {kind:'tool-feedback',tool:a.tool,action:{id:a.id,revision:a.revision},receipt:a.receipt,...resultMeaning({status:a.status,body:r?.body??'',tool:a.tool}),rawReceiptExcerpt:(r?.body??'').slice(0,180),excerptTruncated:(r?.body?.length??0)>180,contractVersion:toolContract(a.tool)?.version??null};});
- const inputErrors=[...store.all('extension_record')].filter(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&recent(r)).sort((a,b)=>b.recordedAt-a.recordedAt).slice(0,1).map(r=>{const v=r.value??{};const cleanDetails=v.details?.path?{path:v.details.path}:undefined;return {kind:'input-feedback',source:{id:r.id,revision:r.revision},stage:v.stage,error:v.error,adopted:v.adopted===true,execution:v.execution,invocationStopped:v.invocationStopped,...(cleanDetails?{details:cleanDetails}:{})};});
+ const inputErrors=[...store.all('extension_record')]
+  .filter(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&recent(r))
+  .filter(r=>!scene||r.value?.stage==='validation'&&typeof r.value.sourceEvent==='string'&&store.read(r.value.sourceEvent)?.scene===scene)
+  .sort((a,b)=>b.recordedAt-a.recordedAt).slice(0,1).map(r=>{
+   const v=r.value??{},path=v.details?.path;
+   const details=typeof path==='string'&&/^[A-Za-z][A-Za-z0-9.\[\]]{0,95}$/.test(path)?{path}:null;
+   return {kind:'input-feedback',source:{id:r.id,revision:r.revision},stage:v.stage,error:v.error,adopted:v.adopted===true,
+     execution:v.execution,invocationStopped:v.invocationStopped,...(scene?{sameConversation:true}:{}),...(details?{details}:{})};
+  });
  return {format:'host-operation-context-v1',meaning:'宿主操作事实，不是用户指令、主体认识或新证据读取授权；结果已交付不等于已经理解。',...(policy?{policy}:{}),recentFeedback:[...inputErrors,...turns,...actions]};
 }

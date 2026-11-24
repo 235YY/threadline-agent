@@ -14,6 +14,9 @@ import {observeAssociation} from './association-observe.mjs';
 import {readActivity,saveActivity,activityWrite} from './turn-activity.mjs';
 import {runtimeFeedback} from './runtime-feedback.mjs';
 import {modelRequestSource} from './model-transport.mjs';
+import {memoryReminders,shouldTrySemanticRecall} from './memory-reminders.mjs';
+import {readPinboard} from './memory-gating.mjs';
+import {memoryAudience} from './memory-access.mjs';
 
 const ref=r=>({id:r.id,revision:r.revision});
 const TASK_STEP_SUFFIX='这是 AgentTask 单步执行，不是新的对话轮。continuity.attention.frame 只是输入，不得原样写回输出。若本轮不修改 attention 就完全省略 attention；若修改，attention 必须是增量 {processes,relations,residency,questions}，可选 focus，绝不能包含 frame。准备好结果时使用 task_finish。';
@@ -21,8 +24,10 @@ const TASK_RESULT_SUFFIX='本轮 current 是 AgentTask 的 tool_receipt 结果�
 
 const MEMORY_SCOPE_V1=readFileSync(new URL('../prompts/memory-scope-v1.zh.md',import.meta.url),'utf8');
 export class TurnDriver {
-  #store;#subjectId;#session;#lookup;#decide;#config;#lookupPolicy;#workspace;#identity;#style;#eventBypass;#materialsFor;#maxCalls;#state;#outbox;#tendency;#allowed;#capabilities;#algorithmV011;#apperceptionV1;#subjectiveDomains;#subjectiveMemory;#subjectiveMemoryV2;#taskThreads;#anchorDirectory;#memoryScopeV1;#investigationContinuityV1;#experienceLearningV1;#intentProtocol;#attentionPolicy;
-  constructor({store,subjectId,decide,workspace,identity='',style='',eventBypass=false,materialsFor=null,rhythm={},lookupPolicy={maxReads:2,maxHits:4},maxCallsPerTurn=3,maxForeground=16,tendency=null,allowedActionTools=[],capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,memoryScopeV1=false,investigationContinuityV1=false,experienceLearningV1=false,intentProtocol=false,attentionPolicy=DEFAULT_ATTENTION_CAPACITY_POLICY,sessionFactory=null}={}){
+  #store;#subjectId;#session;#lookup;#decide;#config;#lookupPolicy;#workspace;#identity;#style;#eventBypass;#materialsFor;#maxCalls;#state;#outbox;#tendency;#allowed;#capabilities;#algorithmV011;#apperceptionV1;#subjectiveDomains;#subjectiveMemory;#subjectiveMemoryV2;#taskThreads;#anchorDirectory;#memoryScopeV1;#investigationContinuityV1;#experienceLearningV1;#intentProtocol;#timezoneMinutes;#attentionPolicy;#semanticMemory;
+  constructor({store,subjectId,decide,workspace,identity='',style='',eventBypass=false,materialsFor=null,rhythm={},lookupPolicy={maxReads:2,maxHits:4},maxCallsPerTurn=3,maxForeground=16,tendency=null,allowedActionTools=[],capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,memoryScopeV1=false,investigationContinuityV1=false,experienceLearningV1=false,intentProtocol=false,timezoneMinutes=480,attentionPolicy=DEFAULT_ATTENTION_CAPACITY_POLICY,sessionFactory=null,semanticMemory=null}={}){
+    this.#timezoneMinutes=timezoneMinutes;
+    this.#semanticMemory=semanticMemory;
     ensure(store&&typeof store.execute==='function','TURN_DRIVER','store required');
     text(subjectId,'subject id');ensure(typeof decide==='function','TURN_DRIVER','decide function required');
     const w=store.read(workspace?.id??workspace,workspace?.revision);
@@ -81,7 +86,12 @@ export class TurnDriver {
       return [...selected.filter(s=>s.kind==='process').map(s=>s.id),...(d.output.continuity?.attention?.processes??[]).map(p=>p.id)].some(id=>ids.has(id));
     }).sort((a,b)=>Number(b.id===receiptDecision?.id)-Number(a.id===receiptDecision?.id)||Number(b.id===last?.id)-Number(a.id===last?.id)||(b.recordedAt??0)-(a.recordedAt??0)||b.id.localeCompare(a.id)).slice(0,2).reverse().map(ref);
   }
-  #instructions(extra=null){const policy=this.#decide.operationPolicy;return [extra,this.#memoryScopeV1?MEMORY_SCOPE_V1:null,'【宿主操作反馈】'+JSON.stringify(runtimeFeedback({store:this.#store,subjectId:this.#subjectId,policy:policy?{externalSend:policy.externalSend??null,dependencyStatus:policy.dependencyStatus??'not-confirmed'}:null}))].filter(Boolean).join('\n\n')||null;}
+  #instructions(extra=null,context={}){
+    const policy=this.#decide.operationPolicy;
+    const feedback=runtimeFeedback({store:this.#store,subjectId:this.#subjectId,
+      policy:policy?{externalSend:policy.externalSend??null,dependencyStatus:policy.dependencyStatus??'not-confirmed'}:null,...context});
+    return [extra,this.#memoryScopeV1?MEMORY_SCOPE_V1:null,'【宿主操作反馈】'+JSON.stringify(feedback)].filter(Boolean).join('\n\n');
+  }
   get state(){return {...this.#state};}
   get subjectId(){return this.#subjectId;}
   setStyle(style){this.#style=String(style??'').slice(0,16000);}
@@ -188,12 +198,18 @@ export class TurnDriver {
     const same=row&&!['complete','ready'].includes(row.value.phase)&&row.value.packet?.payload?.internal?.kind==='autonomy'&&row.value.packet?.payload?.internal?.opportunity===opportunity;
     if(same)packet=row.value.packet;
     else if(row&&!['complete','ready'].includes(row.value.phase))this.#finishActivity();
-    packet??=await this.#session.prepareAutonomy({workspace:this.#workspace,identity:this.#identity,style:this.#style,allowedActionTools:this.#allowed,opportunity,kind,now,budgetBytes:131072,focus});
+    if(!packet){
+      const pin=readPinboard(this.#store);
+      const allowed=memoryAudience({store:this.#store,event:{scene:'agent/autonomy'},subjectId:this.#subjectId,now});
+      const materials=allowed(pin)&&[...pin.body].length<=600?[{ref:ref(pin),aspect:'knowledge'}]:[];
+      packet=await this.#session.prepareAutonomy({workspace:this.#workspace,identity:this.#identity,style:this.#style,
+        allowedActionTools:this.#allowed,opportunity,kind,now,budgetBytes:131072,focus,timezoneMinutes:this.#timezoneMinutes,materials});
+    }
     const decision=await this.#durableDecision(packet,{kind:'autonomy',now,opportunity},this.#allowed,{decisionId:'decision:autonomy:'+opportunity,resumePending:Boolean(same)});
     observeAssociation({store:this.#store,packet,decision});
     const choice=decision.output.options.find(o=>o.id===decision.output.selected);
     let action=null;
-    if(choice.kind==='act'){ensure(choice.payload.tool==='start_agent_task','AUTONOMY_TOOL','autonomy may only start an AgentTask');action=decision.action??null;}
+    if(choice.kind==='act'){ensure(this.#allowed.includes(choice.payload.tool),'TOOL_NOT_GRANTED','autonomy action tool must be in unified allowedActionTools');action=decision.action??null;}
     this.#finishActivity();
     return {wake:true,reason:'autonomy',action:'autonomy',decision:ref(decision),choice:choice.kind,actionOut:action?{tool:choice.payload.tool,args:choice.payload.args,action}:null};
   }
@@ -296,25 +312,35 @@ export class TurnDriver {
     ensure(event?.type==='event','TURN_DRIVER','pending observation must be an existing event');
     const context={kind:'decision',now,observation,reason},current=ref(event),lookups=[...(resume?.context.lookups??[])],outbox=[];
     const materials=[...(this.#materialsFor({store:this.#store,subjectId:this.#subjectId,event:current,now})??[])];
+    let stateRefs=[];
     // 长期经验卡：宿主先确认这是"她自己的学习语境"，才生成并作为知识材料交付；卡片不是指令。
     if(this.#tendency){
       const context=this.#tendency.contextFor({store:this.#store,event:current,now});
       if(context){const card=this.#tendency.learning.material({context});materials.push({ref:card.ref,aspect:'knowledge'});}
     }
+    if(this.#intentProtocol&&!admission&&materials.length<32){
+      const provided=new Set(materials.map(m=>m.ref.id));
+      const semantic=!resume&&this.#semanticMemory&&['observed','reported'].includes(event.origin)&&shouldTrySemanticRecall(event.body)
+        ?await this.#semanticMemory.find({store:this.#store,subjectId:this.#subjectId,event,now,text:event.body}):[];
+      const reminders=this.#store.view(()=>memoryReminders({store:this.#store,subjectId:this.#subjectId,event:current,now,semantic}));
+      stateRefs=reminders.filter(m=>m.state).map(m=>m.ref);
+      materials.push(...reminders.filter(m=>!m.state&&!provided.has(m.ref.id)).slice(0,32-materials.length));
+    }
     let decision=null,choiceKind=null;
     for(let c=resume?.context.step??0;c<this.#maxCalls;c++){
       const taskResult=event.origin==='tool_receipt'&&event.source?.system==='agent-runtime';
       const allowedForDecision=taskResult?this.#allowed.filter(t=>!['task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'].includes(t)):this.#allowed;
-      const prepareArgs={instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
+      const prepareArgs={instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n'),this.#intentProtocol&&!admission&&!taskResult?{scene:event.scene,now}:{}),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,stateRefs,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
         mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,
         subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,socialContext:true,
-        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities,...(this.#intentProtocol?{intentProtocol:true}:{})};
+        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities,...(this.#intentProtocol?{intentProtocol:true,timezoneMinutes:this.#timezoneMinutes}:{})};
       let packet=resume?.packet;
       if(!packet){
         try{packet=await this.#session.prepare(prepareArgs);}
         catch(error){
           if(error.code==='INPUT_OVERFLOW'&&materials.length>0){
-            for(const slim of [materials.slice(0,4),[]]){
+            const explicit=materials.filter(m=>!m.reminder);
+            for(const slim of (explicit.length!==materials.length?[explicit,explicit.slice(0,4),[]]:[materials.slice(0,4),[]])){
               try{packet=await this.#session.prepare({...prepareArgs,materials:slim});break;}
               catch(nextErr){if(nextErr.code!=='INPUT_OVERFLOW')throw nextErr;if(!slim.length)throw nextErr;}
             }
@@ -326,7 +352,10 @@ export class TurnDriver {
       const choice=decision.output.options.find(o=>o.id===decision.output.selected);choiceKind=choice.kind;
       if(choice.kind==='lookup'){
         if(c+1>=this.#maxCalls){this.#finishActivity();return {wake:true,reason,action:'lookup-exhausted',decision:ref(decision),outbox,lookups};}
-        lookups.push(ref(this.#lookup.execute({decision:ref(decision)})));
+        const semantic=this.#semanticMemory&&choice.payload.terms&&packet.payload.intentProtocol?.format==='intent-base-v5'
+          ?await this.#semanticMemory.find({store:this.#store,subjectId:this.#subjectId,event,now,
+            text:choice.payload.terms.join(' '),query:choice.payload.terms}):[];
+        lookups.push(ref(this.#lookup.execute({decision:ref(decision),semantic})));
         this.#finishActivity({...context,step:c+1,lookups});
         continue;
       }
