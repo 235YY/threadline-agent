@@ -37,7 +37,7 @@ test('intent view aggregates person, cross-session metadata, relative times, spe
     sender,
     occurredAt: now - 40 * 60_000,
   })).at(-1);
-  const p0 = session.prepare({ currentEvent: ref(privMsg), workspace: ref(w), identity: '你是鲸漾。', mind: true, unified: true, workbenchMaterials: true, workbenchFocus: true, workbenchRecovery: true, taskThreads: true, localLookupPolicy: { maxReads: 2, maxHits: 4 }, budgetBytes: 131072, now: now - 40 * 60_000 });
+  const p0 = session.prepare({ currentEvent: ref(privMsg), workspace: ref(w), identity: '你是小栈。', mind: true, unified: true, workbenchMaterials: true, workbenchFocus: true, workbenchRecovery: true, taskThreads: true, localLookupPolicy: { maxReads: 2, maxHits: 4 }, budgetBytes: 131072, now: now - 40 * 60_000 });
   session.commit({
     packet: p0, decisionId: 'd-priv', requestId: 'd-priv', allowedActionTools: [],
     output: {
@@ -81,7 +81,7 @@ test('intent view aggregates person, cross-session metadata, relative times, spe
   })).at(-1);
 
   const packet = session.prepare({
-    currentEvent: ref(grpCur), workspace: ref(w), identity: '你是鲸漾。',
+    currentEvent: ref(grpCur), workspace: ref(w), identity: '你是小栈。',
     mind: true, unified: true, workbenchMaterials: true, workbenchFocus: true, workbenchRecovery: true, taskThreads: true,
     localLookupPolicy: { maxReads: 2, maxHits: 4 }, socialContext: true, budgetBytes: 131072, now,
   });
@@ -185,7 +185,7 @@ test('brain-service processes local act tool_receipt promptly without maintenanc
   t.after(async () => { await new Promise(r => s.server.close(r)); s.close(); });
 
   // Verify MaintenanceSession never steals unhandled tool_receipt from inbox.
-  const maint = new MaintenanceSession({ store: s.store, subjectId: 'jingyang', identity: '你是鲸漾。' });
+  const maint = new MaintenanceSession({ store: s.store, subjectId: 'jingyang', identity: '你是小栈。' });
 
   const r1 = await s.reply({
     scene: 'qq/private/100001', key: 'private:100001', message_id: 'm1',
@@ -252,7 +252,7 @@ test('intent-v1 exposes recentTools, full memory stack, and bridges moodEval int
   const ev1 = put(store, 'ev1', event('m1', { body: '帮我发消息给好友B', scene: 'qq/private/100001', actor: sender.entityId, sender })).at(-1);
   store.execute({ requestId: 'admit-1', commands: [{ op: 'admit_subject_event', subjectId: 'jingyang', event: ref(ev1) }] });
   const packet = await session.prepare({
-    currentEvent: ref(ev1), workspace: ref(w), identity: '你是鲸漾。',
+    currentEvent: ref(ev1), workspace: ref(w), identity: '你是小栈。',
     instructionSuffix: '【记忆调用与认识范围】\n目录不等于已读正文。',
     mind: true, unified: true, workbenchMaterials: true, workbenchFocus: true, workbenchRecovery: true,
     algorithmV011: true, apperceptionV1: true, subjectiveDomains: true, subjectiveMemoryV2: true,
@@ -323,14 +323,14 @@ test('intentView sanitizes internal logs, avoids cross-chat priorSteps bleed, an
 
 test('isGroupAddressed enforces all, mentioned, and wake policies cleanly', () => {
   const plainMsg = { message_type: 'group', message: [{ type: 'text', data: { text: '大家好' } }] };
-  const wakeMsg = { message_type: 'group', message: [{ type: 'text', data: { text: '鲸漾在吗' } }] };
+  const wakeMsg = { message_type: 'group', message: [{ type: 'text', data: { text: '小栈在吗' } }] };
   const atMsg = { message_type: 'group', message: [{ type: 'at', data: { qq: '100009' } }, { type: 'text', data: { text: ' 看看' } }] };
   assert.equal(isGroupAddressed(plainMsg, { selfId: 100009, policy: 'all' }), true);
   assert.equal(isGroupAddressed(plainMsg, { selfId: 100009, policy: 'mentioned' }), false);
   assert.equal(isGroupAddressed(atMsg, { selfId: 100009, policy: 'mentioned' }), true);
-  assert.equal(isGroupAddressed(plainMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['鲸漾'] }), false);
-  assert.equal(isGroupAddressed(wakeMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['鲸漾'] }), true);
-  assert.equal(isGroupAddressed(atMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['鲸漾'] }), true);
+  assert.equal(isGroupAddressed(plainMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['小栈'] }), false);
+  assert.equal(isGroupAddressed(wakeMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['小栈'] }), true);
+  assert.equal(isGroupAddressed(atMsg, { selfId: 100009, policy: 'wake', wakeKeywords: ['小栈'] }), true);
 });
 
 test('blockedChatSet and acceptsChat enforce blocked group/private denylist cleanly', () => {
@@ -379,7 +379,7 @@ test('TurnDriver recovers cleanly if stale ready lookup activity hits LOOKUP_CON
   const sender = ensurePerson(store, { system: 'qq', id: '100001', name: '测试同学', isOwner: true });
   let step = 0;
   const driver = new TurnDriver({
-    store, subjectId: 'jingyang', workspace: ref(w), identity: '你是鲸漾。',
+    store, subjectId: 'jingyang', workspace: ref(w), identity: '你是小栈。',
     taskThreads: true, investigationContinuityV1: true,
     decide: p => {
       step++;
@@ -423,7 +423,7 @@ test('TurnDriver recovers cleanly if stale ready lookup activity hits LOOKUP_CON
     });
   }
   const driver2 = new TurnDriver({
-    store, subjectId: 'jingyang', workspace: ref(ws2), identity: '你是鲸漾。',
+    store, subjectId: 'jingyang', workspace: ref(ws2), identity: '你是小栈。',
     taskThreads: true, investigationContinuityV1: true,
     decide: p => JSON.stringify({
       packetId: p.packetId,

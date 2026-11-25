@@ -1,20 +1,20 @@
 import {canonical,digest,ensure,text} from './contracts.mjs';
 import {initializeSubject,admitSubjectEvent} from './continuity.mjs';
-import {prepareDecision,prepareReflection,commitDecision,verifiedModelInput} from './cognition.mjs';
-import {attentionId} from './attention.mjs';
+import {prepareDecision,prepareReflection,prepareAutonomy,commitDecision,verifiedModelInput} from './cognition.mjs';
+import {attentionId,isAttentionCapacityError} from './attention.mjs';
 import {packetContext,failureMetadata,outputMetrics} from './debug-contract.mjs';
 import {normalizeAndRecord} from './proposal-normalization.mjs';
 import {intentEligible,looksLikeIntent,intentWireFor,expandIntent} from './intent-protocol.mjs';
 
 // An intent-protocol answer is compiled into the full output before the ordinary commit.
-// The raw answer and its compilation are kept for audit; nothing else changes downstream.
+// Keep the raw answer and diagnostics for audit; the attempt already contains the compiled output.
 export function compileIntentOutput({store,packet,output}){
   if(!intentEligible(packet)||!looksLikeIntent(output))return output;
   const raw=typeof output==='string'?output:canonical(output),wire=intentWireFor(packet,JSON.parse(raw).packetId);
   ensure(wire,'WRONG_PACKET','intent answer does not match any intent packet for this input');
   const diagnostics=[],compiled=expandIntent(wire,raw,{store,diagnostics}),subject=packet.payload.continuity.subject.id;
   const id='extension:'+subject+':runtime:intent:'+digest({packet:packet.packetId,raw});
-  if(!store.read(id))store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:subject,theory:'runtime',stateType:'intent-compilation',schemaVersion:'1',expectedRevision:0,value:{packetId:packet.packetId,intentPacketId:wire.packetId,rawOutput:raw,compiled,diagnostics}}]});
+  if(!store.read(id))store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:subject,theory:'runtime',stateType:'intent-compilation',schemaVersion:'1',expectedRevision:0,value:{packetId:packet.packetId,intentPacketId:wire.packetId,rawOutput:raw,diagnostics}}]});
   return compiled;
 }
 
@@ -32,6 +32,7 @@ export class ContinuitySession {
   invoke(packet,fn){return fn(packet);}
   sourceBlocked(eventId){const event=this.#store.read(eventId);return !!event&&this.#requestJournal?.blocks({subject:this.#subjectId,kind:'event',event:{id:event.id,revision:event.revision}})===true;}
   prepareReflection(args){return prepareReflection({...args,store:this.#store,subjectId:this.#subjectId});}
+  prepareAutonomy(args){return prepareAutonomy({...args,store:this.#store,subjectId:this.#subjectId});}
   prepare(args) {
     ensure(args&&args.subjectId===undefined,'SUBJECT_FIXED','session subject cannot be changed per activity');
     admitSubjectEvent({store:this.#store,subjectId:this.#subjectId,event:args.currentEvent,
@@ -45,7 +46,21 @@ export class ContinuitySession {
     let output,d;
     try{const attempt=this.#requestJournal?.packetRequest(args.packet.packetId);ensure(!attempt||attempt.status==='settled'&&attempt.validation?.status!=='rejected','REQUEST_VALIDATION_CONFLICT','request must have a settled, unrejected output before adoption');output=normalizeAndRecord({store:this.#store,packet:args.packet,output:compileIntentOutput({store:this.#store,packet:args.packet,output:args.output})});d=commitDecision({...args,output,store:this.#store});}
     catch(error){
-      if(error.name==='ContractError'&&!this.#requestJournal?.packetRequest(args.packet.packetId)?.validation)this.#requestJournal?.recordValidation(args.packet.packetId,{status:'rejected',error:error.code});
+      // Capacity is a host resource boundary, not a semantic rejection of the
+      // model output. Keep the paid output off the rejected journal and leave the
+      // source deferred for an explicit operator/attention-change re-entry.
+      const capacityError=isAttentionCapacityError(error.code);
+      if(capacityError){
+        if(args.packet.payload.current){
+          try{
+            const subject=this.#store.read(this.#subjectId),event=args.packet.payload.current;
+            this.#store.execute({requestId:'capacity-defer:'+args.packet.packetId,commands:[{op:'fail_subject_event',subject:{id:this.#subjectId,revision:subject.revision},event:{id:event.id,revision:event.revision},reason:error.code}]});
+          }catch{}
+        }
+        // Non-event capacity is host resource exhaustion, not a model-semantic
+        // rejection. Leave the journal validation untouched; activity is closed
+        // by the driver as capacity-deferred.
+      }else if(error.name==='ContractError'&&!this.#requestJournal?.packetRequest(args.packet.packetId)?.validation)this.#requestJournal?.recordValidation(args.packet.packetId,{status:'rejected',error:error.code});
       if(['STATE_CONFLICT','UNDELIVERED_REFERENCE','WRONG_OBJECT_KIND','ID_COLLISION','UNREAD_STATE','INTENT_OPTION','INTENT_HANDLE','INTENT_SHAPE','INTENT_LIMIT','TOOL_NOT_GRANTED'].includes(error.code)){
         const id='extension:'+this.#subjectId+':runtime:validation:'+digest({packet:args.packet.packetId,output:output??args.output,code:error.code});
         if(!this.#store.read(id))this.#store.execute({requestId:id,commands:[{op:'put_extension_record',id,owner:this.#subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'validation',sourceEvent:args.packet.payload.current?.id??null,packetId:args.packet.packetId,error:error.code,message:error.message,details:error.details??{},adopted:false,execution:'not-started',next:'上次提案未提交。按当前交付目录自主重新判断；不自动重放，不替你修订内容。'}}]});
@@ -55,8 +70,45 @@ export class ContinuitySession {
     this.#requestJournal?.recordValidation(args.packet.packetId,{status:'accepted',decision:{id:d.id,revision:d.revision}});
     return d;
   }
+  capturedOutput(packet){
+    const r=this.#requestJournal?.packetRequest(packet?.packetId);
+    if(!r||r.packetId!==packet?.packetId||r.status!=='settled'||r.validation?.status==='rejected'||typeof r.output!=='string')return null;
+    if(packet?.payload?.continuity?.subject?.id!==this.#subjectId)return null;
+    const current=this.#store.read(this.#subjectId),delivered=packet.payload.continuity.subject;
+    if(!current||!Number.isSafeInteger(delivered?.revision)||current.revision!==delivered.revision)return null;
+    const frameRef=packet.payload.continuity.attention?.frame;
+    if(frameRef){
+      const frame=this.#store.read(attentionId(this.#subjectId));
+      if(!frame||frame.revision!==frameRef.revision)return null;
+    }
+    return r.output;
+  }
+  // Phase 3.2 R1/R2: adopt one durable decision_attempt capture without invoking a
+  // model and without re-normalizing the proposal. The store-side attempt capture
+  // inside commitDecision is replayed, so a different output/packet for the same
+  // identity is rejected by ATTEMPT_COLLISION instead of being adopted.
+  commitCaptured(args){
+    ensure(['decisionContinuity','decisionInformation','decisionWorkbench','decisionAttention','decisionMind','decisionGraph'].includes(args.packet?.stage)&&args.packet.payload.continuity.subject.id===this.#subjectId,'SUBJECT_FIXED','input belongs to another subject/session');
+    text(args?.decisionId,'decision id');text(args?.requestId,'request id');
+    const existing=this.#store.read(args.decisionId);
+    if(existing){
+      ensure(existing.type==='decision'&&existing.input?.packetId===args.packet.packetId&&existing.requestKey===args.requestId,'DECISION_ID_COLLISION','captured decision id belongs to another request');
+      return existing;
+    }
+    const row=this.#requestJournal?.packetRequest(args.packet.packetId);
+    ensure(row&&row.status==='settled'&&row.validation?.status!=='rejected'&&row.validation?.status!=='accepted','TASK_CAPTURE_STATE','settled, unadopted captured request required');
+    const decision=commitDecision({...args,store:this.#store,output:args.output});
+    this.#requestJournal?.recordValidation(args.packet.packetId,{status:'accepted',decision:{id:decision.id,revision:decision.revision}});
+    return decision;
+  }
   closeRejected({packet,error,journal}){
-    if(error.name!=='ContractError'&&this.#requestJournal?.packetRequest(packet.packetId)?.validation?.status!=='rejected')return false;
+    if(isAttentionCapacityError(error.code)){
+      // The source is already deferred without quarantine; close the captured
+      // activity so the next tick cannot resume a stale packet.
+      if(journal)this.#store.execute({requestId:'capacity-complete:'+packet.packetId,commands:[journal]});
+      return true;
+    }
+    if(error.name!=='ContractError'&&!['TOOL_ARGUMENTS','OUTPUT_SHAPE','OUTPUT_JSON'].includes(error.code))return false;
     const commands=[];
     if(packet.payload.current)commands.push({op:'quarantine_source',subject:{id:this.#subjectId,revision:this.#store.read(this.#subjectId).revision},event:{id:packet.payload.current.id,revision:packet.payload.current.revision},reason:error.code});
     commands.push(journal);

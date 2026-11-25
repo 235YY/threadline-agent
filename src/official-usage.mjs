@@ -5,7 +5,7 @@ import {join} from 'node:path';
 // This is an account-level bill, not a per-request proof. It must never be
 // used to rewrite a request's usage or to silently release an unknown reserve.
 const DAY=/^\d{4}-\d{2}-\d{2}$/;
-const KEY_LABEL='新版鲸漾系统';
+const KEY_LABEL='Threadline Agent';
 
 function csvLine(line){
   const cells=[];let cell='',quoted=false;

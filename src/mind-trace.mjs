@@ -8,16 +8,18 @@ export function readMindTrace({store,subjectId,decision}){
   return store.view(()=>{
     const d=store.read(decision.id,decision.revision);
     ensure(d?.type==='decision'&&d.input.payload.continuity?.subject.id===subjectId,'MISSING_REACTION','unknown own decision');
-    const reaction=readReaction({store,subjectId,decision}),cards=[...d.input.payload.continuity.foreground,...d.input.payload.continuity.recalled];
+    const unavailable=d.input.packetUnavailable===true;
+    const reaction=readReaction({store,subjectId,decision});
+    const cards=unavailable?[]:[...d.input.payload.continuity.foreground,...d.input.payload.continuity.recalled];
     const after=store.read(reaction.stateAfter.subject.id,reaction.stateAfter.subject.revision);
-    const states=after.changedStates.map(r=>store.read(r.id,r.revision));
+    const states=unavailable?[]:after.changedStates.map(r=>store.read(r.id,r.revision));
     const action=d.action?store.read(d.action.id):null;
     const receipts=action?.receipt?[store.read(action.receipt.id,action.receipt.revision)]:[];
-    return {format:'jingyang-mind-trace-v1',decision:ref(d),
-      delivered:{currentEvent:d.currentEvent,workspace:d.workspace,mind:d.input.payload.continuity.mind??null,
-        states:cards.map(c=>({ref:c.ref,historical:c.historical})),materials:d.input.payload.materials.map(m=>m.ref),
-        grantedTools:d.input.payload.allowedActionTools},
-      proposed:d.output.continuity.changes,
+    return {format:'jingyang-mind-trace-v1',decision:ref(d),packetUnavailable:unavailable,
+      delivered:{currentEvent:d.currentEvent,workspace:d.workspace,mind:unavailable?null:d.input.payload.continuity.mind??null,
+        states:cards.map(c=>({ref:c.ref,historical:c.historical})),materials:unavailable?[]:(d.input.payload.materials??[]).map(m=>m.ref),
+        grantedTools:unavailable?[]:d.input.payload.allowedActionTools},
+      proposed:d.output?.continuity?.changes??[],
       accepted:states.map(s=>({ref:ref(s),kind:s.kind,body:s.body,scope:s.scope,nature:s.nature,reason:s.reason,basis:s.basis,
         predecessor:s.predecessor,...(s.mind?{mind:s.mind}:{})})),
       keptDelivered:cards.filter(c=>!states.some(s=>s.id===c.ref.id)).map(c=>c.ref),
@@ -25,7 +27,7 @@ export function readMindTrace({store,subjectId,decision}){
       execution:action?{ref:ref(action),status:action.status,receipt:action.receipt,asOf:'inspection-time',receipts}:{status:'no-action-intent',receipts:[]},
       delivery:reaction.response,
       continuation:{subject:reaction.stateAfter.subject,foreground:reaction.stateAfter.foreground,changed:reaction.stateAfter.changed},
-      limitations:['structured-proposal-is-not-private-reasoning','declared-basis-is-not-proof-of-causal-influence','next-input-must-be-inspected-separately']};
+      limitations:['structured-proposal-is-not-private-reasoning','declared-basis-is-not-proof-of-causal-influence','next-input-must-be-inspected-separately',...(unavailable?['input-snapshot-unavailable']:[])]};
   });
 }
 

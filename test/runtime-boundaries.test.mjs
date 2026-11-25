@@ -43,7 +43,7 @@ test('standard live startup injects the official gate and RequestJournal, withou
   assert.ok(options.requestJournal instanceof RequestJournal);assert.equal(options.officialSpend,monitor);assert.equal(brain.config.rhythm.dailyCallCap,null);
   const paused=await brain.service.reply({source:'fixture',key:'paused',scene:'synthetic',message_id:'one',messages:[{role:'user',content:'offline message'}]});
   assert.equal(paused.silent,true);assert.equal((await brain.service.turn()).budgetPaused,true);assert.equal(calls,0);
-  const now=Date.now();monitor.accept({source:'https://platform.deepseek.com/usage',keyLabel:'新版鲸漾系统',period:'today',timeZone:'Asia/Shanghai',currency:'CNY',day:officialDay(now),spendMicros:1000,requestCount:0,capturedAt:now},token);
+  const now=Date.now();monitor.accept({source:'https://platform.deepseek.com/usage',keyLabel:'Threadline Agent',period:'today',timeZone:'Asia/Shanghai',currency:'CNY',day:officialDay(now),spendMicros:1000,requestCount:0,capturedAt:now},token);
   await brain.service.turn();assert.equal(calls,1);assert.equal(options.requestJournal.data.requests[0].validation.status,'accepted');
  }finally{await brain.stop();}
 });
@@ -148,10 +148,22 @@ test('ambient feature variables cannot silently change a core service',async()=>
  try{s.observe({source:'qq',key:'private:fixture',sourceKey:'ambient-test',text:'合成输入'});await s.turn();assert.equal(packet.payload.apperceptionV1,undefined);}finally{s.close();if(old===undefined)delete process.env.JY_APPERCEPTION_V1;else process.env.JY_APPERCEPTION_V1=old;}
 });
 
-test('affect availability is probed before model construction, without publishing false readiness',async()=>{
+test('affect availability failure degrades the feature instead of blocking startup, without false readiness',async()=>{
  const f=fixture(),fake=fakeDependencies({affect:{probeAffect:async()=>{throw Object.assign(Error('worker missing'),{code:'WORKER_UNAVAILABLE'});},affectFactory:()=>{throw Error('must not construct session');}}});
- await assert.rejects(launchBrain({...f,env:{...liveEnv(f.env),JY_AFFECT:'1'},dependencies:fake.deps}),{code:'WORKER_UNAVAILABLE'});
- assert.equal(fake.calls.model,0);assert.equal(existsSync(join(f.root,'state','brain.instance.json')),false);assert.equal(existsSync(join(f.root,'state','brain.launch.lock')),false);
+ writeFileSync(join(f.root,'python.exe'),'synthetic operator interpreter');
+ const running=await launchBrain({...f,env:{...liveEnv(f.env),JY_AFFECT:'1',JY_AFFECT_PYTHON:join(f.root,'python.exe')},dependencies:fake.deps});
+ try{
+  const options=fake.options(),theory=options.theoryStatus();
+  assert.equal(theory.enabled,false);assert.equal(theory.available,false);assert.equal(theory.degraded,true);assert.equal(theory.code,'WORKER_UNAVAILABLE');
+  assert.equal(running.summary.affect,false);assert.equal(running.summary.fusion,false);assert.equal(running.summary.affectRequested,true);
+  assert.equal(running.summary.affectDegraded.code,'WORKER_UNAVAILABLE');
+  assert.equal(running.instance.status,'ready');assert.equal(running.instance.mode,'live');
+  assert.equal(running.instance.affect,false);assert.equal(running.instance.fusion,false);
+  assert.equal(options.sessionFactory??null,null,'degraded startup must not install an affect session factory');
+  assert.equal(typeof fake.calls.model,'number');
+ }finally{await running.stop();}
+ assert.equal(existsSync(join(f.root,'state','brain.instance.json')),false,'owned instance evidence is removed on clean stop');
+ assert.equal(existsSync(join(f.root,'state','brain.launch.lock')),false,'owned launch lock is removed on clean stop');
 });
 
 test('real local affect probe and fusion configuration start without calling a model',async()=>{

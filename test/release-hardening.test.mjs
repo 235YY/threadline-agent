@@ -210,12 +210,23 @@ test('150 个连续工程回合：查询接续、真实本地重开、发送异�
   assert.deepEqual(s.store.integrity(),{database:'ok',foreignKeyViolations:0,missingHeads:0});
 });
 
-test('真实本地情感 Worker 故障后，最后一次已捕获任务输出可在零剩余调用下接续',async t=>{
+test('真实本地情感 Worker 故障后，任务步通过核心 fallback 完成且不重放已捕获输出',async t=>{
+  // Runtime-loss fallback semantics (2026-11-21): when the affect worker disappears
+  // after startup, the session degrades to its core ContinuitySession for the current
+  // call and adopts no new affect state. A task step may therefore finish in the same
+  // call; it must not block, retry the model, or replay the captured output later.
   let broken=true,calls=0;const worker=async x=>{if(broken&&x.operation?.kind==='experience'){broken=false;throw Object.assign(Error('worker down'),{code:'WORKER_EXIT'});}return callWorker(x);};
   const {s}=await service(t,{sessionFactory:affectFactory({fusion:true,worker}),decide:p=>{calls++;return output(p,'act',{tool:'task_finish',args:{result:'recovered offline'}});}}),task=await s.createAgentTask({goal:'native capture',budget:{maxCalls:1}});
-  await s.stepAgentTask(task.id);assert.equal(s.store.read(task.id).status,'blocked');assert.equal([...s.store.all('affect_turn')][0].status,'captured');
-  await s.resumeAgentTask(task.id,{});const done=await s.stepAgentTask(task.id);
-  assert.equal(done.status,'done');assert.equal(calls,1);assert.equal(s.store.read(task.id).callCount,1);
+  const first=await s.stepAgentTask(task.id);
+  assert.equal(first.ok,true);assert.equal(first.status,'done');
+  assert.equal(s.store.read(task.id).status,'done','core fallback completes the task step after affect runtime loss');
+  assert.equal(s.store.read(task.id).callCount,1);
+  assert.equal(calls,1,'worker loss must not add a second model call');
+  const turns=[...s.store.all('affect_turn')];
+  assert.equal(turns.length,1);assert.equal(turns[0].status,'failed');assert.equal(turns[0].error,'WORKER_EXIT');
+  const resumed=await s.resumeAgentTask(task.id,{});assert.equal(resumed.ok,false,'a completed task is not resumed');
+  const replay=await s.stepAgentTask(task.id);assert.equal(replay.ok,false);assert.equal(replay.error,'NOT_RUNNABLE');
+  assert.equal(calls,1,'no replay after the task already completed');
 });
 
 test('情感 Worker 计算期间的暂停与 superseded 记录原子保存，旧认识不能落库',async t=>{

@@ -8,13 +8,42 @@ import {eventProcessId} from '../src/task-threads.mjs';
 import {runtimeFeedback} from '../src/runtime-feedback.mjs';
 import {put,event,frame,ref,note} from './helpers.mjs';
 
+test('compact belief, concern, condition and impression persist across restart and preparation can use their fixed handles',async t=>{
+ const {disk}=await import('./helpers.mjs');
+ let store;t.after(()=>store?.close());
+ const file=disk(t);store=new ContinuityStore(file);
+ let session=new ContinuitySession({store,subjectId:'jingyang',attention:true});
+ const [first,w]=put(store,'initial',event('a'),frame());
+ const prepare=e=>session.prepare({currentEvent:ref(e),workspace:ref(w),mind:true,unified:true,workbenchFocus:true,
+   workbenchMaterials:true,localLookupPolicy:{maxReads:2,maxHits:4},subjectiveDomains:true,subjectiveMemoryV2:true,apperceptionV1:true,intentProtocol:true,budgetBytes:131072});
+ const answer=(p,id,x)=>session.commit({packet:p,decisionId:id,requestId:id,output:{packetId:intentPacket(p).packetId,...x}});
+ answer(prepare(first),'meaning',{decision:{type:'reply',text:'明白了。'},perception:{domain:'normative',meaning:'答应的核对应有据可查'},states:[
+   {kind:'appraisal',text:'原件需要核对',confidence:'tentative',domains:['world']},
+   {kind:'concern',text:'保住记录的准确性',stance:'preserve'},
+   {kind:'condition',text:'已有原件',stance:'unknown'},
+   {kind:'impression',text:'这次先看原件再下判断'}]});
+ assert.equal(store.read('meaning').output.apperception.activated_cells[0].domain,'normative');
+ store.close();store=new ContinuityStore(file);session=new ContinuitySession({store,subjectId:'jingyang',attention:true});
+ const next=put(store,'next',event('b')).at(-1),p=prepare(next),wire=intentPacket(p),view=JSON.parse(wire.messages[1].content).view;
+ const handles=Object.fromEntries(view.states.map(x=>[x.kind,x.handle]));
+ assert.equal(view.states.find(x=>x.kind==='condition').assessment.stance,'unknown');
+ assert.ok(handles.impression);
+ assert.throws(()=>answer(p,'bad',{decision:{type:'wait'},states:[{kind:'readiness',text:'先核对',links:['S999']}]}),{code:'INTENT_HANDLE'});
+ const d=answer(p,'readiness',{decision:{type:'wait'},states:[{kind:'readiness',text:'先查清准确性再行动',links:[handles.concern,handles.appraisal,handles.condition]}]});
+ assert.equal(d.output.options[0].kind,'wait');
+ const ready=[...store.all('personal_state')].find(x=>x.kind==='readiness');
+ assert.equal(ready.mind.concerns[0].revision,1);
+ const later=prepare(put(store,'later',event('c')).at(-1)),v=JSON.parse(intentPacket(later).messages[1].content).view;
+ assert.ok(v.judgments.links.some(x=>x.relation==='concerns'&&x.status==='delivered'));
+ assert.ok(wire.bytes<p.bytes);
+});
 function world(t){
  const store=new ContinuityStore(':memory:');t.after(()=>store.close());
  const session=new ContinuitySession({store,subjectId:'jingyang',attention:true});
- const [e,w]=put(store,'init',event('m1',{body:'哥哥：港口那批货单帮我核一下，集装箱数对不上',actor:'brother'}),frame());
+ const [e,w]=put(store,'init',event('m1',{body:'朋友：港口那批货单帮我核一下，集装箱数对不上',actor:'brother'}),frame());
  const n=put(store,'n',note('note-port',[],{body:'港口货单原件：集装箱 12 个，单位待核验'}))[0].record;
  const s={store,session,e,w,n,i:0};
- s.prepare=(extra={})=>session.prepare({currentEvent:ref(s.e),workspace:ref(s.w),identity:'你是鲸漾。',mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,taskThreads:true,subjectiveMemoryV2:true,localLookupPolicy:{maxReads:2,maxHits:4},allowedActionTools:['office_read'],budgetBytes:131072,now:1_800_000_000_000,...extra});
+ s.prepare=(extra={})=>session.prepare({currentEvent:ref(s.e),workspace:ref(s.w),identity:'你是小栈。',mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,taskThreads:true,subjectiveMemoryV2:true,localLookupPolicy:{maxReads:2,maxHits:4},allowedActionTools:['office_read'],budgetBytes:131072,now:1_800_000_000_000,...extra});
  s.say=(body)=>{s.e=put(store,'e'+(++s.i),event('m'+(s.i+1),{body,actor:'brother'})).at(-1);};
  s.answer=(p,intent)=>{const wire=intentPacket(p);const id='d'+(++s.i);return {wire,d:session.commit({packet:p,output:JSON.stringify({packetId:wire.packetId,...intent}),decisionId:id,requestId:id,allowedActionTools:['office_read']})};};
  return s;
@@ -118,7 +147,7 @@ test('used is a declaration: non-material or unknown handles are noted, never di
 
 test('group messages say whether they are aimed at her; private chats are marked private',async()=>{
  const {selfNames}=await import('../src/intent-protocol.mjs');
- assert.deepEqual(selfNames('你叫“小鲸”，大家也叫你鲸漾。').sort(),['小鲸','鲸漾']);
+ assert.deepEqual(selfNames('你叫“阿栈”，大家也叫你小栈。').sort(),['小栈','阿栈']);
  const {SCENARIOS}=await import('../experiments/naturalness/scenarios.mjs');
  const view=name=>{const {s,e,w}=SCENARIOS[name].build();const v=JSON.parse(intentPacket(s.prepare(e,w)).messages[1].content).view;s.store.close();return v.current;};
  assert.deepEqual([view('group-not-for-her').chat,view('group-not-for-her').mentionsYou],['group',false]);
@@ -139,4 +168,26 @@ test('intentProtocol: true skips heavy legacy instructions in base packet while 
  const fallback=s.prepare({style:'温和口语',intentProtocol:true,instructionSuffix:'【显式重新准入】测试'});
  assert.ok(Buffer.byteLength(fallback.instruction)>20000,'ineligible turns still retain full base instruction');
  assert.equal(intentEligible(fallback),false);
+});
+
+test('ordinary intent wires keep their own budget instead of the autonomy ceiling',async t=>{
+ const s=world(t),mats=[];
+ for(let i=0;i<24;i++){
+  const [rec]=put(s.store,'big'+i,note('big-'+i,[],{body:'port manifest unit check. '.repeat(50)}));
+  mats.push({ref:ref(rec.record),aspect:'knowledge'});
+ }
+ const p=s.prepare({materials:mats}),wire=intentPacket(p);
+ assert.ok(wire.bytes>16384,`ordinary wire must not be capped at 16KB, got ${wire.bytes}`);
+ assert.ok(wire.bytes<=p.budgetBytes);
+});
+
+test('intent-v1 state residences carry no process endpoint, so they are never task bindings',t=>{
+ const s=world(t);
+ s.answer(s.prepare({intentProtocol:true}),{decision:{type:'wait'},states:[{kind:'feeling',text:'有点想笑'}]});
+ const attention=s.store.read(attentionId('jingyang'));
+ assert.equal(attention.residences.length,1);
+ for(const purpose of attention.residences[0].purposes){
+  assert.equal(purpose.kind,'active-task');
+  assert.deepEqual(purpose.eventIds,[]);
+ }
 });

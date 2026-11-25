@@ -19,6 +19,22 @@ test('brain-service 持久任务：工具观察后继续，任务落 store 并�
   assert.equal(saved.observations.length,1);assert.equal(saved.decisionRefs.length,2);
 });
 
+test('task step leaves no host Action and its observation is already handled',async t=>{
+  const decide=decideWith(packet=>(packet.payload.task?.stepCount??0)===0?option('tick'):option('task_finish',{result:'done'}));
+  const service=await startBrainService({port:0,storePath:':memory:',heartbeatMs:0,subjectTask:true,decide,agentTools:{tick:async()=>({ok:true})}});
+  t.after(async()=>{await new Promise(r=>service.server.close(r));service.close();});
+  const task=await service.createAgentTask({goal:'no ghost action',metadata:{allowedTools:['tick']}});
+  assert.equal((await service.stepAgentTask(task.id)).ok,true);
+  assert.equal([...service.store.all('action')].length,0,'task step must not create a host Action');
+  const observation=[...service.store.all('event')].find(e=>e.source?.system==='agent-runtime');
+  assert.ok(observation,'tool observation event exists');
+  assert.equal(service.store.subjectObservation('jingyang',observation.id).status,'handled');
+  assert.equal(service.store.subjectInbox({subjectId:'jingyang',pendingOnly:true}).items.some(x=>x.eventId===observation.id),false);
+  assert.equal((await service.stepAgentTask(task.id)).status,'done');
+  const result=[...service.store.all('event')].find(e=>String(e.id).startsWith('agent-result:'));
+  assert.ok(result);assert.equal(service.store.subjectObservation('jingyang',result.id).status,'received');
+});
+
 test('Agent task 的观测事件使用显式 subject process threadId，可被 threadUnits 恢复',async t=>{
   const decide=decideWith(packet=>(packet.payload.task?.stepCount??0)===0?option('tick'):option('task_finish',{result:'thread done'}));
   const service=await startBrainService({port:0,storePath:':memory:',heartbeatMs:0,subjectTask:true,decide,agentTools:{tick:async()=>({ok:true})}});

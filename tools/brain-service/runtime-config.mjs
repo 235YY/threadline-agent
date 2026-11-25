@@ -15,7 +15,8 @@ export function flag(env,name,fallback=false){
 }
 function integer(env,name,fallback,min,max){
  const raw=env[name]??fallback;
- ensure((typeof raw==='number'||typeof raw==='string'&&/^\d+$/.test(raw))&&Number.isSafeInteger(Number(raw))&&Number(raw)>=min&&Number(raw)<=max,'RUNTIME_CONFIG',`${name} is outside its integer range`);
+ const pattern=min<0?/^-?\d+$/:/^\d+$/;
+ ensure((typeof raw==='number'||typeof raw==='string'&&pattern.test(raw))&&Number.isSafeInteger(Number(raw))&&Number(raw)>=min&&Number(raw)<=max,'RUNTIME_CONFIG',`${name} is outside its integer range`);
  return Number(raw);
 }
 const file=(root,value)=>value===':memory:'?value:resolve(root,value);
@@ -35,6 +36,12 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
  const reasoning=env.BRAIN_REASONING===undefined?'low':env.BRAIN_REASONING;
  ensure(['low','high','off'].includes(reasoning),'RUNTIME_CONFIG','BRAIN_REASONING must be low, high or off');
  const rhythm={dailyCallCap:live?null:callLimit};
+ const [modelDirectory,runtimeModule,rerankerDirectory]=['BRAIN_MEMORY_MODEL_DIR','BRAIN_MEMORY_RUNTIME_MODULE','BRAIN_MEMORY_RERANKER_DIR'].map(name=>{
+  const value=env[name];
+  ensure(value===undefined||typeof value==='string'&&value.trim(),'RUNTIME_CONFIG',`${name} must be a nonempty local path`);
+  return value===undefined?null:resolve(root,value);
+ });
+ ensure(Boolean(modelDirectory)===Boolean(runtimeModule)&&(!rerankerDirectory||modelDirectory),'RUNTIME_CONFIG','local memory model and runtime paths are configured together; reranking requires both');
  if(env.JY_QUIET_FROM!==undefined)rhythm.quietFromHour=integer(env,'JY_QUIET_FROM',0,0,23);
  if(env.JY_QUIET_TO!==undefined)rhythm.quietToHour=integer(env,'JY_QUIET_TO',0,0,23);
  const config={root,mode:live?'live':'dry-run',live,port:integer(env,'BRAIN_PORT',8787,0,65535),
@@ -44,9 +51,13 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
   identityFile:resolve(root,env.BRAIN_IDENTITY_FILE??'_local/migrate/persona.txt'),
   ledgerPath:live?resolve(root,env.BRAIN_LEDGER):null,budgetDirectory:resolve(root,env.JY_BUDGET_DIR??'_local/brain'),
   heartbeatMs:integer(env,'BRAIN_HEARTBEAT_MS',live?60000:0,0,3600000),idleIntervalMs:integer(env,'JY_IDLE_INTERVAL_MS',7200000,0,86400000),
-  openLife:flag(env,'JY_OPEN_LIFE'),affect:{enabled:affect.enabled,fusion},cognition,rhythm,global:flag(env,'BRAIN_GLOBAL'),rhythmReset:flag(env,'JY_RHYTHM_RESET'),
+  openLife:flag(env,'JY_OPEN_LIFE'),autonomy:flag(env,'JY_AUTONOMY'),affect:{enabled:affect.enabled,fusion},cognition,rhythm,global:flag(env,'BRAIN_GLOBAL'),rhythmReset:flag(env,'JY_RHYTHM_RESET'),
+  timezoneMinutes:integer(env,'BRAIN_TIMEZONE_MINUTES',480,-720,840),
+  contextBudgetBytes:integer(env,'BRAIN_CONTEXT_MAX_BYTES',131072,16384,131072),
+  compactReflection:flag(env,'BRAIN_COMPACT_REFLECTION'),
+  ...(modelDirectory?{semanticMemory:{modelDirectory,runtimeModule,...(rerankerDirectory?{rerankerDirectory}:{})}}:{}),
   maintenance:live&&flag(env,'BRAIN_MAINTENANCE',true),
-  profile:{dailyMicros:integer(env,'BRAIN_MAX_MICROS',3000000,1,20000000),dailyCalls:callLimit,maxTokens:integer(env,'BRAIN_MAX_TOKENS',3000,1,6000),reasoning,intentProtocol:flag(env,'JY_INTENT_PROTOCOL')},
+  profile:{dailyMicros:integer(env,'BRAIN_MAX_MICROS',3000000,1,20000000),dailyCalls:callLimit,maxTokens:integer(env,'BRAIN_MAX_TOKENS',3000,1,6000),reasoning,intentProtocol:flag(env,'JY_INTENT_PROTOCOL'),upstreamSse:flag(env,'BRAIN_UPSTREAM_SSE')},
   authenticationConfigured:typeof env.BRAIN_TOKEN==='string'&&env.BRAIN_TOKEN.length>0};
  // The token is passed to the server separately; it never enters fingerprints or instance records.
  const fingerprint=digest(config);return Object.freeze({...config,cognition:Object.freeze(config.cognition),affect:Object.freeze(config.affect),rhythm:Object.freeze(config.rhythm),profile:Object.freeze(config.profile),configFingerprint:fingerprint});
@@ -54,7 +65,7 @@ export function resolveBrainConfig({root=process.cwd(),env=process.env}={}){
 
 export function launchIdentity(config,{explicit=false}={}){
  if(config.live||explicit)ensure(existsSync(config.identityFile),'IDENTITY_MISSING','explicit identity source is unavailable');
- let identity='你是鲸漾。';if(existsSync(config.identityFile)){identity=readFileSync(config.identityFile,'utf8').trim();ensure(identity.length>0,'IDENTITY_EMPTY','identity source is empty');}
+ let identity='你是一个具有连续记忆的数字主体。';if(existsSync(config.identityFile)){identity=readFileSync(config.identityFile,'utf8').trim();ensure(identity.length>0,'IDENTITY_EMPTY','identity source is empty');}
  ensure([...identity].length<=4000,'IDENTITY_BUDGET','identity exceeds cognition input contract; provide an explicitly reviewed compact source');
  return {identity,configFingerprint:digest({config:config.configFingerprint,identityHash:digest(identity)})};
 }

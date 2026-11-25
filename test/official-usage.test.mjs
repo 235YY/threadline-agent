@@ -9,7 +9,7 @@ const day='2026-11-16';
 const cost='user_id,start_time_iso,end_time_iso,model,name,wallet_type,cost,currency\n'
   +'u,2026-11-16T01:00:00+08:00,2026-11-16T02:00:00+08:00,deepseek-flash,deepseek-flash,Paid,0.4398886000000000,CNY\n';
 const amount='user_id,start_time_iso,end_time_iso,model,name,api_key_name,api_key,type,price,amount\n'
-  +'u,2026-11-16T01:00:00+08:00,2026-11-16T02:00:00+08:00,deepseek-flash,deepseek-flash,新版鲸漾系统,sk-xxx,request_count,,17\n';
+  +'u,2026-11-16T01:00:00+08:00,2026-11-16T02:00:00+08:00,deepseek-flash,deepseek-flash,Threadline Agent,sk-xxx,request_count,,17\n';
 
 test('reads official cost for the selected Beijing day',()=>{
   const dir=mkdtempSync(join(tmpdir(),'official-usage-'));

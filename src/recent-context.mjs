@@ -12,6 +12,10 @@ export function recentContext({store,subjectId,currentEvent=null,scene=null,limi
   for(const event of events){
     if(!['observed','reported'].includes(event.origin))continue;
     if(scene!==null&&event.scene!==scene)continue;
+    // The objective event stream holds everything; context only carries what the
+    // subject actually received into its inbox. Recorded-but-unobserved messages
+    // stay available to explicit reads (e.g. group history), not ambient context.
+    if(subjectId&&!store.subjectObservation(subjectId,event.id))continue;
     const senderName=resolveSpeakerName(store,{sender:event.sender,actor:event.actor});
     items.push({at:event.occurredAt??event.recordedAt,role:'user',scene:event.scene,sender:event.sender??null,senderName,text:clip(event.body),...(event.message?{message:event.message}:{}),ref:{id:event.id,revision:event.revision}});
   }

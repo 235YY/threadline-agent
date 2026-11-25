@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {normalizeMinecraftCall} from '../tools/native-capabilities/minecraft.mjs';
 
 test('mc_do accepts the natural chat shape and emits one skill step',()=>{
-  const out=normalizeMinecraftCall('mc_do',{macro:'chat',text:'哥哥，我进来啦'});
-  assert.deepEqual(out.steps,[{skill:'chat',text:'哥哥，我进来啦'}]);
+  const out=normalizeMinecraftCall('mc_do',{macro:'chat',text:'朋友，我进来啦'});
+  assert.deepEqual(out.steps,[{skill:'chat',text:'朋友，我进来啦'}]);
 });
 
 test('mc_do keeps an explicit steps array unchanged',()=>{

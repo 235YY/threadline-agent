@@ -1,0 +1,1353 @@
+<!doctype html>
+<html lang="zh-CN" data-skin="chatgpt" data-theme="paper" data-layout="minimal">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Threadline Studio</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="stylesheet" href="style.css">
+  <link id="customThemeLink" rel="stylesheet" href="custom.css">
+</head>
+<body>
+  <!-- Native-feel Splash Screen -->
+  <div id="splashScreen" class="splash-screen" aria-hidden="true">
+    <div class="splash-inner">
+      <div class="splash-mark splash-avatar-mark">
+        <img src="icon.png" alt="Threadline Studio" class="splash-icon-img">
+      </div>
+      <div class="splash-title">Threadline Studio</div>
+      <div class="splash-sub">Continuity-First Living Brain</div>
+    </div>
+  </div>
+
+  <div id="bgLayer" class="bg-layer" aria-hidden="true"></div>
+  <video id="bgVideoLayer" class="bg-video-layer" autoplay loop muted playsinline hidden aria-hidden="true"></video>
+
+  <div id="appShell" class="app-shell">
+    <!-- Left Sidebar (Adapts cleanly between ChatGPT 252px sidebar, VS Code 48px activity bar, and XHS slim dock) -->
+        <!-- ChatGPT-style Primary Icon Rail (Monochrome Minimalist SVG) -->
+    <nav id="iconRail" class="icon-rail" aria-label="一级导航轨">
+      <div class="rail-top">
+        <button class="rail-btn active" data-rail="room" title="聊天与数字生命" aria-label="聊天与数字生命">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/></svg>
+        </button>
+        <button class="rail-btn" data-rail="memory" title="资料空间与记忆本" aria-label="资料空间与记忆本">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </button>
+        <button class="rail-btn" data-rail="schedule" title="后台节律、梦境与隐私" aria-label="后台节律与隐私">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+        </button>
+        <button class="rail-btn" data-rail="custom" title="自定义：软件管家、连接与技能" aria-label="自定义与连接">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+        </button>
+        <button class="rail-btn" data-rail="community" title="创作者与社区广场" aria-label="社区广场">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
+        </button>
+      </div>
+      <div class="rail-bottom">
+        <button class="rail-btn" data-rail-action="workspace" title="展开/收起办公工作区侧栏 (Ctrl+Shift+W)" aria-label="工作区侧栏">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="15" y1="4" x2="15" y2="20"/></svg>
+        </button>
+        <button class="rail-btn" data-rail="settings" title="外观与系统设置" aria-label="外观与设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button class="rail-btn" data-rail-action="theme" title="切换日间 / 暗夜主题" aria-label="深浅主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
+    </nav>
+      <!-- Contextual Hierarchical Tree (Adapts smoothly to selected Icon Rail section) -->
+      <div id="contextTree" class="context-tree" aria-label="层级目录"></div>
+
+
+    <aside id="sidebar" class="sidebar" aria-label="主导航">
+      <div class="sidebar-top">
+        <div class="brand-row">
+          <div id="railAvatar" class="brand-avatar">T</div>
+          <div class="brand-text">
+            <strong id="sidebarCharName" class="brand-name">Threadline</strong>
+            <span class="brand-ver">Studio v2.9.0</span>
+          </div>
+        </div>
+        <button id="collapseSidebarBtn" class="icon-btn" title="显示/隐藏侧边栏 (Ctrl+Shift+S)" data-tooltip="显示/隐藏侧边栏  Ctrl+Shift+S">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+        </button>
+      </div>
+
+      <nav class="nav-list" aria-label="主要页面">
+        <button class="nav-item active" data-view="room" title="对话房间">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span class="nav-label">对话房间</span>
+        </button>
+        <button class="nav-item" data-view="copilot" title="软件管家 · Super Agent（创造模式 / 联网搜 GitHub / 通用配置协议）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8L12 2z"/></svg>
+          <span class="nav-label">软件管家</span>
+        </button>
+        <button class="nav-item" data-view="memory" title="记忆本">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span class="nav-label">记忆本</span>
+        </button>
+        <button class="nav-item" data-view="ecosystem" title="傻瓜式连接（数字人 / 桌宠 / 机器人 / MCP）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M8 8h8v3a4 4 0 0 1-8 0V8z"/><path d="M12 15v7"/><path d="M9 2v4"/><path d="M15 2v4"/></svg>
+          <span class="nav-label">一键连接</span>
+        </button>
+        <button class="nav-item" data-view="community" title="社区广场（多元交流 / 灵感市场 / 隐写海报分享）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+          <span class="nav-label">社区广场</span>
+        </button>
+        <button class="nav-item" data-view="settings" title="外观与深度 DIY 设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span class="nav-label">外观与设置</span>
+        </button>
+      </nav>
+
+
+      <div class="sidebar-divider"></div>
+      <div class="roster-section">
+        <div class="roster-head">
+          <span class="roster-title">数字生命</span>
+          <button id="addResidentBtn" class="icon-btn tiny-icon-btn" title="新建数字生命（开后宫）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+        <div id="residentList" class="roster-list"></div>
+      </div>
+      <div class="sidebar-divider"></div>
+
+      <div class="nav-list nav-utility">
+        <div class="more-menu-wrap">
+          <button id="moreMenuBtn" class="nav-item" title="更多工具与固定项">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+            <span class="nav-label">更多</span>
+          </button>
+          <div id="morePopover" class="more-popover" hidden>
+            <button class="mp-item" data-mp-action="team"><span>团队与子 Agent</span><span class="mp-pin">协作</span></button>
+            <button class="mp-item" data-mp-action="skills"><span>Skills 技能槽</span><span class="mp-pin">挂载</span></button>
+            <button class="mp-item" data-mp-action="protocol"><span>通用配置协议</span><span class="mp-pin">复制</span></button>
+            <button class="mp-item" data-mp-action="create"><span>创造模式与时光机</span><span class="mp-pin">DIY</span></button>
+          </div>
+        </div>
+
+        <button id="openGuideBtn" class="nav-item" title="新手教程（随时可看）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span class="nav-label">新手教程</span>
+        </button>
+        <button id="openComponentsBtn" class="nav-item" title="满血组件体检">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          <span class="nav-label">满血组件</span>
+        </button>
+        <button id="checkUpdateBtn" class="nav-item" title="检查最新版本">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <span class="nav-label">检查更新</span>
+        </button>
+        <button id="toggleThemeBtn" class="nav-item" title="切换日间 / 暗色夜灯">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <span class="nav-label">深浅主题</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Column -->
+    <main class="main-col">
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="expandSidebarBtn" class="icon-btn expand-sidebar-btn" title="展开侧边栏">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+          </button>
+          <strong id="charTitle" class="char-title">Threadline</strong>
+          <button id="statusPill" class="status-pill" title="点击展开 / 收起实时玻璃箱">
+            <span id="statusDot" class="status-dot"></span>
+            <span id="statusText">准备就绪</span>
+          </button>
+          <button id="curtainQuickBtn" class="soft-btn" title="一键拉窗帘 / 切换感官亮度">L0 闭眼</button>
+        </div>
+
+        <!-- Unified Floating Style Popover -->
+        <div class="style-menu-wrap">
+          <button id="styleMenuBtn" class="soft-btn icon-text-btn style-trigger-btn" title="切换界面设计风格">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>
+            <span>Style</span>
+          </button>
+          <div id="stylePopover" class="style-popover" hidden>
+            <div class="sp-head">选择界面风格</div>
+            <button class="sp-item active" data-skin-pick="chatgpt"><strong>ChatGPT 极简</strong><span>通透居中流 · 悬浮胶囊输入</span></button>
+            <button class="sp-item" data-skin-pick="xhs"><strong>小红书画报</strong><span>暖白卡片 · 柔润出片感</span></button>
+            <button class="sp-item" data-skin-pick="vscode"><strong>VS Code 工作台</strong><span>活动栏 · 标签页 · 状态栏</span></button>
+            <button class="sp-item" data-skin-pick="apple"><strong>Apple 毛玻璃</strong><span>液态磨砂 · 克制留白</span></button>
+            <button class="sp-item" data-skin-pick="midnight"><strong>深海静谧夜灯</strong><span>低蓝光 · 深夜陪伴护眼</span></button>
+            <div class="sp-foot">
+              <button id="styleCustomBtn" class="link-btn">更多 DIY 外观设置 →</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <div id="slotTopbarBadge" class="slot-topbar"></div>
+          <span id="budgetChip" class="meta-chip">离线体验</span>
+          <button id="openCopilotBtn" class="soft-btn icon-text-btn" title="软件管家（一键协议代填 / 智能调参）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8L12 2z"/></svg>
+            <span>软件管家</span>
+          </button>
+                    <button id="toggleWorkspaceBtn" class="soft-btn icon-text-btn" title="办公工作区与交付物侧栏 (Ctrl+Shift+W)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="15" y1="4" x2="15" y2="20"/></svg>
+            <span>工作区</span>
+          </button>
+          <button id="toggleGlassboxBtn" class="soft-btn icon-text-btn" title="实时玻璃箱透视">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>玻璃箱</span>
+          </button>
+        </div>
+      </header>
+
+      <div id="safeModeBanner" class="safe-mode-banner" hidden>
+        <span>安全模式已启用：已跳过全部自定义 CSS 与 DIY 扩展，你的记忆与对话完好无损。</span>
+        <button id="exitSafeModeBtn" class="tiny-btn">退出安全模式</button>
+      </div>
+      <!-- VS Code Editor Tab Bar (Visible automatically in VS Code skin) -->
+      <div class="vscode-tabs" aria-hidden="true">
+        <span class="vsc-tab active" data-vsc-tab="room">session.chat</span>
+        <span class="vsc-tab" data-vsc-tab="copilot">copilot.agent</span>
+        <span class="vsc-tab" data-vsc-tab="memory">memory.sqlite</span>
+        <span class="vsc-tab" data-vsc-tab="ecosystem">gateway.mcp.json</span>
+        <span class="vsc-tab" data-vsc-tab="community">plaza.community</span>
+        <span class="vsc-tab" data-vsc-tab="settings">settings.json</span>
+      </div>
+
+      <!-- VIEW 1: ROOM -->
+      <section id="view-room" class="view view-room active">
+        <div class="room-stage">
+          <!-- Optional Left Portrait Card -->
+          <aside id="portraitPanel" class="portrait-panel">
+            <div class="portrait-frame">
+              <img id="portraitImg" class="portrait-img" alt="角色立绘">
+              <div id="portraitPlaceholder" class="portrait-placeholder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>
+                <span>在「外观与设置」上传立绘</span>
+              </div>
+            </div>
+            <div class="portrait-meta">
+              <div id="portraitName" class="portrait-name">Threadline</div>
+              <div id="portraitMood" class="portrait-mood">正安静待在房间里</div>
+            </div>
+          </aside>
+
+          <!-- Chat Canvas -->
+          <div class="chat-canvas">
+            <div id="dreamBanner" class="dream-banner" hidden>
+              <svg class="dream-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2L12 3z"/></svg>
+              <span id="dreamBannerText" class="dream-text">昨晚悄悄整理了记忆</span>
+              <button id="viewDreamBtn" class="link-btn">查看梦境</button>
+              <button id="dismissDreamBtn" class="icon-btn tiny-close" title="收起">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            <div id="slotRoomWidgets" class="slot-room-widgets" hidden></div>
+                        <div id="emptyHero" class="empty-hero">
+              <div id="heroAvatar" class="hero-avatar">T</div>
+              <h1 id="heroGreeting" class="hero-greeting">今天想聊点什么？</h1>
+              <p class="hero-sub">随时对话、记录日常，或点右上角「软件管家」一键定制你的专属软件</p>
+              <div class="hero-chips">
+                <button class="hero-chip" data-starter="介绍一下你自己吧，你现在感觉怎么样？">介绍一下你自己</button>
+                <button class="hero-chip" data-starter="帮我记住一件事，以后聊天时提醒我。">帮我记住一件事</button>
+                <button class="hero-chip" data-starter="今天有点累，陪我随便聊聊吧。">随便聊聊放松一下</button>
+                <button class="hero-chip" data-starter="帮我规划一下今天最重要的三件事。">规划今天的三件事</button>
+              </div>
+            </div>
+            <div id="chatLog" class="chat-log" aria-live="polite"></div>
+            <button id="scrollBottomBtn" class="scroll-bottom-btn" hidden title="回到底部">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+
+            <!-- Rhythmic Shimmer Thinking Indicator -->
+            <div id="thinkingBar" class="thinking-bar thinking-gpt" hidden>
+              <button id="thinkingToggleBtn" type="button" class="thinking-header">
+                <span class="thinking-orb" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8" stroke-dasharray="32 18"/></svg>
+                </span>
+                <span id="thinkingText" class="thinking-shimmer">正在思考…</span>
+                <svg class="thinking-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div id="thinkingSteps" class="thinking-steps" hidden>
+                <div class="tstep active"><span class="tstep-dot"></span><span>读取长期记忆与当前情绪上下文</span></div>
+                <div class="tstep"><span class="tstep-dot"></span><span>校验事务边界与工具权限</span></div>
+                <div class="tstep"><span class="tstep-dot"></span><span>组织回复并准备交付内容</span></div>
+              </div>
+            </div>
+            <div class="composer-wrap">
+              <div id="attachmentChips" class="attachment-chips" hidden></div>
+              <form id="chatForm" class="composer composer-dsh">
+                <textarea id="chatInput" rows="1" placeholder="发条消息或派个任务给 TA…（Enter 发送，Shift+Enter 换行）"></textarea>
+                <div class="composer-bar">
+                  <div class="composer-tools">
+                    <button id="attachFileBtn" type="button" class="cbar-btn" title="添加附件（文本 / 代码 / Markdown）">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                      <span>附件</span>
+                    </button>
+                    <input id="attachFileInput" type="file" multiple hidden>
+                    <button id="quickModeToggleBtn" type="button" class="cbar-btn" title="切换上下文策略（动态心智 / 轻量 Agent / 自定义）">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                      <span id="quickModeLabel">动态心智</span>
+                    </button>
+                    <button id="quickPermBtn" type="button" class="cbar-btn" title="配置当前角色工具与工作区权限">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                      <span>工具与权限</span>
+                    </button>
+                    <button id="toggleAvatarStageBtn" type="button" class="cbar-btn" title="展开 / 收起虚拟形象与数字人舞台">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      <span>虚拟形象</span>
+                    </button>
+                  </div>
+                  <button id="sendBtn" type="submit" class="send-btn" title="发送">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <!-- Floating Corner Pet -->
+            <div id="cornerPet" class="corner-pet" hidden>
+              <div id="petBubble" class="pet-bubble" hidden></div>
+              <img id="petImg" class="pet-img" alt="桌面小宠">
+              <div id="petFallback" class="pet-fallback" title="在设置中导入 PNG / GIF / pet.json 桌宠">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="14" r="4"/><circle cx="7" cy="9" r="1.5"/><circle cx="17" cy="9" r="1.5"/><circle cx="10" cy="6.5" r="1.5"/><circle cx="14" cy="6.5" r="1.5"/></svg>
+              </div>
+            </div>
+          </div>
+
+
+          <!-- Collapsible Virtual Avatar / Live Digital Human Stage -->
+          <aside id="avatarStage" class="avatar-stage" aria-label="虚拟形象与数字人舞台">
+            <div class="drawer-head">
+              <div class="drawer-title-group">
+                <strong>虚拟形象舞台</strong>
+                <span id="avatarStageSub" class="drawer-sub">静态立绘 / 实时数字人</span>
+              </div>
+              <div class="btn-row">
+                <button id="configAvatarStageBtn" class="tiny-btn">接入数字人画面</button>
+                <button id="closeAvatarStageBtn" class="icon-btn" title="收起舞台">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="stage-viewport">
+              <iframe id="avatarStageFrame" class="stage-iframe" title="实时数字人画面" hidden></iframe>
+              <img id="avatarStageImg" class="stage-img" src="whale-mascot.png" alt="鲸鱼娘看板娘">
+              <div id="avatarStageAura" class="stage-aura"></div>
+            </div>
+            <div class="stage-caption">
+              <strong id="stageCharName">Threadline</strong>
+              <span id="stageMoodText" class="muted small">正安静陪在你身边</span>
+            </div>
+          </aside>
+
+          <!-- Spring-Animated Collapsible Glassbox Drawer -->
+          <aside id="glassboxDrawer" class="glassbox-drawer" aria-label="玻璃箱实时透视">
+            <div class="drawer-head">
+              <div class="drawer-title-group">
+                <strong>玻璃箱透视</strong>
+                <span class="drawer-sub">Live Inspector</span>
+              </div>
+              <div class="btn-row">
+                <button id="refreshGlassBtn" class="icon-btn" title="刷新状态">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </button>
+                <button id="closeGlassBtn" class="icon-btn" title="收起">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="drawer-tabs">
+              <button class="mini-tab active" data-gtab="live">此刻</button>
+              <button class="mini-tab" data-gtab="affect">情绪</button>
+              <button class="mini-tab" data-gtab="mind">思考</button>
+              <button class="mini-tab" data-gtab="desk">书桌</button>
+            </div>
+            <div id="gtab-live" class="drawer-body active">
+              <div class="gb-card">
+                <div class="gb-label">快捷触发</div>
+                <div class="btn-row">
+                  <button id="actJournalBtn" class="soft-btn">睡前整理</button>
+                  <button id="actAutonomyBtn" class="soft-btn">自主活动</button>
+                  <button id="actReflectBtn" class="soft-btn">轻度反思</button>
+                </div>
+              </div>
+              <div class="gb-card">
+                <div class="gb-label">核心置顶记忆板</div>
+                <pre id="gbPinboard" class="gb-pre">暂无置顶记忆</pre>
+              </div>
+              <div class="gb-card">
+                <div class="gb-label">当前目标与长链任务</div>
+                <div id="gbGoals" class="gb-list">暂无进行中的目标</div>
+              </div>
+            </div>
+            <div id="gtab-affect" class="drawer-body">
+              <div id="gbAffectSummary" class="gb-card">Limbic 情绪引擎未开启（当前走轻量体感层）</div>
+              <div id="gbDrives" class="gb-card"></div>
+            </div>
+            <div id="gtab-mind" class="drawer-body">
+              <div id="gbThoughts" class="gb-list">发一条消息后，这里会实时展示 TA 的思考选项与记忆检索。</div>
+            </div>
+            <div id="gtab-desk" class="drawer-body">
+              <div class="gb-card">
+                <div class="gb-label">沙箱书桌文件</div>
+                <div id="gbOfficeFiles" class="gb-list">书桌还是空的</div>
+              </div>
+              <div class="gb-card">
+                <div class="gb-label">好奇心种子</div>
+                <div id="gbSeeds" class="gb-list">暂无好奇心种子</div>
+              </div>
+            </div>
+          </aside>
+          <!-- Office Workspace & Agent Artifacts Side Panel (ChatGPT Canvas Style) -->
+          <aside id="workspaceDrawer" class="workspace-drawer" aria-label="办公工作区与交付物">
+            <div class="ws-head">
+              <div class="ws-tabs" id="wsTabs" role="tablist"></div>
+              <div class="ws-actions">
+                <button id="wsCopyBtn" class="icon-btn" title="复制当前内容">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+                <button id="wsDownloadBtn" class="icon-btn" title="导出为本地文件">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
+                <button id="wsToggleTreeBtn" class="icon-btn" title="显示/隐藏文件树">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                </button>
+                <button id="closeWorkspaceBtn" class="icon-btn" title="收起工作区">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="ws-body">
+              <div class="ws-viewer" id="wsViewer">
+                <div class="ws-empty">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                  <div class="ws-empty-title">工作区交付物预览</div>
+                  <div class="ws-empty-sub">Agent 提交的方案、代码、文档或书桌文件会自动归档于此，点击即可在侧栏打开阅读与导出。</div>
+                </div>
+              </div>
+              <div class="ws-tree" id="wsTree">
+                <div class="ws-tree-head">工作区文件</div>
+                <div class="ws-tree-list" id="wsTreeList"></div>
+              </div>
+            </div>
+          </aside>
+
+        </div>
+      </section>
+
+      <!-- FULL-PAGE STUDIO COPILOT (Whisper-Quiet Progressive Disclosure Canvas) -->
+      <section id="view-copilot" class="view view-room">
+        <div class="copilot-clean-stage">
+          <div id="copilotEmptyHero" class="copilot-empty-hero">
+            <h2>软件管家</h2>
+            <p class="muted small">随时帮你改设置、造小组件、搜 GitHub 插件或导入外部 AI 配置，所有改动前均会请你审批。</p>
+          </div>
+          <div id="copilotChatLog" class="chat-log copilot-clean-log"></div>
+          <div class="composer-wrap">
+            <form id="copilotFullForm" class="composer composer-dsh">
+              <textarea id="copilotFullInput" rows="1" placeholder="直接说你想让软件变成什么样…"></textarea>
+              <div class="composer-bar">
+                <div class="composer-tools">
+                  <div class="copilot-plus-wrap">
+                    <button id="copilotPlusBtn" type="button" class="cbar-btn" title="探索管家工具">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                      <span>探索能力</span>
+                    </button>
+                    <div id="copilotPlusMenu" class="style-popover copilot-pop-up" hidden>
+                      <button type="button" class="sp-item" data-cap-action="protocol"><strong>通用配置协议</strong><span>复制发给外部 AI 或粘贴 JSON 审批</span></button>
+                      <button type="button" class="sp-item" data-cap-action="create"><strong>创造模式小组件</strong><span>番茄钟 / 倒计时 / 灵感卡热插拔</span></button>
+                      <button type="button" class="sp-item" data-cap-action="github"><strong>联网搜 GitHub</strong><span>查找 MCP 插件、DSH 桌宠与皮肤</span></button>
+                      <button type="button" class="sp-item" data-cap-prompt="帮我新建一位温柔又干练的学习搭子，开启长上下文省钱模式和夜间做梦。"><strong>一键捏新居民</strong><span>自动建独立存档与配置</span></button>
+                    </div>
+                  </div>
+                  <button id="openCopilotToolsBtn" type="button" class="cbar-btn">协议与工具箱</button>
+                </div>
+                <button id="copilotFullSendBtn" type="submit" class="send-btn" title="发送给软件管家">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: MEMORY -->
+      <section id="view-memory" class="view">
+        <div class="page-wrap">
+          <div class="page-head">
+            <div>
+              <h2>记忆本</h2>
+              <p class="muted">TA 眼里的你、重要小纸条、夜间梦境与经历时间线。</p>
+            </div>
+            <div class="btn-row">
+              <label class="switch-inline"><input id="geekProvenanceToggle" type="checkbox"><span class="sw-track"></span><span>极客溯源</span></label>
+              <button id="exportNotesBtn" class="soft-btn">导出记忆</button>
+              <button id="importNotesBtn" class="soft-btn">导入记忆</button>
+              <input id="importNotesFile" type="file" accept=".json,.jsonl,.md,.txt,.csv" hidden>
+            </div>
+          </div>
+
+          <div class="pill-tabs">
+            <button class="pill-tab active" data-mtab="starmap">记忆星图</button>
+            <button class="pill-tab" data-mtab="states">TA 眼里的我</button>
+            <button class="pill-tab" data-mtab="notes">小纸条列表</button>
+            <button class="pill-tab" data-mtab="dreams">昨晚的梦与特质</button>
+            <button class="pill-tab" data-mtab="events">经历时间线</button>
+          </div>
+          <div id="mtab-starmap" class="sub-panel active">
+            <div class="starmap-toolbar">
+              <input id="starSearchInput" type="text" placeholder="搜索星图节点关键词…">
+              <button id="starResetZoomBtn" class="soft-btn">重置视角</button>
+              <button id="starToggle3DBtn" class="soft-btn">切换 3D 星空</button>
+              <button id="dreamDigestBtn" class="soft-btn">本周梦境手记</button>
+              <button id="migrateAllMemBtn" class="soft-btn">迁移记忆到其他角色</button>
+              <span class="muted small">滚轮缩放 · 拖拽移动 · 左键看详情 · 右键编辑/合并/删除</span>
+            </div>
+            <div class="starmap-stage">
+              <canvas id="starMapCanvas" class="starmap-canvas"></canvas>
+              <div id="starDetailCard" class="star-detail-card" hidden>
+                <div class="box-head">
+                  <strong id="starDetailKind">记忆节点</strong>
+                  <button id="closeStarDetailBtn" class="icon-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+                <div id="starDetailBody" class="mem-body"></div>
+                <div id="starDetailMeta" class="muted small compact-top"></div>
+                <div class="btn-row compact-top">
+                  <button id="starEditBtn" class="primary-btn">编辑</button>
+                  <button id="starMergeBtn" class="soft-btn">合并到…</button>
+                  <button id="starArchiveBtn" class="soft-btn">归档删除</button>
+                </div>
+              </div>
+              <div id="starContextMenu" class="star-context-menu" hidden>
+                <button data-ctx="inspect">查看详情</button>
+                <button data-ctx="edit">编辑内容</button>
+                <button data-ctx="merge">安全合并到其他节点…</button>
+                <button data-ctx="archive">归档软删除（保留溯源）</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="mtab-states" class="sub-panel"><div id="statesList" class="card-grid"></div></div>
+          <div id="mtab-notes" class="sub-panel">
+            <form id="newNoteForm" class="inline-card">
+              <select id="newNoteKind">
+                <option value="fact_claim">事实</option>
+                <option value="preference">偏好</option>
+                <option value="interpretation" selected>理解</option>
+                <option value="value">价值观</option>
+                <option value="feeling">感受</option>
+                <option value="dream">梦境</option>
+              </select>
+              <input id="newNoteBody" type="text" placeholder="手写一张小纸条给 TA 记住…">
+              <button type="submit" class="primary-btn">记下来</button>
+            </form>
+            <div id="notesList" class="card-grid"></div>
+          </div>
+          <div id="mtab-dreams" class="sub-panel">
+            <div class="two-col">
+              <div class="panel-box"><h3>夜间梦境日记（Auto-Dream）</h3><div id="journalsList" class="stack-list"></div></div>
+              <div class="panel-box"><h3>跨天涌现特质</h3><div id="traitsList" class="stack-list"></div></div>
+            </div>
+          </div>
+          <div id="mtab-events" class="sub-panel"><div id="eventsList" class="stack-list"></div></div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: DUMMY-PROOF ONE-CLICK ECOSYSTEM CONNECTORS -->
+      <section id="view-ecosystem" class="view">
+        <div class="page-wrap">
+          <div class="page-head">
+            <div>
+              <h2>一键连接其他软件（零门槛引导）</h2>
+              <p class="muted">不用懂接口和代码——点一下你想接的软件，系统自动帮你打开通道并给出 3 步照抄指引。</p>
+            </div>
+            <span id="gwBadge" class="badge">通道未开启</span>
+          </div>
+
+          <!-- Airy Linear/Apple-Style Integration Rows with Crisp Brand SVG Badges -->
+          <div class="eco-rows">
+            <button class="eco-row" data-quick-connect="vtuber">
+              <div class="brand-badge brand-vtuber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></div>
+              <div class="eco-row-main"><strong>实时语音数字人 · Open-LLM-VTuber / Fay / VTube Studio</strong><span>自动开启低延迟流式吐字 + Limbic 情绪标签，让虚拟形象能听会说</span></div>
+              <span class="eco-row-action">一键配好 →</span>
+            </button>
+            <button class="eco-row" data-quick-connect="cortico">
+              <div class="brand-badge brand-cortico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21c4.5 0 8-3.2 8-7.5 0-2.8-1.8-5.3-4.3-6.6L14 4l-2 2-2-2-1.7 2.9C5.8 8.2 4 10.7 4 13.5 4 17.8 7.5 21 12 21z"/><circle cx="9.5" cy="13" r="1" fill="currentColor"/><circle cx="14.5" cy="13" r="1" fill="currentColor"/></svg></div>
+              <div class="eco-row-main"><strong>Cortico / Coopanion 桌面宠物</strong><span>透明桌宠走动、摸头互动、Whisper 听写，接入 Threadline 长期记忆大脑与状态流</span></div>
+              <span class="eco-row-action">一键配好 →</span>
+            </button>
+            <button class="eco-row" data-quick-connect="dsh">
+              <div class="brand-badge brand-dsh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 15c2-4 5.5-6 10-6 3.8 0 7 1.6 9.5 4.5-1.5 3.5-5 5.5-9.5 5.5-4.2 0-7.7-1.4-10-4z"/><path d="M19.5 13.5L22 10l-1 4.5 1.5 3-3-1.5"/><circle cx="8" cy="13" r="1" fill="currentColor"/></svg></div>
+              <div class="eco-row-main"><strong>DeepSeek Harness（DSH）生态寄生</strong><span>共用 DSH 桌宠、皮肤与插件生态，共享 /v1/events 实时工作状态流</span></div>
+              <span class="eco-row-action">一键配好 →</span>
+            </button>
+            <button class="eco-row" data-quick-connect="astrbot">
+              <div class="brand-badge brand-qq"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.4 2 6.5 5.1 6.5 8.8c0 .9-.7 2.1-1.5 3.5-.6 1-.9 2-.4 2.4.5.4 1.3-.2 2-.8.3 1.4 1 2.7 2 3.6-.8.4-1.5 1-1.5 1.7 0 .8 1.4 1.3 3.2 1.3.9 0 1.4-.2 1.7-.4.3.2.8.4 1.7.4 1.8 0 3.2-.5 3.2-1.3 0-.7-.7-1.3-1.5-1.7 1-.9 1.7-2.2 2-3.6.7.6 1.5 1.2 2 .8.5-.4.2-1.4-.4-2.4-.8-1.4-1.5-2.6-1.5-3.5C17.5 5.1 15.6 2 12 2z"/></svg></div>
+              <div class="eco-row-main"><strong>AstrBot / QQ / 微信 / SillyTavern 多端聚合</strong><span>零改造接入多平台聊天机器人与酒馆前端，全渠道共用同一颗大脑</span></div>
+              <span class="eco-row-action">一键配好 →</span>
+            </button>
+          </div>
+
+          <!-- Dummy-Proof 3-Step Result Panel -->
+          <div id="quickGuideBox" class="quick-guide-box" hidden>
+            <div class="box-head">
+              <strong id="quickGuideTitle">已自动为你配好通道</strong>
+              <button id="testGwBtn" class="soft-btn">帮我测一下通没通</button>
+            </div>
+            <ol id="quickGuideSteps" class="step-list"></ol>
+            <div class="btn-row compact-top">
+              <button id="copyQuickUrlBtn" class="primary-btn">第 1 步：点我复制地址</button>
+              <button id="copyQuickModelBtn" class="soft-btn">第 2 步：点我复制模型名</button>
+              <button id="copyQuickAllBtn" class="soft-btn">复制完整配置块</button>
+            </div>
+          </div>
+
+          <!-- Smooth Accordion for Advanced Gateway, MCP, and QQ -->
+          <div class="accordion-stack compact-top">
+            <div class="accordion-item">
+              <button class="accordion-trigger" data-acc="mcp">
+                <span>MCP 外挂技能插件中心（当前 <strong id="mcpBadge">0 个工具</strong>）</span>
+                <svg class="acc-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div id="acc-mcp" class="accordion-content">
+                <div class="accordion-inner">
+                  <p class="muted small">把网上搜到的 <code>mcpServers</code> JSON 直接粘进下面框里点保存就行，无需懂代码。</p>
+                  <div class="btn-row">
+                    <button id="mcpInsertSampleBtn" class="soft-btn">填入示例模板</button>
+                    <button id="saveMcpBtn" class="primary-btn">保存并连接 MCP</button>
+                  </div>
+                  <textarea id="mcpConfigInput" class="code-area compact-top" rows="7" placeholder='{"mcpServers": {}}'></textarea>
+                  <div id="mcpStatusList" class="stack-list small compact-top"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <button class="accordion-trigger" data-acc="advgw">
+                <span>高级网关参数（自定义端口 / 口令 / 情绪标签）</span>
+                <svg class="acc-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div id="acc-advgw" class="accordion-content">
+                <div class="accordion-inner">
+                  <div class="form-grid">
+                    <label class="switch-inline"><input id="gwEnabled" type="checkbox"><span class="sw-track"></span><span>启用本地大脑网关（支持真流式 SSE）</span></label>
+                    <label>监听端口 <input id="gwPort" type="number" min="1024" max="65535" value="18792"></label>
+                    <label>对外模型名 <input id="gwModelName" type="text" value="threadline-brain"></label>
+                    <label>访问口令（可选） <input id="gwApiKey" type="text" placeholder="留空表示仅本机免密"></label>
+                    <label class="switch-inline"><input id="gwEmotionTag" type="checkbox"><span class="sw-track"></span><span>回复附带 Limbic 情绪标签（接数字人推荐）</span></label>
+                  </div>
+                  <div class="btn-row compact-top">
+                    <button id="saveGatewayBtn" class="primary-btn">保存网关设置</button>
+                  </div>
+                  <div id="gwEndpoints" class="code-box" hidden></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <button class="accordion-trigger" data-acc="qq">
+                <span>QQ 私聊直连器（状态：<strong id="qqBadge">off</strong>）</span>
+                <svg class="acc-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div id="acc-qq" class="accordion-content">
+                <div class="accordion-inner">
+                  <div class="form-grid">
+                    <label>Bot QQ 号 <input id="qqBot" type="text" placeholder="例如 123456789"></label>
+                    <label>主人 QQ 号 <input id="qqOwner" type="text" placeholder="仅限主人私聊"></label>
+                    <label>OneBot 主目录 <input id="qqHome" type="text" placeholder="绝对路径"></label>
+                    <label>SDK 模块路径 <input id="qqSdk" type="text" placeholder="绝对路径"></label>
+                  </div>
+                  <div class="btn-row compact-top">
+                    <button id="saveQqBtn" class="soft-btn">保存配置</button>
+                    <button id="connectQqBtn" class="primary-btn">连接 QQ</button>
+                    <button id="disconnectQqBtn" class="soft-btn">断开</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: COMMUNITY PLAZA (Zero-Server Multi-Channel Hub + GitHub Market + Selective Stego PNG Exporter) -->
+      <section id="view-community" class="view">
+        <div class="page-wrap">
+          <div class="plaza-hero">
+            <div class="plaza-hero-text">
+              <span class="badge ok">零登录 · 全平台互通 · 隐私自主</span>
+              <h2>Threadline 创作者与养崽广场</h2>
+              <p class="muted">不强制注册、不自建封闭墙——在 QQ 频道日常晒崽，在小红书 / B 站看视频领海报图，在 GitHub 共享插件与皮肤，点一下就能带回自己的房间。</p>
+            </div>
+          </div>
+
+          <div class="pill-tabs compact-top">
+            <button class="pill-tab active" data-ptab="channels">多元交流通道</button>
+            <button class="pill-tab" data-ptab="market">GitHub 灵感与插件市场</button>
+            <button class="pill-tab" data-ptab="share">分享我的作品（隐私可选）</button>
+          </div>
+
+          <!-- Tab 1: Multi-Channel Hub -->
+          <div id="ptab-channels" class="sub-panel active">
+            <div id="communityChannelsList" class="connect-cards"></div>
+            <p class="muted small compact-top">提示：点击任意通道卡片上的「编辑入口」，即可填入你自己创建的 QQ 频道号、交流群号或 Discord 邀请链接。</p>
+          </div>
+
+          <!-- Tab 2: GitHub Market + 1-Click Import (JSON or Stego PNG Card) -->
+          <div id="ptab-market" class="sub-panel">
+            <div class="panel-box">
+              <div class="box-head">
+                <h3>一键领养社区作品（支持隐写海报图 PNG / .tlpack.json）</h3>
+                <div class="btn-row">
+                  <button id="importPackBtn" class="primary-btn">选择海报图 / 分享包导入</button>
+                  <input id="importPackFile" type="file" accept=".json,.png,image/png" hidden>
+                </div>
+              </div>
+              <p class="muted small">把小红书、QQ 频道或朋友发来的 Threadline 角色海报图（PNG）或 <code>.tlpack.json</code> 导入这里，软件管家会先弹出审批预览卡，经你同意后一键领养。</p>
+            </div>
+
+            <div class="panel-box">
+              <div class="box-head">
+                <h3>直连 GitHub 开源灵感与插件市场</h3>
+              </div>
+              <div class="preset-chips">
+                <button class="chip-btn" data-market-q="threadline-pack OR threadline-agent">Threadline 作品</button>
+                <button class="chip-btn" data-market-q="topic:dsh-plugin">DSH 桌宠与插件</button>
+                <button class="chip-btn" data-market-q="mcp-server">MCP 外挂工具</button>
+                <button class="chip-btn" data-market-q="Open-LLM-VTuber OR Coopanion">数字人与桌宠</button>
+              </div>
+              <div class="inline-card compact-top">
+                <input id="marketSearchInput" type="text" placeholder="搜索 GitHub 角色包、皮肤、桌宠或 MCP 插件…">
+                <button id="marketSearchBtn" class="primary-btn">搜索市场</button>
+              </div>
+              <div id="marketResults" class="card-grid compact-top">
+                <div class="muted small">点击上方分类标签或输入关键词，即可免登录浏览全网开源插件与灵感包。</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 3: Privacy-First Selective Share Exporter -->
+          <div id="ptab-share" class="sub-panel">
+            <div class="panel-box">
+              <h3>选择要公开的内容（API Key 与私密记忆库永远不会导出）</h3>
+              <div class="form-grid compact-top">
+                <label>作品标题 <input id="shareTitle" type="text" placeholder="例如：温柔傲娇小鲸鱼 · 暖白手账皮肤"></label>
+                <label>创作者署名 <input id="shareAuthor" type="text" placeholder="你的昵称或 GitHub ID"></label>
+                <label>一句话介绍 <input id="shareDesc" type="text" placeholder="写给领养者的一句介绍…"></label>
+              </div>
+              <div class="check-grid compact-top">
+                <label class="switch-inline"><input id="shareIncPersona" type="checkbox" checked><span class="sw-track"></span><span>公开人设卡与语言包</span></label>
+                <label class="switch-inline"><input id="shareIncSkin" type="checkbox" checked><span class="sw-track"></span><span>公开外观皮肤与自定义 CSS</span></label>
+                <label class="switch-inline"><input id="shareIncExt" type="checkbox" checked><span class="sw-track"></span><span>公开已启用的创造模式小组件</span></label>
+                <label class="switch-inline"><input id="shareIncLimbic" type="checkbox"><span class="sw-track"></span><span>公开 Limbic 气质参数</span></label>
+                <label class="switch-inline"><input id="shareIncNotes" type="checkbox"><span class="sw-track"></span><span>附带下方手动勾选的公开小纸条</span></label>
+              </div>
+              <div id="shareNotesPicker" class="stack-list small compact-top" hidden></div>
+              <div class="btn-row compact-top">
+                <button id="exportPosterBtn" class="primary-btn">生成隐写海报图 PNG（发小红书/QQ群推荐）</button>
+                <button id="exportPackJsonBtn" class="soft-btn">导出 .tlpack.json 文件</button>
+                <button id="copyPackJsonBtn" class="soft-btn">复制分享 JSON</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: DEEP DIY SETTINGS -->
+      <section id="view-settings" class="view">
+        <div class="page-wrap">
+          <div class="page-head">
+            <div>
+              <h2>外观工坊与深度 DIY 设置</h2>
+              <p class="muted">三大软件级皮肤、角色形象、大脑参数、满血组件与空间维护全在这里自由定制。</p>
+            </div>
+            <button id="saveAllSettingsBtn" class="primary-btn">保存全部更改</button>
+          </div>
+
+          <div class="pill-tabs">
+            <button class="pill-tab active" data-stab="appearance">外观工坊</button>
+            <button class="pill-tab" data-stab="brain">大脑与性格</button>
+            <button class="pill-tab" data-stab="components">满血组件</button>
+            <button class="pill-tab" data-stab="storage">空间与更新</button>
+          </div>
+
+          <!-- DIY Appearance -->
+          <div id="stab-appearance" class="sub-panel active">
+            <div class="eco-grid">
+              <div class="panel-box">
+                <h3>界面风格引擎</h3>
+                <div class="vibe-grid">
+                  <button class="vibe-card" data-skin-card="chatgpt"><strong>通用 · ChatGPT 风</strong><span>极净居中流 · 悬浮胶囊输入</span></button>
+                  <button class="vibe-card" data-skin-card="xhs"><strong>画报 · 小红书风</strong><span>暖白卡片流 · 柔润出片感</span></button>
+                  <button class="vibe-card" data-skin-card="vscode"><strong>极客 · VS Code 风</strong><span>活动栏 · 标签页 · 底部状态栏</span></button>
+                </div>
+                <div class="form-grid">
+                  <label>明暗色盘
+                    <select id="uiTheme">
+                      <option value="paper">日间暖白</option>
+                      <option value="nightlight">深邃暗夜</option>
+                      <option value="minimal">高对比纯白</option>
+                    </select>
+                  </label>
+                  <label>角色呈现位
+                    <select id="uiLayout">
+                      <option value="minimal">极简纯净聊天（最百搭）</option>
+                      <option value="portrait">左侧立绘陪伴卡（出片推荐）</option>
+                      <option value="pet">右下角浮动小桌宠（支持 pet.json）</option>
+                    </select>
+                  </label>
+                  <label class="switch-inline"><input id="uiAutoAccent" type="checkbox" checked><span class="sw-track"></span><span>上传头像时自动吸取柔和主题色</span></label>
+                  <label>自定义主题色 <input id="uiAccent" type="color" value="#10a37f"></label>
+                  <label>气泡圆角 (<span id="bubbleRadiusVal">18</span>px) <input id="uiBubbleRadius" type="range" min="6" max="28" value="18"></label>
+                  <label>正文字号 (<span id="fontSizeVal">15</span>px) <input id="uiFontSize" type="range" min="12" max="20" value="15"></label>
+                </div>
+              </div>
+
+              <div class="panel-box">
+                <h3>形象、背景与桌宠导入</h3>
+                <div class="form-grid">
+                  <label>角色头像 <input id="avatarFile" type="file" accept="image/*"></label>
+                  <label>左侧立绘图 <input id="portraitFile" type="file" accept="image/*"></label>
+                  <label>房间背景图 <input id="bgFile" type="file" accept="image/*"></label>
+                  <label>房间动态视频壁纸 (MP4 / WebM) <input id="bgVideoFile" type="file" accept="video/mp4,video/webm"></label>
+                  <label>背景模糊 (<span id="bgBlurVal">12</span>px) <input id="uiBgBlur" type="range" min="0" max="32" value="12"></label>
+                  <label>背景透明度 (<span id="bgOpacityVal">18</span>%) <input id="uiBgOpacity" type="range" min="0" max="85" value="18"></label>
+                  <label>导入桌宠图或 DSH pet.json <input id="petFile" type="file" accept="image/*,.json"></label>
+                </div>
+                <div class="btn-row compact-top">
+                  <button id="clearImagesBtn" class="soft-btn">清除已上传图片</button>
+                  <button id="resetAppearanceBtn" class="soft-btn">恢复默认外观</button>
+                </div>
+              </div>
+
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>极客自定义 CSS &amp; 皮肤包</h3>
+                  <div class="btn-row">
+                    <button id="exportThemeBtn" class="soft-btn">导出皮肤包</button>
+                    <button id="importThemeBtn" class="soft-btn">导入皮肤包</button>
+                    <input id="importThemeFile" type="file" accept=".json" hidden>
+                  </div>
+                </div>
+                <textarea id="uiCustomCss" class="code-area" rows="5" placeholder="/* 写任意 CSS 覆盖界面样式，保存后立即生效 */"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <!-- Brain & Persona -->
+          <div id="stab-brain" class="sub-panel">
+            <div class="eco-grid">
+              <div class="panel-box">
+                <h3>角色与人设卡</h3>
+                <div class="form-grid">
+                  <label>角色昵称 <input id="charNameInput" type="text" value="Threadline"></label>
+                  <label>导入通用角色卡 (JSON) <input id="charCardFile" type="file" accept=".json"></label>
+                  <label>人设说明 <textarea id="identityInput" rows="5"></textarea></label>
+                  <label>说话风格 / 语言包（可选） <textarea id="styleInput" rows="4" placeholder="例如：短句、口语化、自然不端着…"></textarea></label>
+                </div>
+              </div>
+
+              <div class="panel-box">
+                <h3>模型与防烧钱预算红线</h3>
+                <div class="preset-chips">
+                  <button class="chip-btn" data-provider="deepseek">DeepSeek 官方</button>
+                  <button class="chip-btn" data-provider="openai">OpenAI</button>
+                  <button class="chip-btn" data-provider="ollama">本地 Ollama</button>
+                  <button class="chip-btn" data-provider="lmstudio">LM Studio</button>
+                </div>
+                <div class="form-grid">
+                  <label>API Base URL <input id="providerBaseUrl" type="text" value="https://api.deepseek.com"></label>
+                  <label>模型名称（留空使用默认） <input id="providerModel" type="text" placeholder="如 deepseek-chat / qwen2.5"></label>
+                  <label>API Key（仅存内存，绝不落盘） <input id="apiKeyInput" type="password" placeholder="sk-..."></label>
+                  <div class="btn-row">
+                    <button id="checkKeyBtn" class="soft-btn">一键测通 Key</button>
+                    <span id="keyStatusMsg" class="muted small"></span>
+                  </div>
+                  <label class="switch-inline"><input id="liveToggle" type="checkbox"><span class="sw-track"></span><span>启用在线真实大脑（关闭为离线体验）</span></label>
+                  <label>每日预算红线 (<span id="dailyVal">5</span> 元) <input id="dailyBudget" type="range" min="0.5" max="20" step="0.5" value="5"></label>
+                  <label>思考深度
+                    <select id="reasoningSelect">
+                      <option value="off">关闭（最快）</option>
+                      <option value="low" selected>适中（推荐）</option>
+                      <option value="high">深度（复杂任务）</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>多 API 模型池（各角色与管家自由混用）</h3>
+                  <div class="btn-row">
+                    <label class="small">管家默认用：
+                      <select id="copilotProviderSelect" class="compact-select"></select>
+                    </label>
+                    <button id="addProviderBtn" class="soft-btn">新增 API 提供商</button>
+                  </div>
+                </div>
+                <div id="providerPoolList" class="card-grid compact-top"></div>
+              </div>
+
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>认知积木、上下文缓存策略与工具权限（统一数字生命）</h3>
+                  <select id="contextModeSelect" class="compact-select">
+                    <option value="dynamic-mind">动态心智上下文（默认 · 情感与记忆拼凑）</option>
+                    <option value="long-agent">轻量 Agent（关闭每轮统觉）</option>
+                    <option value="custom">自定义上下文长度</option>
+                  </select>
+                </div>
+                <p id="contextCacheHint" class="muted small">自定义上限作用于实际认知文本包。缓存排版需单独启用，当前仍使用原有上下文最大长度。</p>
+                <div class="form-grid compact-top">
+                  <label>自定义上下文上限 (<span id="ctxTokensVal">32000</span> 估算 tokens)
+                    <input id="customContextTokens" type="range" min="4000" max="32000" step="4000" value="32000">
+                  </label>
+                  <label>发送层缓存排版（实验开关，默认关闭）
+                    <select id="wireLayoutSelect">
+                      <option value="legacy">legacy（原版稳定默认）</option>
+                      <option value="staged-v1">staged-v1（小版三层缓存排版 · 建议先对照实测）</option>
+                    </select>
+                  </label>
+                  <label>当前角色绑定的模型池 <select id="residentProviderSelect"></select></label>
+                  <label>授权的本地工作区路径（留空仅限默认书桌沙箱）
+                    <input id="residentWorkspaceDir" type="text" placeholder="例如 D:\Workspace\MyProject">
+                  </label>
+                </div>
+                <div class="check-grid compact-top">
+                  <label class="switch-inline"><input id="memoryEnabledToggle" type="checkbox" checked><span class="sw-track"></span><span>启用长期记忆检索</span></label>
+                  <label class="switch-inline"><input id="permOfficeRead" type="checkbox" checked><span class="sw-track"></span><span>读取沙箱书桌</span></label>
+                  <label class="switch-inline"><input id="permOfficeWrite" type="checkbox" checked><span class="sw-track"></span><span>写入沙箱书桌</span></label>
+                  <label class="switch-inline"><input id="permWsRead" type="checkbox"><span class="sw-track"></span><span>读取授权工作区</span></label>
+                  <label class="switch-inline"><input id="permWsWrite" type="checkbox"><span class="sw-track"></span><span>写入授权工作区</span></label>
+                  <label class="switch-inline"><input id="permWeb" type="checkbox"><span class="sw-track"></span><span>只读上网查资料</span></label>
+                  <label class="switch-inline"><input id="permMcpRead" type="checkbox" checked><span class="sw-track"></span><span>调用只读 MCP 工具</span></label>
+                  <label class="switch-inline"><input id="permMcpWrite" type="checkbox"><span class="sw-track"></span><span>允许写入类 MCP 工具</span></label>
+                  <label class="switch-inline"><input id="permApproval" type="checkbox" checked><span class="sw-track"></span><span>高危写入前必须主人审批</span></label>
+                </div>
+                <div class="btn-row compact-top">
+                  <button id="saveResidentAgentBtn" class="primary-btn">保存认知与权限配置</button>
+                  <button id="compareWireBtn" class="soft-btn">查看缓存实测对照</button>
+                </div>
+                <div id="wireCompareResult" class="muted small compact-top" hidden></div>
+              </div>
+
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>感官隐私闸门与时空胶囊备份</h3>
+                  <button id="sensoryCurtainBtn" class="soft-btn">一键拉窗帘</button>
+                </div>
+                <p class="muted small">默认闭眼。授权本机客户端后，可发送临时软件、天气或体征摘要。该入口不采集画面、声音或位置坐标。</p>
+                <div class="form-grid compact-top">
+                  <label>环境感官亮度
+                    <select id="sensoryLevelSelect">
+                      <option value="L0">L0 闭眼（完全关闭环境感知）</option>
+                      <option value="L1">L1 氛围感知（推荐 · 仅应用/天气/体征摘要）</option>
+                      <option value="L2">L2 接收单次屏幕／镜头摘要</option>
+                      <option value="L3">L3 接收共屏／通话摘要</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="btn-row compact-top">
+                  <button id="exportCapsuleBtn" class="primary-btn">导出加密时空胶囊</button>
+                  <button id="restoreCapsuleBtn" class="soft-btn">还原到独立目录</button>
+                  <input id="restoreCapsuleFile" type="file" accept=".json,.tlcapsule" hidden>
+                  <button id="issueSensoryClientBtn" class="soft-btn">授权信号客户端</button>
+                  <button id="revokeSensoryClientBtn" class="soft-btn">撤销客户端</button>
+                </div>
+                <div id="sensoryAuditText" class="muted small compact-top"></div>
+              </div>
+
+              
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>旧版上下文预览管理</h3>
+                  <div class="btn-row">
+                    <button id="compactHalfBtn" class="soft-btn">整理旧本地预览</button>
+                    <button id="rolloverEpochBtn" class="soft-btn">整理旧预览交接</button>
+                  </div>
+                </div>
+                <p class="muted small">这里只管理已有的预览副本。实际模型使用认知事件与记忆，聊天不再另存预览副本。</p>
+                <div id="epochStatsGrid" class="stats-grid compact-top"></div>
+                <div id="yesterdayHandoffBox" class="code-box compact-top" hidden></div>
+              </div>
+
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>居民技能文件（SKILL.md）</h3>
+                  <button id="addSkillBtn" class="soft-btn">新增 / 导入 Skill</button>
+                </div>
+                <div id="skillsList" class="stack-list small compact-top"></div>
+              </div>
+
+              <div class="panel-box full-span">
+                <div class="box-head">
+                  <h3>多居民团队协作、共享工作台与无心智子 Agent</h3>
+                  <label class="switch-inline"><input id="teamEnabledToggle" type="checkbox"><span class="sw-track"></span><span>开启团队协作</span></label>
+                </div>
+                <p class="muted small">在这里手动留团队消息、写共享文件，或调用独立的执行子 Agent。团队消息目前显示在面板里。</p>
+                <div class="btn-row compact-top">
+                  <button id="spawnSubAgentBtn" class="primary-btn">派生无心智子 Agent 执行任务</button>
+                  <button id="sendTeamMsgBtn" class="soft-btn">在居民协作频道留言</button>
+                  <button id="addSharedFileBtn" class="soft-btn">向共享工作台写入文件</button>
+                </div>
+                <div id="teamOverviewBox" class="stack-list small compact-top"></div>
+              </div>
+              <div class="panel-box full-span">
+                <h3>大脑认知层开关与 Limbic 情感引擎</h3>
+                <div class="check-grid">
+                  <label class="switch-inline"><input id="autoDreamToggle" type="checkbox" checked><span class="sw-track"></span><span>夜间 Auto-Dream 自动做梦整理记忆</span></label>
+                  <label class="switch-inline"><input id="longChainToggle" type="checkbox" checked><span class="sw-track"></span><span>长链任务执行</span></label>
+                  <label class="switch-inline"><input id="officeDeskToggle" type="checkbox" checked><span class="sw-track"></span><span>沙箱书桌读写</span></label>
+                  <label class="switch-inline"><input id="windowExploreToggle" type="checkbox"><span class="sw-track"></span><span>只读上网看世界</span></label>
+                  <label class="switch-inline"><input id="autonomyToggle" type="checkbox"><span class="sw-track"></span><span>空闲自主活动心跳</span></label>
+                  <label class="switch-inline"><input id="affectToggle" type="checkbox"><span class="sw-track"></span><span>开启 Limbic 情绪与内驱力引擎</span></label>
+                  <label class="switch-inline"><input id="apperceptionToggle" type="checkbox" checked><span class="sw-track"></span><span>开启统觉机制（Apperception）</span></label>
+                  <label class="switch-inline"><input id="fusionToggle" type="checkbox"><span class="sw-track"></span><span>开启情绪决策融合</span></label>
+                </div>
+                <div class="form-grid compact-top">
+                  <label>Python 路径（可选） <input id="pythonPath" type="text" placeholder="留空自动探测"></label>
+                  <label>时区偏移（分钟，北京 480） <input id="tzMinutes" type="number" value="480"></label>
+                </div>
+                <div id="limbicSliders" class="sliders-grid"></div>
+                <select id="residentRoleMode" hidden><option value="companion">unified</option><option value="agent">agent</option></select>
+              </div>
+
+          </div>
+
+          <!-- Components -->
+          <div id="stab-components" class="sub-panel">
+            <div class="panel-box">
+              <div class="box-head">
+                <h3>满血组件中心（按需勾选，绝不强制）</h3>
+                <select id="mirrorSelect" class="compact-select">
+                  <option value="cn">国内镜像加速（推荐）</option>
+                  <option value="official">官方直连源</option>
+                </select>
+              </div>
+              <p class="muted small">不勾选也能流畅使用轻量版；勾上想升级的组件点一键下载即可解锁满血体验。</p>
+              <div id="componentsPanelList" class="stack-list"></div>
+              <div class="btn-row compact-top">
+                <button id="installSelectedBtn" class="primary-btn">一键下载已勾选组件</button>
+                <button id="refreshComponentsBtn" class="soft-btn">重新体检</button>
+              </div>
+              <div id="installJobBox" class="stack-list compact-top"></div>
+            </div>
+          </div>
+
+          <!-- Storage & Version Updates -->
+          <div id="stab-storage" class="sub-panel">
+            <div class="eco-grid">
+              <div class="panel-box">
+                <h3>存储空间与无损垃圾清理</h3>
+                <p class="muted small">内置 v0.2.2 无损压缩与 24 小时自动维护。清理只回收过期过程缓存，<strong>绝不删除任何记忆与原始事件</strong>。</p>
+                <div id="storageStats" class="stats-grid"></div>
+                <div class="btn-row compact-top">
+                  <button id="maintainStorageBtn" class="primary-btn">一键安全清理运行垃圾</button>
+                  <button id="refreshStorageBtn" class="soft-btn">刷新统计</button>
+                </div>
+              </div>
+              <div class="panel-box">
+                <h3>版本更新与便携备份</h3>
+                <p id="updateBoxText" class="muted small">当前版本：Threadline Studio v2.9.0。点击下方可检测 GitHub 最新发布版。</p>
+                <div class="btn-row compact-top">
+                  <button id="settingsCheckUpdateBtn" class="primary-btn">检查最新版本</button>
+                  <button id="backupNotesBtn" class="soft-btn">导出记忆备份</button>
+                  <button id="reopenWizardBtn" class="soft-btn">重跑开机向导</button>
+                </div>
+              </div>
+
+              <div class="panel-box">
+                <div class="box-head">
+                  <h3>创造模式扩展管理（热插拔隔离槽）</h3>
+                  <button id="enterSafeModeBtn" class="soft-btn">安全模式重启界面</button>
+                </div>
+                <p class="muted small">遇到界面异常可一键进入安全模式；停用或卸载任意 DIY 扩展都不影响记忆。</p>
+                <div id="extensionsList" class="stack-list small compact-top"></div>
+              </div>
+              <div class="panel-box">
+                <div class="box-head">
+                  <h3>时光机快照回退（自动保留最近 20 版）</h3>
+                  <button id="factoryResetShellBtn" class="soft-btn">恢复默认外壳（不伤记忆）</button>
+                </div>
+                <p class="muted small">每次管家修改配置或创造扩展前都会自动存档，点任意一条即可瞬间回退。</p>
+                <div id="snapshotsList" class="stack-list small compact-top"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VS Code Status Bar (Visible in VS Code skin) -->
+      <footer class="vscode-statusbar">
+        <div class="vsb-left">
+          <span class="vsb-item">Threadline v2.2.0</span>
+          <span id="vsbMode" class="vsb-item">Offline</span>
+          <span id="vsbMem" class="vsb-item">Notes: 0</span>
+        </div>
+        <div class="vsb-right">
+          <span id="vsbGw" class="vsb-item">Gateway: Off</span>
+          <span id="vsbMcp" class="vsb-item">MCP: 0</span>
+          <button id="vsbUpdateBtn" class="vsb-btn">Check Updates</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- MODAL 1: 3-STEP ONBOARDING WIZARD -->
+  <div id="wizardModal" class="modal-backdrop" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>欢迎使用 Threadline Studio</h3>
+        <button id="skipWizardBtn" class="icon-btn" title="稍后再配">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="wizard-steps">
+        <span class="step-dot active" data-wstep="1">1. 选界面风格</span>
+        <span class="step-dot" data-wstep="2">2. 填大脑钥匙</span>
+        <span class="step-dot" data-wstep="3">3. 迎 TA 入住</span>
+      </div>
+      <div id="wstep-1" class="wstep active">
+        <p class="muted small">选一种最顺眼的软件风格（随时可在顶部一键切换）：</p>
+        <div class="vibe-grid">
+          <button class="vibe-card active" data-wskin="chatgpt"><strong>通用 · ChatGPT 风</strong><span>极简干净，谁都会用</span></button>
+          <button class="vibe-card" data-wskin="xhs"><strong>画报 · 小红书风</strong><span>温柔出片，配立绘陪伴卡</span></button>
+          <button class="vibe-card" data-wskin="vscode"><strong>极客 · VS Code 风</strong><span>工作台分栏，自带玻璃箱</span></button>
+        </div>
+      </div>
+      <div id="wstep-2" class="wstep">
+        <p class="muted small">把 AI 钥匙（API Key）粘进来就能开始真聊天；还没申请也可以先留空直接逛界面：</p>
+        <div class="form-grid">
+          <label>服务商地址 <input id="wizBaseUrl" type="text" value="https://api.deepseek.com"></label>
+          <label>API Key <input id="wizApiKey" type="password" placeholder="sk-...（留空则先离线逛逛）"></label>
+          <label>每日防烧钱上限（元） <input id="wizDaily" type="number" min="0.5" max="20" step="0.5" value="5"></label>
+        </div>
+        <div class="btn-row compact-top">
+          <button id="wizTestKeyBtn" class="soft-btn">测通一下</button>
+          <span id="wizKeyMsg" class="muted small"></span>
+        </div>
+      </div>
+      <div id="wstep-3" class="wstep">
+        <p class="muted small">给 TA 起个名字，传张头像（会自动取主题色），写两句性格就能开聊：</p>
+        <div class="form-grid">
+          <label>TA 的名字 <input id="wizName" type="text" value="小线"></label>
+          <label>上传头像（可选） <input id="wizAvatar" type="file" accept="image/*"></label>
+          <label>性格简介 <textarea id="wizIdentity" rows="3"></textarea></label>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button id="wizPrevBtn" class="soft-btn" hidden>上一步</button>
+        <div class="spacer"></div>
+        <button id="wizNextBtn" class="primary-btn">下一步</button>
+        <button id="wizFinishBtn" class="primary-btn" hidden>完成并进入房间</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: COMPONENT CHECKLIST -->
+  <div id="componentModal" class="modal-backdrop" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>可升级的满血组件</h3>
+        <button id="closeCompModalBtn" class="icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <p class="muted small">当前轻量版已经可以直接聊天。勾选下方组件可一键下载解锁离线语义回忆、深度情绪等满血体验；也可以<strong>全不勾选</strong>跳过。</p>
+      <label class="small">下载加速源：
+        <select id="modalMirrorSelect" class="compact-select">
+          <option value="cn">国内镜像加速（推荐）</option>
+          <option value="official">官方直连</option>
+        </select>
+      </label>
+      <div id="modalCompList" class="stack-list compact-top"></div>
+      <div class="modal-foot">
+        <label class="switch-inline"><input id="dontAskCompAgain" type="checkbox"><span class="sw-track"></span><span>不再主动弹窗</span></label>
+        <div class="spacer"></div>
+        <button id="skipCompBtn" class="soft-btn">暂不下载</button>
+        <button id="downloadCompModalBtn" class="primary-btn">下载已勾选</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: PERSISTENT ZERO-JARGON BEGINNER GUIDE -->
+  <div id="guideModal" class="modal-backdrop" hidden>
+    <div class="modal-card modal-wide">
+      <div class="modal-head">
+        <h3>新手教程（随时点左侧「新手教程」重看）</h3>
+        <button id="closeGuideBtn" class="icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="pill-tabs">
+        <button class="pill-tab active" data-gtut="zero">0. 完全没用过 AI？</button>
+        <button class="pill-tab" data-gtut="start">1. 三分钟开聊</button>
+        <button class="pill-tab" data-gtut="diy">2. 换皮肤和形象</button>
+        <button class="pill-tab" data-gtut="eco">3. 傻瓜式接数字人/桌宠</button>
+        <button class="pill-tab" data-gtut="faq">4. 常见问题</button>
+      </div>
+      <div id="gtut-zero" class="sub-panel active guide-body">
+        <p><strong>什么是 API Key（大脑钥匙）？</strong><br>把它想成一张“按次扣费的电话卡”。你只需要去 DeepSeek 官网（platform.deepseek.com）注册、充 5 块钱、点「创建 API Key」，复制那串 <code>sk-</code> 开头的字符贴进本软件就行。</p>
+        <p><strong>会不会偷偷扣我很多钱？</strong><br>不会！软件默认把每天上限锁在 5 元（你还能拉低到 0.5 元），而且你的钥匙只存在当前内存里，绝不会上传给任何第三方。</p>
+      </div>
+      <div id="gtut-start" class="sub-panel guide-body">
+        <p>1. 点左侧「外观与设置 → 大脑与性格」，贴上你的 API Key，点「一键测通 Key」。<br>2. 打开「启用在线真实大脑」开关，点右上角「保存全部更改」。<br>3. 回到「对话房间」就能开始聊天；点顶部「玻璃箱」按钮可以随时偷看 TA 的思考和情绪。</p>
+      </div>
+      <div id="gtut-diy" class="sub-panel guide-body">
+        <p><strong>顶部一键换三大界面：</strong>喜欢极简点「通用 · GPT风」，喜欢出片点「画报 · 小红书风」，喜欢专业工作台点「极客 · VSCode风」。</p>
+        <p><strong>随便塞任何形象：</strong>在「外观与设置 → 外观工坊」上传头像、半身立绘、背景图，或者拖入 DSH 的 <code>pet.json</code> 桌宠包。</p>
+      </div>
+      <div id="gtut-eco" class="sub-panel guide-body">
+        <p>点左侧「一键连接」，看到 4 张大卡片（会说话的数字人 / Cortico 桌宠 / AstrBot 机器人 / DSH）——<strong>直接点你想接的那张卡</strong>，系统会自动帮你打开通道并配好参数，照着弹出的 1、2、3 步点复制粘贴就行，完全不用写代码。</p>
+      </div>
+      <div id="gtut-faq" class="sub-panel guide-body">
+        <p><strong>Q：聊久了会占满硬盘吗？</strong><br>A：不会，内置无损压缩和每日自动清理，所有记忆和聊天事件永远不会被自动删掉。</p>
+        <p><strong>Q：怎么知道有没有新版本？</strong><br>A：点左侧「检查更新」即可检测最新版并查看更新说明。</p>
+      </div>
+      <div class="modal-foot">
+        <button id="guideReopenWizBtn" class="soft-btn">重跑 3 步开机向导</button>
+        <div class="spacer"></div>
+        <button id="guideOkBtn" class="primary-btn">明白了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: VERSION UPDATE DIALOG -->
+  <div id="updateModal" class="modal-backdrop" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="updateModalTitle">版本检测</h3>
+        <button id="closeUpdateModalBtn" class="icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="updateModalBody" class="guide-body"></div>
+      <div class="modal-foot">
+        <div class="spacer"></div>
+        <a id="updateDownloadLink" class="primary-btn link-as-btn" target="_blank" rel="noopener noreferrer" hidden>前往下载最新版</a>
+        <button id="closeUpdateOkBtn" class="soft-btn">关闭</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- MODAL 5: STUDIO COPILOT & UNIVERSAL CONFIG PROTOCOL -->
+  <div id="copilotModal" class="modal-backdrop" hidden>
+    <div class="modal-card modal-wide">
+      <div class="modal-head">
+        <h3>软件管家 · Studio Copilot（所有改动需经你审批）</h3>
+        <button id="closeCopilotBtn" class="icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="pill-tabs">
+        <button class="pill-tab active" data-ctab="protocol">1. 让外部 AI 帮我填（通用协议）</button>
+        <button class="pill-tab" data-ctab="direct">2. 直接指挥软件管家</button>
+        <button class="pill-tab" data-ctab="create">3. 创造模式 &amp; 搜 GitHub</button>
+      </div>
+      <div id="ctab-protocol" class="sub-panel active">
+        <p class="muted small">第 1 步：点下面按钮复制「通用配置协议」，直接发给 ChatGPT / DeepSeek / Claude / Gemini 并说出你的想法。<br>第 2 步：把对方返回的 JSON 粘进下方输入框，管家会先给你看「改前 → 改后」审批卡，你点同意才会生效。</p>
+        <div class="btn-row compact-top">
+          <button id="copyProtocolBtn" class="primary-btn">一键复制通用配置协议</button>
+        </div>
+        <textarea id="copilotPasteInput" class="code-area compact-top" rows="6" placeholder="把外部 AI 返回的 JSON 粘贴到这里…"></textarea>
+        <div class="btn-row compact-top">
+          <button id="parseProtocolBtn" class="soft-btn">解析并生成审批预览卡</button>
+        </div>
+      </div>
+      <div id="ctab-direct" class="sub-panel">
+        <p class="muted small">软件管家独立于你的数字生命，使用模型池里的专属 API，绝不污染角色记忆。直接说你想怎么改软件设置：</p>
+        <textarea id="copilotAskInput" rows="3" placeholder="例如：帮我新建一个严谨的代码搭子叫「林深」，开启干活模式和夜间做梦，把界面切成 VS Code 风…"></textarea>
+        <div class="btn-row compact-top">
+          <button id="askCopilotBtn" class="primary-btn">发给软件管家分析</button>
+        </div>
+        <div id="copilotReplyBox" class="code-box compact-top" hidden></div>
+      </div>
+
+      <div id="ctab-create" class="sub-panel">
+        <p class="muted small">借鉴 DSH 创造模式：所有自制挂件都在隔离沙箱里热插拔，改动前自动拍时光机快照，绝不破坏核心与记忆。</p>
+        <div class="preset-chips compact-top">
+          <button class="chip-btn" data-create-preset="pomodoro">一键造「番茄钟小组件」</button>
+          <button class="chip-btn" data-create-preset="countdown">一键造「生日倒计时挂件」</button>
+          <button class="chip-btn" data-create-preset="notecard">一键造「每日灵感便签卡」</button>
+        </div>
+        <div class="inline-card compact-top">
+          <input id="githubSearchInput" type="text" placeholder="让管家联网搜 GitHub（如：mcp server weather / dsh-pet / Live2D）…">
+          <button id="githubSearchBtn" class="primary-btn">搜 GitHub</button>
+        </div>
+        <div id="githubSearchResults" class="stack-list small"></div>
+      </div>
+
+      <!-- Approval Preview Card -->
+      <div id="proposalCard" class="quick-guide-box" hidden>
+        <div class="box-head">
+          <strong id="proposalSummary">配置变更审批卡</strong>
+          <span id="proposalRiskBadge" class="badge ok">等待主人许可</span>
+        </div>
+        <div id="proposalDiffList" class="stack-list small"></div>
+        <div class="btn-row compact-top">
+          <button id="approveProposalBtn" class="primary-btn">允许执行以上改动</button>
+          <button id="rejectProposalBtn" class="soft-btn">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 6: CREATE NEW RESIDENT -->
+  <div id="newResidentModal" class="modal-backdrop" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>新建数字生命（独立记忆与存档）</h3>
+        <button id="closeNewResBtn" class="icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="form-grid">
+        <label>角色昵称 <input id="newResName" type="text" placeholder="例如：阿柚 / 小鲸 / 林深"></label>
+        <label>一句话定位 <input id="newResTagline" type="text" placeholder="例如：毒舌护短的猫娘 / 严谨写代码搭子"></label>
+        <label>默认模式
+          <select id="newResRoleMode">
+            <option value="companion">陪伴模式（家人 / 伴侣 / 宠物）</option>
+            <option value="agent">干活 Agent 模式（工作台 / 查资料 / 写文件）</option>
+          </select>
+        </label>
+        <label>绑定模型池 <select id="newResProvider"></select></label>
+        <label>人设说明 <textarea id="newResIdentity" rows="4" placeholder="写下 TA 的性格、身份和你们的关系…"></textarea></label>
+      </div>
+      <div class="modal-foot">
+        <div class="spacer"></div>
+        <button id="cancelNewResBtn" class="soft-btn">取消</button>
+        <button id="confirmNewResBtn" class="primary-btn">创建并进入房间</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- MODAL 7: IN-APP SMOOTH DIALOG (Replaces ugly native prompt/confirm) -->
+  <div id="inAppDialog" class="modal-backdrop" hidden>
+    <div class="modal-card modal-compact">
+      <div class="modal-head">
+        <h3 id="dlgTitle">确认操作</h3>
+        <button id="dlgCloseBtn" class="icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <p id="dlgMessage" class="muted small"></p>
+      <div id="dlgFields" class="form-grid"></div>
+      <div class="modal-foot">
+        <div class="spacer"></div>
+        <button id="dlgCancelBtn" class="soft-btn">取消</button>
+        <button id="dlgOkBtn" class="primary-btn">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -14,7 +14,7 @@ continuity.changes（含版本、basis、nature）、residency、attention.proce
    可用工具（T1…，带参数说明）、剩余查询次数。说明文字约 2 千字（prompts/intent-v1.zh.md）。
 3. 模型只回答：decision（reply/act/lookup/wait/pause/continue/none）、states、work、used，全部用编号。
 4. 提交时 `expandIntent` 把它编译成普通完整输出，再走原有 normalize → commitDecision → Store 校验。
-   原始回答与编译结果、诊断一起存为 `intent-compilation` 审计记录。
+   `intent-compilation` 记录原始回答和诊断；编译结果已经保存在决定提案，不再重复写一份。
 
 宿主只填写由交付包或模型明确选择唯一确定的记账：新对象 ID、版本、basis（当前观察）、
 被保留状态的驻留、模型标了 thisMessage 时的事件归属、Process 未改字段（从交付的那一版 frame 读取）。
@@ -28,7 +28,11 @@ continuity.changes（含版本、basis、nature）、residency、attention.proce
 - used 只计 M 材料；E0/T/未打开的 R 被记诊断后忽略（used 本来就不是因果证明）。
 - 当前项不能归属工作（如工具回执）时，thisMessage 记诊断后忽略，而不是整轮作废。
 - v1 不覆盖：反思、AgentTask 步骤、带宿主附加说明（任务结果/重新准入）的包、Intent 对象生命周期、
-  mind 结构（concern/condition/expectation/readiness）、问题跟踪、焦点选择、经验学习。这些包自动使用完整协议。
+  复杂条件树与预测、问题跟踪、焦点选择、经验学习写入。反思、任务步骤与上述特殊决定仍走各自现有完整入口。
+- 普通包支持可选的统觉判断、状态领域、认识/关切/条件、用已读 S 编号连接的行动准备；
+  交付已有判断及情绪对象和原因。T 工具用现有授权；`start_agent_task` 可用 P/G 编号显式选择 Process 或 Intent。
+  Process 历史中的任务证据显示来源、结果状态与截断标志；摘录不是正式引用。旧封存包保持原投影。
+- 当前普通包使用 `intent-base-v5`。用 `memo` 随手记近期印象。上次回复只在它所属的会话出现。主动查阅和自动推荐在整库找候选，正文按当前受众和记录版本核对。查阅结果区分匹配数、交付正文数和分页，有 `more:L1` 时可用 `lookup.open` 翻页。上一笔被拒绝的字段反馈只在同一会话交付。
 
 ## 启用
 
@@ -37,7 +41,6 @@ continuity.changes（含版本、basis、nature）、residency、attention.proce
 
 ## 证据
 
-evaluation/intent-study_2026-11-17/README.md：同条件 DeepSeek 对照，各 30 次：
 采用 30/30 vs 25/30，输入 token 1.2k vs 9.0k，耗时 2.0s vs 4.2s。
 
 ## 自然度（2026-11-18）

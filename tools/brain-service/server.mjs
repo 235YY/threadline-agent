@@ -7,13 +7,30 @@ import {ContinuityStore} from '../../src/store.mjs';
 import {ContinuitySession} from '../../src/continuity-session.mjs';
 import {subjectiveMemoryView,continuityInput} from '../../src/continuity.mjs';
 import {TurnDriver} from '../../src/turn-driver.mjs';
+import {rhythmConfig} from '../../src/rhythm.mjs';
 import {SceneScheduler} from '../../src/scheduler.mjs';
-import {keepAttention,attentionId} from '../../src/attention.mjs';
+import {keepAttention,attentionId,liveProcesses} from '../../src/attention.mjs';
+import * as attentionApi from '../../src/attention.mjs';
+// B-owned attention API is landing in Phase 0/1. These tiny adapters keep the server
+// loadable while that file is absent and automatically use the real implementation
+// once present; they never create a second policy.
+const isAttentionCapacityError=code=>typeof attentionApi.isAttentionCapacityError==='function'
+ ? attentionApi.isAttentionCapacityError(code)
+ : ['FOREGROUND_CAPACITY','ATTENTION_CAPACITY'].includes(code);
+const createAttentionCapacityPolicy=({resolver=null}={})=>{
+ if(typeof attentionApi.createAttentionCapacityPolicy==='function')return attentionApi.createAttentionCapacityPolicy(resolver===null?{}:{resolver});
+ return Object.freeze({format:'jingyang-attention-capacity-policy-v1',resolve:()=> 'reflection',allowsForegroundRecovery:()=>false,isCapacityError:isAttentionCapacityError});
+};
+const normalizeAttentionCapacityPolicy=value=>{
+ if(typeof attentionApi.normalizeAttentionCapacityPolicy==='function')return attentionApi.normalizeAttentionCapacityPolicy(value);
+ if(value===undefined||value===null)return createAttentionCapacityPolicy();
+ return Object.isFrozen(value)?value:Object.freeze({...value});
+};
 import {AgentRuntime} from '../../src/agent-runtime.mjs';
 import {taskProcessSource} from '../../src/task-threads.mjs';
 import {normalizeInbound} from './adapters.mjs';
 import {normalizeMessage,projectText} from '../../src/message.mjs';
-import {putBlob} from '../../src/blobs.mjs';
+import {putBlob,cleanStaleBlobTemps} from '../../src/blobs.mjs';
 import {bindingCommands} from '../../src/binding-action.mjs';
 import {CAPABILITIES} from '../../src/capabilities.mjs';
 import {TOOL_NAMES} from '../qq-connect/tools.mjs';
@@ -25,14 +42,38 @@ import {ensurePerson} from '../../src/identity.mjs';
 import {claimResponse,recordResponseDelivery} from '../../src/continuity.mjs';
 import {StyleStore} from '../../src/style-store.mjs';
 import {validateBudgetRows} from '../../src/budget-integrity.mjs';
-import {sourceReplyRoute,concreteReplyScene} from '../../src/reply-route.mjs';
-import {recentContext} from '../../src/recent-context.mjs';
+import {sourceReplyRoute,concreteReplyScene} from '../../src/reply-route.mjs';import {recentContext} from '../../src/recent-context.mjs';
 import {selectedModelOutput} from '../../src/model-output-recovery.mjs';
 import {validateToolArguments} from '../../src/tool-contracts.mjs';
+import {authorizeProactiveContact,PROACTIVE_DAILY_SOFT_LIMIT} from '../../src/proactive-contact.mjs';
+import {assertProactiveHostSend,PROACTIVE_HOST_TOOL} from '../../src/proactive-contact-host.mjs';
+import {selectGatedMaterials} from '../../src/memory-gating.mjs';
+import {memoryAudience} from '../../src/memory-access.mjs';
 
 const MAX_BODY=1024*1024;
 export const READ_ONLY_HOST_TOOLS=Object.freeze(['qq_list_friends','qq_list_groups','qq_list_stickers','qq_get_group_history','qq_get_friend_history','qq_get_group_members','qq_get_forward_msg','anchor_recall','attention_status','web_search','web_fetch','style_status','office_status','office_list','office_read','office_search','office_audit','github_status','github_repo','github_issues','github_issue','github_pulls','github_branches']);
+// Host default for a new AgentTask that did not name its own tools. An explicit
+// empty list is a different statement and must stay empty.
+const DEFAULT_TASK_TOOLS=Object.freeze(['qq_list_friends','qq_list_groups','qq_list_stickers','anchor_recall','attention_status','web_search']);
 const ATTENTION=()=>({...keepAttention()});
+// The scheduled tick is a timer boundary: without this its exceptions vanish.
+// Record meaningful code/message through the existing diagnostic journal and
+// suppress an unchanged repeat for a bounded cooldown instead of logging every tick.
+export function createSchedulerFailureReporter({subjectId=null,recordDiagnostic,clock=Date.now,cooldownMs=3_600_000}={}){
+ ensure(typeof recordDiagnostic==='function','SCHEDULER_DIAGNOSTIC','diagnostic sink required');
+ ensure(Number.isSafeInteger(cooldownMs)&&cooldownMs>=0,'SCHEDULER_DIAGNOSTIC','bounded cooldown required');
+ let last=new Map();
+ return function report(error){
+  const code=typeof error?.code==='string'&&error.code?error.code:'SCHEDULER_ERROR';
+  const message=String(error?.message??error??'').slice(0,400);
+  const at=clock(),prior=last.get(code);
+  if(prior!==undefined&&at-prior<cooldownMs)return {recorded:false,duplicate:true,errorCode:code};
+  last.set(code,at);
+  if(last.size>16)last.delete(last.keys().next().value);
+  let result;try{result=recordDiagnostic({stage:'scheduler.failed',status:'rejected',context:{subjectId},data:{errorCode:code,reason:message}});}catch{return {recorded:false,errorCode:code};}
+  return {recorded:result?.logged===true,errorCode:code};
+ };
+}
 
 // Restore only dependencies of a process she has already explicitly focused.
 // Exact pinned sources are delivered through the existing material channel;
@@ -74,17 +115,9 @@ function dryDecide(packet){
 }
 function ensureWorkspace(store,scene){
   const id=`ws:${scene}`,old=store.read(id);
-  const persona=store.read('legacy:persona:jingyang');
-  const refs=persona?[{id:persona.id,revision:persona.revision}]:[];
-  if(old){
-    if(persona&&old.workingRefs?.[0]?.id!==persona.id){
-      return store.execute({requestId:`workspace:persona:${id}:${old.revision}`,commands:[{op:'set_workspace',id,expectedRevision:old.revision,scene,
-        focus:old.focus,workingRefs:[...refs,...old.workingRefs.filter(r=>r.id!==persona.id)],continuityRefs:old.continuityRefs,actionRefs:old.actionRefs}]}).at(-1);
-    }
-    return old;
-  }
+  if(old)return old;
   return store.execute({requestId:`workspace:${id}`,commands:[{op:'set_workspace',id,expectedRevision:0,scene,focus:{id:'current',label:'当前'},
-    workingRefs:refs,continuityRefs:[],actionRefs:[]}]}).at(-1);
+    workingRefs:[],continuityRefs:[],actionRefs:[]}]}).at(-1);
 }
 function keyFor(scene,key){
   if(key)return key;
@@ -99,14 +132,29 @@ function firstText(messages){
   return last?.content??'';
 }
 
-export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是鲸漾。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false}={}){
+export function createBrainService({storePath=':memory:',subjectId='jingyang',identity='你是一个具有连续记忆的数字主体。',decide=dryDecide,rhythm={},clock=Date.now,capabilities=CAPABILITIES.map(c=>c.id),allowedActionTools=READ_ONLY_HOST_TOOLS,adapter=null,stateDirectory=null,styleDirectory=null,heartbeatMs=0,global=false,eventBypass=true,agentTools={},agentMaxSteps=24,subjectTask=false,blobDirectory=null,hostAllowedTools=null,rhythmReset=false,sessionFactory=null,theoryStatus=null,idleIntervalMs=2*60*60*1000,autonomy=false,cognition={},runtimeInfo=null,shutdownControl=null,lifePolicy=null,officialSpend=null,intentProtocol=false,timezoneMinutes=480,contextBudgetBytes=131072,compactReflection=false,semanticMemory=null,storage={},inboundScenePolicy=null,attentionPolicy=null}={}){
   ensure(typeof storePath==='string'&&storePath.length>0,'BRAIN_SERVICE','store path required');
   const cognitiveKeys=['algorithmV011','apperceptionV1','subjectiveDomains','subjectiveMemory','subjectiveMemoryV2','taskThreads','anchorDirectory','memoryScopeV1','investigationContinuityV1','experienceLearningV1'];
   ensure(cognition&&Object.getPrototypeOf(cognition)===Object.prototype&&Object.entries(cognition).every(([key,value])=>cognitiveKeys.includes(key)&&typeof value==='boolean'),'COGNITION_CONFIG','explicit known boolean cognition flags required');
   cognition=Object.freeze({...cognition});
+  // Quiet hours are a real host boundary for automatic background thought, not only
+  // a rhythm interval hint: by default she is not woken at night for reflection or
+  // autonomy. Explicit observations are still processed by the normal queue.
+  const quietHours=rhythmConfig(rhythm);
+  const inQuietHours=(now=clock())=>{
+    const hour=new Date(now+timezoneMinutes*60_000).getUTCHours();
+    return quietHours.quietFrom<=quietHours.quietTo
+      ? hour>=quietHours.quietFrom&&hour<quietHours.quietTo
+      : hour>=quietHours.quietFrom||hour<quietHours.quietTo;
+  };
   const blobs=blobDirectory??join(stateDirectory??'.','blobs');
-  const store=new ContinuityStore(storePath);
+  const store=new ContinuityStore(storePath,storage);
+  const reportSchedulerFailure=createSchedulerFailureReporter({subjectId,recordDiagnostic:value=>store.recordDiagnostic(value),clock});
   new ContinuitySession({store,subjectId,attention:true,maxForeground:16});
+  if(intentProtocol)semanticMemory?.warm({store,subjectId});
+  // Service-level attention capacity policy: one frozen object, created once, shared
+  // by every production TurnDriver (global/scene/autonomy). No per-entry flags.
+  const attentionCapacityPolicy=normalizeAttentionCapacityPolicy(attentionPolicy??createAttentionCapacityPolicy());
   const scheduler=new SceneScheduler({clock});
   const drivers=new Map();
   let globalDriver=null;
@@ -135,7 +183,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const event={id:key,revision:1};
       store.execute({requestId:`agent-observation:${key}`,commands:[
         {op:'append_event',id:key,body,...(messageValue?{message:messageValue}:{}),scene:taskReplyScene(task),actor:'agent',origin:'tool_receipt',source:{system:'agent-runtime',key},occurredAt:observation.at??clock(),...(task.threadId?{threadId:task.threadId}:{})},
-        {op:'admit_subject_event',subjectId,event}
+        {op:'admit_subject_event',subjectId,event,disposition:'handled'}
       ]});
       const current=loadAgent(task.id),changed=(current.controlRevision??0)!==(task.controlRevision??0)||current.lease?.token!==task.lease?.token;
       const destination=changed?agentRuntime.restore(current):task;
@@ -156,7 +204,25 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function failAgentDecision(task,error){if(!task)return task;
     const current=loadAgent(task.id);
     if((current.controlRevision??0)!==(task.controlRevision??0)||['done','failed','cancelled','paused'].includes(current.status)||task.lease&&current.lease?.token!==task.lease.token){Object.assign(task,agentRuntime.restore(current));return task;}
-    if(['done','failed','cancelled'].includes(task.status))return task;task.revision=current.revision;task.interrupts=current.interrupts;task.status='blocked';task.blockedReason=String(`MODEL_OUTPUT_INVALID:${error?.code??'TASK_STEP_ERROR'}`).slice(0,2000);task.updatedAt=clock();saveAgent(task);recordAgentResult(task);return task;}
+    if(['done','failed','cancelled'].includes(task.status))return task;task.revision=current.revision;task.interrupts=current.interrupts;task.status='blocked';
+    // Phase 3.2 R2: a blocked task-source request is distinguishable from a model
+    // output error so the operator surface can offer recover-capture/close only.
+    const sourceBlockCodes=new Set(['SOURCE_REQUEST_BLOCKED','SOURCE_OUTPUT_REJECTED','AFFECT_CAPTURE_UNAVAILABLE']);
+    if(error?.code==='RESIDENCE_UPSERT_CAPACITY'){
+      // Per-commit output-shape limit, not a resumable capacity gate. The task must
+      // stay typed blocked and may only move on new input/operator evidence.
+      commitLimitMarker('task',task.id,error.code);
+      task.blockedReason=String(`TASK_COMMIT_LIMIT:${error.code}`).slice(0,2000);
+    }else if(isAttentionCapacityError(error?.code)){
+      let rowId='unregistered';
+      try{rowId=decide?.requestJournal?.sourceRequest({subject:subjectId,kind:'task',taskId:task.id,step:task.stepCount})?.id??'unregistered';}catch{}
+      task.blockedReason=String(`TASK_CAPACITY_DEFERRED:${rowId}:${error.code}`).slice(0,2000);
+    }else if(sourceBlockCodes.has(error?.code)){
+      let rowId='unregistered';
+      try{rowId=decide?.requestJournal?.sourceRequest({subject:subjectId,kind:'task',taskId:task.id,step:task.stepCount})?.id??'unregistered';}catch{}
+      task.blockedReason=String(`TASK_MODEL_SOURCE_BLOCKED:${rowId}`).slice(0,2000);
+    }else task.blockedReason=String(`MODEL_OUTPUT_INVALID:${error?.code??'TASK_STEP_ERROR'}`).slice(0,2000);
+    task.updatedAt=clock();saveAgent(task);recordAgentResult(task);return task;}
   const resultStatuses=new Set(['done','blocked','failed','cancelled']);
   const resultKey=task=>`agent-result:${task.id}:${task.status}:${digest({control:task.controlRevision??0,steps:task.stepCount,decision:task.decisionRefs?.at(-1)??null,result:task.result??null,reason:task.blockedReason??null}).slice(0,24)}`;
   function recordAgentResult(task){
@@ -168,24 +234,136 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     try{
       store.execute({requestId:'agent-result-publish:'+key,commands:[
         {op:'append_event',id:key,body,scene:taskReplyScene(current),actor:'agent',origin:'tool_receipt',source:{system:'agent-runtime',key},occurredAt:current.updatedAt,...(current.threadId?{threadId:current.threadId}:{})},
-        {op:'admit_subject_event',subjectId,event},
+        {op:'admit_subject_event',subjectId,event,...(current.status==='blocked'?{disposition:'handled'}:{})},
         {op:'put_agent_task',task:next,expectedRevision:current.revision}
       ]});return true;
     }catch(error){try{store.recordDiagnostic({stage:'agent.result-pending',status:'failed',context:{subjectId,taskId:current.id},data:{errorCode:error.code??'RESULT_PERSIST_FAILED'}});}catch{}return false;}
   }
+  const conversationMaterials=args=>{
+    const base=cognition.investigationContinuityV1?(focusedProcessMaterials(args)??[]):[];
+    if(intentProtocol)return base;
+    const event=store.read(args.event.id,args.event.revision);
+    if(!event)return base;
+    const allowed=memoryAudience({...args,event});
+    const gated=selectGatedMaterials({...args,event,accept:allowed});
+    const seen=new Set(base.map(material=>material.ref.id));
+    return [...base,...gated.filter(material=>!seen.has(material.ref.id))];
+  };
   const driverFor=scene=>{
     if(global){
       if(globalDriver)return globalDriver;
       const workspace=ensureWorkspace(store,'global');
-      globalDriver=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null});
+      globalDriver=new TurnDriver({...cognition,intentProtocol,timezoneMinutes,contextBudgetBytes,semanticMemory,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:conversationMaterials,attentionPolicy:attentionCapacityPolicy});
       globalDriver.loadState();if(rhythmReset){globalDriver.restore({state:{lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null},outbox:[]});globalDriver.persistState();}return globalDriver;
     }
     if(drivers.has(scene))return drivers.get(scene);
     const workspace=ensureWorkspace(store,scene);
-    const driver=new TurnDriver({...cognition,intentProtocol,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:cognition.investigationContinuityV1?focusedProcessMaterials:null});
+    const driver=new TurnDriver({...cognition,intentProtocol,timezoneMinutes,contextBudgetBytes,semanticMemory,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass,decide,rhythm,capabilities,allowedActionTools,materialsFor:conversationMaterials,attentionPolicy:attentionCapacityPolicy});
     driver.loadState();if(rhythmReset){driver.restore({state:{lastWakeAt:null,nextWakeAt:null,callsToday:0,dayKey:null},outbox:[]});driver.persistState();}
     drivers.set(scene,driver);return driver;
   };
+  let autonomyDriverCache=null,autonomyBusy=false;
+  function autonomyDriver(){
+    if(autonomyDriverCache)return autonomyDriverCache;
+    const workspace=ensureWorkspace(store,'agent/autonomy');
+    autonomyDriverCache=new TurnDriver({...cognition,intentProtocol,timezoneMinutes,contextBudgetBytes,sessionFactory,store,subjectId,workspace:{id:workspace.id,revision:workspace.revision},identity,style:styles.text(),eventBypass:false,decide,rhythm,capabilities,allowedActionTools,attentionPolicy:attentionCapacityPolicy});
+    autonomyDriverCache.loadState();
+    return autonomyDriverCache;
+  }
+  function dueContinuation(now){
+    const active=new Set([...store.all('agent_task')].filter(t=>t.intentRef&&['running','waiting'].includes(t.status)).map(t=>t.intentRef.id));
+    return [...store.all('intent')].find(i=>i.subject===subjectId&&['open','pursuing'].includes(i.status)&&Number.isSafeInteger(i.dueAt)&&i.dueAt<=now&&!active.has(i.id))??null;
+  }
+  // One terminal outcome per autonomy action. A preflight rejection proves the
+  // transport was never invoked, so it is a known failure; every other outcome
+  // keeps the existing unknown isolation and is never retried automatically.
+  const autonomyFailureNotices=new Map();
+  function settleAutonomyFailure(action,error){
+    const current=store.read(action.id);
+    if(current?.type!=='action'||current.status!=='proposed')return {settled:false,status:current?.status??null};
+    const knownUnexecuted=error?.nativePreflight===true&&error?.transportInvoked===false;
+    const status=knownUnexecuted?'failed':'interrupted';
+    const eventId='host-action:'+action.id;
+    const body=JSON.stringify({error:error?.code??'AUTONOMY_ACTION_ERROR',message:String(error?.message??'').slice(0,600),phase:knownUnexecuted?'preflight':'execution',transportInvoked:knownUnexecuted?false:null,...(knownUnexecuted?{}:{outcome:'unknown',warning:'no automatic retry'})});
+    // Receipt and admission move in one transaction, matching a successful task
+    // start; a crash cannot leave a terminal action whose failure she cannot see.
+    try{store.execute({requestId:`autonomy-action-failure:${current.id}:${status}`,commands:[
+      {op:'record_receipt',actionId:current.id,expectedRevision:current.revision,status,eventId,body,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()},
+      {op:'admit_subject_event',subjectId,event:{id:eventId,revision:1}}
+    ]});return {settled:true,status,eventId};}
+    catch(settleError){return {settled:false,status,error:settleError.code??'SETTLE_ERROR'};}
+  }
+  function noteAutonomyFailure(entry){
+    if(autonomyFailureNotices.has(entry.id))return;
+    autonomyFailureNotices.set(entry.id,true);
+    if(autonomyFailureNotices.size>64)autonomyFailureNotices.delete(autonomyFailureNotices.keys().next().value);
+    try{store.recordDiagnostic({stage:'native-action.failed',status:'rejected',context:{subjectId,decisionId:String(entry.id).replace(/:action$/,'')},data:{errorCode:entry.error,reason:`${entry.settlement?.settled===true?'settled':'unsettled'}:${entry.settlement?.status??'unknown'}:${entry.message}`.slice(0,400)}});}catch{}
+  }
+  // Only the autonomously committed start_agent_task is ever retried. A failed
+  // recovery now gets one terminal receipt and leaves the proposed scan for good.
+  async function recoverAutonomyActions(){
+    const recovered=[];
+    for(const action of [...store.all('action')]){
+      if(action.status!=='proposed'||action.tool!=='start_agent_task'||!String(action.id).startsWith('decision:autonomy:'))continue;
+      try{recovered.push({id:action.id,result:await executeAction({id:action.id})});}
+      catch(error){
+        const entry={id:action.id,error:error.code??'AUTONOMY_ACTION_ERROR',message:String(error.message??'').slice(0,600),settlement:settleAutonomyFailure(action,error)};
+        noteAutonomyFailure(entry);recovered.push(entry);
+      }
+    }
+    return recovered;
+  }
+  async function autonomyTick({now=clock(),manual=false}={}){
+    if(!autonomy)return {skipped:true,reason:'disabled'};
+    if(draining||agentBusy||reflectionBusy||scheduler.active()!==null||autonomyBusy)return {skipped:true,reason:'busy'};
+    if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'budget'};
+    if(scheduler.pending().length)return {skipped:true,reason:'pending'};
+    if(!manual&&scheduleIntervalMs>0&&inQuietHours(now))return {skipped:true,reason:'quiet-hours'};
+    autonomyBusy=true;
+    try{
+      await recoverAutonomyActions();
+      // One autonomy decision per idle interval; the slot is the whole idempotency key.
+      const slot=Math.max(1,Math.floor(now/(idleIntervalMs||3600000)));
+      const failureId='extension:'+subjectId+':runtime:autonomy-failure:'+slot;
+      const capGate=backgroundCapacityGate('autonomy',slot);
+      if(capGate)return capGate;
+      const priorActivity=[...store.all('extension_record')].find(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='turn-activity'&&r.value?.packet?.payload?.internal?.kind==='autonomy'&&r.value.packet.payload.internal.opportunity===slot);
+      const priorFailure=priorActivity?.value?.phase==='complete'&&priorActivity.value.failure&&!isAttentionCapacityError(priorActivity.value.failure.code)&&!['uncertain'].includes(priorActivity.value.failure.outcome)&&!['unknown'].includes(priorActivity.value.failure.execution);
+      if(priorFailure)return {skipped:true,reason:'terminal-failure',slot};
+      const latest=Math.max(0,...[...store.all('decision')].map(d=>String(d.id).startsWith('decision:autonomy:')?Number(String(d.id).slice('decision:autonomy:'.length)):0).filter(Number.isSafeInteger));
+      if(latest>=slot)return {skipped:true,reason:'cadence',slot};
+      const focus=dueContinuation(now),kind=focus?'continuation':'idle';
+      let result;
+      try{result=await autonomyDriver().autonomyStep({now,opportunity:slot,kind,focus:focus?{id:focus.id,revision:focus.revision}:null});}
+      catch(error){
+        // A per-commit output-shape limit is not a preflightable capacity fact: the
+        // slot is consumed as a typed failure and the next attempt needs a new explicit
+        // opportunity. Mark it preflightable:false and never write capacity-deferred.
+        if(error?.code==='RESIDENCE_UPSERT_CAPACITY'){
+          commitLimitMarker('autonomy',slot,error.code);
+          store.execute({requestId:'autonomy-failure:'+slot,commands:[{op:'put_extension_record',id:failureId,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'autonomy-slot',slot,error:error.code,message:String(error.message??'').slice(0,2000),terminal:true,preflightable:false,commitLimit:true,consumed:true}}]});
+          throw error;
+        }
+        // Capacity is a host resource fact and must not consume the opportunity slot:
+        // leave it available for the same cadence after capacity is released, and never
+        // write a terminal autonomy-failure marker or pay again this heartbeat.
+        if(isAttentionCapacityError(error.code)){
+          const marker=capacityDeferredMarker('autonomy',slot,error.code);
+          const host=hostCapacity();
+          return {skipped:true,reason:'capacity-deferred',capacityDeferred:true,entry:'autonomy',slot,marker,capacity:host.capacity,error:error.code};
+        }
+        // Transport ambiguity is UNKNOWN, not a terminal slot failure: keep it
+        // recoverable and never convert it into a paid retry.
+        if(error?.code==='TURN_OUTCOME_UNKNOWN'||String(error?.code??'').startsWith('TRANSPORT_'))throw error;
+        // Every captured deterministic failure consumes the slot; otherwise a
+        // non-ContractError rejection would be re-paid every heartbeat.
+        store.execute({requestId:'autonomy-failure:'+slot,commands:[{op:'put_extension_record',id:failureId,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'autonomy-slot',slot,error:error.code??error.name??'AUTONOMY_FAILURE',message:String(error.message??'').slice(0,2000),terminal:true}}]});
+        throw error;
+      }
+      if(result.actionOut)await dispatch([{kind:'act',tool:result.actionOut.tool,args:result.actionOut.args,action:result.actionOut.action}],{scene:'agent/autonomy',execute:true});
+      return {ok:true,slot,kind,decision:result.decision,choice:result.choice,focus:focus?{id:focus.id,revision:focus.revision}:null};
+    } finally {autonomyBusy=false;}
+  }
   const taskTools=hostAllowedTools===null?agentTools:Object.fromEntries(Object.entries(agentTools).filter(([name])=>hostAllowedTools.includes(name)));
   function assertTaskControl(task){
     const current=loadAgent(task.id);
@@ -211,6 +389,13 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     if(!task.intentRef)return true;
     const intent=store.read(task.intentRef.id);
     return intent?.type==='intent'&&intent.subject===subjectId&&intent.revision===task.intentRef.revision&&['open','pursuing','deferred'].includes(intent.status);
+  }
+  function rebaseTaskIntent(task){
+    if(!task.intentRef)return true;
+    const intent=store.read(task.intentRef.id);
+    if(!intent||intent.type!=='intent'||intent.subject!==subjectId||!['open','pursuing'].includes(intent.status))return false;
+    if(task.intentRef.revision!==intent.revision)task.intentRef={id:intent.id,revision:intent.revision};
+    return true;
   }
   function claimAgentLease(id,owner,ttlMs=30000){
     for(let attempt=0;attempt<6;attempt++){
@@ -245,7 +430,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function listAgent(){return [...store.all('agent_task')];}
   let draining=false;
   let agentBusy=false,reflectionBusy=false;
-  async function createAgentTask(input={}){
+  async function createAgentTask(input={},options={}){
     ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');
     ensure(input.subjectId==null||input.subjectId===subjectId,'SUBJECT_MISMATCH','Task belongs to the current service subject');
     const processId=input.processId??null;
@@ -255,7 +440,8 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }
     const sourceEvent=input.originEventRef?store.read(input.originEventRef.id,input.originEventRef.revision):null;
     const task=agentRuntime.createTask({goal:input.goal,plan:input.plan??'',target:input.target??null,threadId:input.threadId??sourceEvent?.threadId??null,processId,originEventRef:input.originEventRef??null,originDecisionRef:input.originDecisionRef??null,completionCriteria:input.completionCriteria??null,subjectId,intentRef:input.intentRef??null,budget:input.budget??null,metadata:input.metadata??null,id:input.id??null,context:input.context??subjectContext()});
-    saveAgent(task,{before:(input.guardRefs??[]).map(ref=>({op:'assert_current',ref}))});return task;
+    const result=saveAgent(task,{before:(input.guardRefs??[]).map(ref=>({op:'assert_current',ref})),after:options.after??[]});
+    return options.returnResult?result:task;
   }
   async function interruptAgentTask(id,message){
     ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');
@@ -269,13 +455,38 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     try{
       const claimed=claimAgentLease(id,owner);if(!claimed.ok)return {ok:false,error:claimed.reason,status:claimed.status};
       task=claimed.task;leaseToken=task.lease?.token;
-      driver=driverFor(global?'global':task.target??'agent/task');const recovered=driver.recoverTaskDecision(task),capture=driver.capturedTaskPacket(task);
-      const gate=recovered||capture?agentRuntime.budgetExceeded(task,clock(),{ignoreCalls:true}):budgetGate(task);if(gate)return typeof gate==='string'?{ok:false,status:task.status,error:gate}:gate;
+      driver=driverFor(global?'global':task.target??'agent/task');const recovered=driver.recoverTaskDecision(task),
+        capturedAttempt=recovered?null:driver.capturedTaskAttempt(task),
+        capture=recovered||capturedAttempt?.recoverable?null:driver.capturedTaskPacket(task);
+      // Background capacity preflight: do not start a paid task step while the host
+      // desk is full. A recoverable capture (0 model calls) is still allowed to finish.
+      const commitBlocked=commitLimitBlocked('task',task.id);
+      if(commitBlocked){
+        try{markTaskCommitLimitBlocked(task,'marker');}catch{}
+        return {ok:false,id:task.id,status:'blocked',error:'TASK_COMMIT_LIMIT',commitLimitBlocked:true,preflightable:false,autoRecoverable:false,marker:commitBlocked.id};
+      }
+      const host=hostCapacity();
+      if(host.full===true&&!recovered&&!capturedAttempt?.recoverable&&!capture){
+        const blocked=markTaskCapacityDeferred(task,'preflight');
+        return {ok:false,id:task.id,status:blocked.status,error:'TASK_CAPACITY_DEFERRED',capacityDeferred:true,entry:'task',marker:capacityDeferredMarker('task',task.id),capacity:host.capacity};
+      }
+      const gate=recovered||capture||capturedAttempt?.recoverable?agentRuntime.budgetExceeded(task,clock(),{ignoreCalls:true}):budgetGate(task);if(gate)return typeof gate==='string'?{ok:false,status:task.status,error:gate}:gate;
       if(task.status==='waiting'&&!agentRuntime.resume(task,{at:clock()}))return {ok:true,skipped:true,id,status:'waiting'};
       driver=driverFor(global?'global':task.target??'agent/task');
-      const decided=recovered??(capture?await driver.recoverTaskCapture(task,capture):null)??await driver.decideTaskStep(task,{now:clock(),onDecisionReady:()=>assertTaskControl(task),maxModelCalls:agentRuntime.remainingCalls(task),onModelAttempt:()=>{
+      const decided=recovered??(capture?await driver.recoverTaskCapture(task,capture):null)??(capturedAttempt?.recoverable?await driver.recoverTaskAttempt(task,capturedAttempt):null)??await driver.decideTaskStep(task,{now:clock(),onDecisionReady:()=>assertTaskControl(task),maxModelCalls:agentRuntime.remainingCalls(task),onModelAttempt:()=>{
         assertTaskControl(task);task.callCount=(task.callCount??0)+1;persistTaskProgress(task);
       }});
+      // A step may have settled this task in its own commit (Intent paused,
+      // cancelled or expired). Never advance a task that is no longer running.
+      const afterCommit=loadAgent(task.id);
+      if(!['running','waiting'].includes(afterCommit.status))return {ok:true,skipped:true,id:task.id,status:afterCommit.status,decision:decided.decision?{id:decided.decision.id,revision:decided.decision.revision}:null};
+      // Refresh only the host-owned fields the step commit may have changed. Keep the
+      // in-memory progress (interruptCursor, observations) the driver just prepared.
+      task.revision=afterCommit.revision;
+      task.intentRef=afterCommit.intentRef??task.intentRef;
+      task.controlRevision=Math.max(task.controlRevision??0,afterCommit.controlRevision??0);
+      task.lease=afterCommit.lease??task.lease;
+      task.interruptCursor=Math.max(task.interruptCursor??0,afterCommit.interruptCursor??0);
       assertTaskControl(task);
       if(decided.lookupExhausted){task.status='blocked';task.blockedReason='LOOKUP_EXHAUSTED';task.updatedAt=clock();persistTaskProgress(task);return {ok:false,id,status:'blocked',error:'LOOKUP_EXHAUSTED'};}
       const result=await agentRuntime.step(task,decided.decision,{afterModelAttempt:true});
@@ -287,7 +498,14 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   const stepAgentTask=id=>runAgentStep(id,'api-step');
   function supersedeTaskCaptures(task){return [...store.all('affect_turn')].filter(t=>t.subject===subjectId&&t.status==='captured'&&t.packet.payload.task?.id===task.id&&((t.packet.payload.task.controlRevision??0)!==(task.controlRevision??0)||['paused','cancelled'].includes(task.status))).map(t=>({op:'affect_turn',id:t.id,expectedRevision:t.revision,status:'superseded',error:'HOST_CONTROL_CHANGED'}));}
   async function stopAgentTask(id,reason){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(['done','failed','cancelled'].includes(task.status))return {ok:false,id,status:task.status};task.status='cancelled';task.result=String(reason??'stopped').slice(0,8000);task.controlRevision=(task.controlRevision??0)+1;task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
-  async function redirectAgentTask(id,input){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['running','blocked','paused'].includes(task.status))return {ok:false,id,status:task.status};if(agentRuntime.pendingToolOperations(task).length)return {ok:false,id,status:task.status,error:'TOOL_OUTCOME_UNKNOWN'};if(typeof input?.goal==='string'&&input.goal.trim())task.goal=input.goal.trim();if(typeof input?.plan==='string')task.plan=input.plan.slice(0,8000);if(input?.target!==undefined)task.target=input.target;task.status='running';task.blockedReason=null;task.controlRevision=(task.controlRevision??0)+1;task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
+  async function redirectAgentTask(id,input){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['running','blocked','paused'].includes(task.status))return {ok:false,id,status:task.status};if(agentRuntime.pendingToolOperations(task).length)return {ok:false,id,status:task.status,error:'TOOL_OUTCOME_UNKNOWN'};
+    if(String(task.blockedReason??'').startsWith('TASK_CAPACITY_DEFERRED:')){const host=hostCapacity();ensure(host.available===true&&host.released===true,'CAPACITY_NOT_RELEASED','host attention capacity is still full; redirect cannot bypass the capacity gate');}
+    if(String(task.blockedReason??'').startsWith('TASK_COMMIT_LIMIT:')){
+      const marker=commitLimitBlocked('task',task.id);const explicit=(typeof input?.goal==='string'&&input.goal.trim().length>0)||input?.evidence?.operator!=null||input?.evidence?.commitLimitAck===true;
+      ensure(explicit,'TASK_COMMIT_LIMIT_REVIEW_REQUIRED','commit-limit task requires new input or explicit operator evidence');
+      if(marker)clearCommitLimitMarker('task',task.id,String(input?.evidence?.operator??'operator-control'));
+    }
+    if(typeof input?.goal==='string'&&input.goal.trim())task.goal=input.goal.trim();if(typeof input?.plan==='string')task.plan=input.plan.slice(0,8000);if(input?.target!==undefined)task.target=input.target;rebaseTaskIntent(task);task.status='running';task.blockedReason=null;task.controlRevision=(task.controlRevision??0)+1;task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
   function reconcileAgentTool(id,input){
     const current=loadAgent(id),review=input?.review;
     ensure(review?.format==='jingyang-tool-outcome-review-v1'&&review.taskId===id&&input.reviewHash===digest(review),'TOOL_REVIEW','exact review artifact required');
@@ -307,7 +525,20 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   }
   async function stopAllAgentTasks(reason='user stop'){const out=[];for(const t of listAgent()){if(['running','waiting','blocked'].includes(t.status)){const r=await stopAgentTask(t.id,reason);out.push(r);}}return {ok:true,stopped:out.length,items:out};}
   async function pauseAgentTask(id,reason){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['running','waiting'].includes(task.status))return {ok:false,id,status:task.status};task.status='paused';task.blockedReason=String(reason??'paused').slice(0,2000);task.controlRevision=(task.controlRevision??0)+1;task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
-  async function resumeAgentTask(id,input){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['blocked','paused','waiting'].includes(task.status))return {ok:false,id,status:task.status};if(agentRuntime.pendingToolOperations(task).length)return {ok:false,id,status:task.status,error:'TOOL_OUTCOME_UNKNOWN'};if(!taskIntentCurrent(task))return {ok:false,id,status:task.status,error:'INTENT_TASK_REVIEW_REQUIRED'};const replayCapture=task.status==='blocked'&&!input?.message&&[...store.all('affect_turn')].some(t=>t.subject===subjectId&&t.status==='captured'&&t.packet.payload.task?.id===task.id&&(t.packet.payload.task.controlRevision??0)===(task.controlRevision??0));if(typeof input?.message==='string'&&input.message.trim())task.interrupts.push({at:clock(),message:input.message.trim()});if(!repairAgentObservation(task))return {ok:false,id,status:'blocked',error:'OBSERVATION_REPAIR_FAILED'};task.status='running';task.blockedReason=null;task.controlRevision=(task.controlRevision??0)+(replayCapture?0:1);task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
+  async function resumeAgentTask(id,input){ensure(agentRuntime,'AGENT_RUNTIME','agent runtime not configured');const task=agentRuntime.restore(loadAgent(id));if(!['blocked','paused','waiting'].includes(task.status))return {ok:false,id,status:task.status};if(agentRuntime.pendingToolOperations(task).length)return {ok:false,id,status:task.status,error:'TOOL_OUTCOME_UNKNOWN'};if(!taskIntentCurrent(task)&&!rebaseTaskIntent(task))return {ok:false,id,status:task.status,error:'INTENT_TASK_REVIEW_REQUIRED'};
+    // A capacity-deferred task may only resume after the host snapshot proves the desk
+    // was released; operator evidence alone cannot bypass the host resource gate.
+    if(String(task.blockedReason??'').startsWith('TASK_CAPACITY_DEFERRED:')){const host=hostCapacity();ensure(host.available===true&&host.released===true,'CAPACITY_NOT_RELEASED','host attention capacity is still full; no operator bypass is allowed');}
+    if(String(task.blockedReason??'').startsWith('TASK_COMMIT_LIMIT:')){
+      const marker=commitLimitBlocked('task',task.id);const explicit=(typeof input?.message==='string'&&input.message.trim().length>0)||input?.evidence?.operator!=null||input?.evidence?.commitLimitAck===true;
+      ensure(explicit,'TASK_COMMIT_LIMIT_REVIEW_REQUIRED','commit-limit task requires new input or explicit operator evidence');
+      if(marker)clearCommitLimitMarker('task',task.id,String(input?.evidence?.operator??'operator-control'));
+    }
+    // Phase 3.2 R2/R3: a task blocked on an unresolved model source can only move
+    // through the operator task-source surface. Do not auto-clear it into running;
+    // no second paid retry is implemented here either.
+    if(String(task.blockedReason??'').startsWith('TASK_MODEL_SOURCE_BLOCKED:'))ensure(input?.evidence?.operator&&input?.evidence?.approval==='operator-source-recovery','TASK_SOURCE_OPERATOR_REQUIRED','operator evidence required; use /v1/operator/effect type task-source');
+    const replayCapture=task.status==='blocked'&&!input?.message&&[...store.all('affect_turn')].some(t=>t.subject===subjectId&&t.status==='captured'&&t.packet.payload.task?.id===task.id&&(t.packet.payload.task.controlRevision??0)===(task.controlRevision??0));if(typeof input?.message==='string'&&input.message.trim())task.interrupts.push({at:clock(),message:input.message.trim()});if(!repairAgentObservation(task))return {ok:false,id,status:'blocked',error:'OBSERVATION_REPAIR_FAILED'};task.status='running';task.blockedReason=null;task.controlRevision=(task.controlRevision??0)+(replayCapture?0:1);task.updatedAt=clock();saveAgent(task,{after:supersedeTaskCaptures(task)});return {ok:true,id,status:task.status};}
   async function agentTick(){
     if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(!agentRuntime||agentBusy||reflectionBusy||scheduler.active()!==null)return {skipped:true};
@@ -334,6 +565,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       if(task.interrupts.some(x=>x.eventRef?.id===event.id))continue;
       task.interrupts.push({at:clock(),message:String(message).slice(0,4000),eventRef:{id:event.id,revision:event.revision},...(record.message?{messageParts:record.message}:{})});
       if(task.status==='blocked'){
+        // A capacity-deferred task must not be auto-woken by an inbound interrupt:
+        // released capacity plus an explicit resume are both required. Keep the
+        // interrupt recorded for the operator and preserve the blocked marker.
+        if(String(task.blockedReason??'').startsWith('TASK_CAPACITY_DEFERRED:')||String(task.blockedReason??'').startsWith('TASK_COMMIT_LIMIT:')){task.updatedAt=clock();saveAgent(task);continue;}
         const observationBlock=task.blockedReason==='OBSERVATION_PERSIST_FAILED'||task.blockedReason==='OBSERVATION_ADMIT_FAILED'||task.blockedReason==='OBSERVATION_MESSAGE_INVALID';
         if(observationBlock&&!repairAgentObservation(task)){task.updatedAt=clock();saveAgent(task);continue;}
         task.status='running';task.blockedReason=null;
@@ -351,30 +586,39 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     const queueKey=global?'global':normalized.scene;
     const driver=driverFor(global?'global':normalized.scene);
     const at=normalized.at??clock();
-    if(process.env.JY_GROUP_INGEST==='off'&&String(normalized.scene).startsWith('qq/group/')){
-      driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId,admit:false});
-      saveState();
-      return {queued:false,muted:true,reason:'group-isolated',scene:normalized.scene,pending:scheduler.pending()};
-    }
     if(policy.matches(normalized.scene)){
       const event=driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId,admit:false});
       policy.add({id:event.id,scene:normalized.scene,at});
       saveState();
       return {queued:false,muted:true,scene:normalized.scene,pending:scheduler.pending()};
     }
-    const ev=driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId});associateTaskInterrupt(normalized.scene,ev,normalized.body);
-    cursor={...cursor,lastEventId:`obs:${normalized.key}`,lastAt:at,eventsSince:cursor.eventsSince+1};saveCursor();
+    if((inboundScenePolicy?.groupIngest==='off'||process.env.JY_GROUP_INGEST==='off')&&String(normalized.scene).startsWith('qq/group/')){
+      const event=driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId,admit:false});
+      // Keep isolated group messages in the objective stream AND in the bounded
+      // backlog so she can explicitly peek later without auto-entering cognition.
+      policy.add({id:event.id,scene:normalized.scene,at});
+      saveState();
+      return {queued:false,muted:true,reason:'group-isolated',scene:normalized.scene,pending:scheduler.pending()};
+    }
+    const seen=store.subjectObservation(subjectId,`obs:${normalized.key}`);
+    const ev=driver.ingest({key:normalized.key,body:normalized.body,message:normalized.message??null,actor,sender,scene:normalized.scene,at,threadId:normalized.threadId});
+    if(!seen){
+      associateTaskInterrupt(normalized.scene,ev,normalized.body);
+      cursor={...cursor,lastEventId:ev.id,lastAt:at,eventsSince:cursor.eventsSince+1,firstPendingAt:cursor.eventsSince?cursor.firstPendingAt:clock()};saveCursor();
+    }
     scheduler.enqueue(queueKey,{eventId:ev.id,key:normalized.key,body:normalized.body,scene:normalized.scene,actor,at,threadId:normalized.threadId});
     saveState();
-    return {queued:true,scene:normalized.scene,pending:scheduler.pending()};
+    return {queued:true,scene:normalized.scene,pending:scheduler.pending(),eventId:ev.id};
   }
   function mute(prefix){return policy.mute(prefix);}
-  function unmute(prefix,{load=true}={}){const next=policy.unmute(prefix);if(load)loadBacklog(prefix,50);return next;}
+  function unmute(prefix,{load=false}={}){const next=policy.unmute(prefix);if(load)loadBacklog(prefix,50);return next;}
+  const groupPeeked=new Set();
   function loadBacklog(prefix,limit=50){
     const entries=policy.take(prefix,limit);
     for(const entry of entries){
       const event=store.read(entry.id);if(!event)continue;
       store.execute({requestId:`attention:${entry.id}:admit`,commands:[{op:'admit_subject_event',subjectId,event:{id:event.id,revision:event.revision}}]});
+      groupPeeked.add(event.id);if(groupPeeked.size>512)groupPeeked.delete(groupPeeked.values().next().value);
       scheduler.enqueue(global?'global':entry.scene,{eventId:event.id,key:event.id,body:event.body,scene:entry.scene,actor:event.actor,at:event.occurredAt??event.recordedAt,threadId:event.threadId??null});
     }
     saveState();
@@ -383,7 +627,14 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   async function executeAction(actionRef){
     const action=store.read(actionRef.id);
     ensure(action?.type==='action','ACTION','existing action required');
-    if(action.status!=='proposed')return {replayed:true,action:{id:action.id,revision:action.revision},status:action.status,receipt:action.receipt};
+    if(action.status!=='proposed'){
+      // Autonomy actions repair a receipt that was written before admission was atomic.
+      if(action.receipt&&String(action.id).startsWith('decision:autonomy:')){
+        const event=store.read(action.receipt.id,action.receipt.revision);
+        if(event)store.execute({requestId:`autonomy-receipt-admit:${action.id}`,commands:[{op:'admit_subject_event',subjectId,event:action.receipt}]});
+      }
+      return {replayed:true,action:{id:action.id,revision:action.revision},status:action.status,receipt:action.receipt};
+    }
     try{lifePolicy?.assertOperationCurrent(action);validateToolArguments(action.tool,action.args??{});}catch(error){error.nativePreflight=true;throw error;}
     if(action.tool==='start_agent_task'){
       const args=action.args??{};
@@ -396,7 +647,11 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const processId=args.processId??null;
       if(processId!==null)ensure(taskProcessSource({store,subjectId,processId,originDecisionRef}),'UNDELIVERED_PROCESS','Task Process must be explicitly selected from the delivered own directory');
       const plan=Array.isArray(args.plan)?args.plan.join('；'):String(args.plan??'');
-      const tools=Array.isArray(args.allowedTools)&&args.allowedTools.length?args.allowedTools:['qq_list_friends','qq_list_groups','qq_list_stickers','anchor_recall','attention_status','web_search'];
+      const tools=args.allowedTools===undefined?[...DEFAULT_TASK_TOOLS]:[...new Set(args.allowedTools)];
+      const autonomyOrigin=String(action.id).startsWith('decision:autonomy:');
+      // The shared autonomy desk can use authorized actions directly. Task
+      // grants must also match the QQ adapter's autonomous-task boundary.
+      const grantedTools=autonomyOrigin?tools.filter(tool=>!tool.startsWith('qq_')):tools;
       let task=store.read('task:'+action.id),intentRef=null;
       if(!task&&args.intentId){
         const intent=store.read(args.intentId);ensure(intent?.type==='intent'&&intent.subject===subjectId&&['open','pursuing'].includes(intent.status),'INTENT','open own intent required');
@@ -409,16 +664,35 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       }
       if(task)ensure((task.processId??null)===processId,'AGENT_PROCESS_CONFLICT','existing Intent task has a different Process binding; do not infer or overwrite it');
       if(!task)lifePolicy?.beforeTask({action,decision:parentDecision});
-      if(!task)task=await createAgentTask({id:'task:'+action.id,goal:args.goal,plan,target,threadId,processId,originEventRef,originDecisionRef,subjectId,intentRef,guardRefs:intentRef?[intentRef]:[],metadata:{allowedTools:tools}});
+      const taskId='task:'+action.id;
       const eventId=`task-receipt:${action.id}`;
-      return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:'succeeded',eventId,body:`task started: ${task.id}`,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});
+      const receipt={op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:'succeeded',eventId,body:`task started: ${taskId}`,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()};
+      // The receipt event and the subject's admission become visible in the same
+      // transaction as the task; a crash can no longer leave an unadmitted receipt.
+      const admitted={op:'admit_subject_event',subjectId,event:{id:eventId,revision:1}};
+      if(!task)return createAgentTask({id:taskId,goal:args.goal,plan,target,threadId,processId,originEventRef,originDecisionRef,subjectId,intentRef,guardRefs:intentRef?[intentRef]:[],metadata:{allowedTools:grantedTools,...(autonomyOrigin?{origin:'autonomy'}:{})}},{after:[receipt,admitted],returnResult:true});
+      return store.execute({requestId:`execute:${action.id}`,commands:[receipt,admitted]});
     }
     if(action.tool==='pause_agent_task'){const args=action.args??{};const out=await pauseAgentTask(args.taskId,args.reason);const eventId=`task-receipt:${action.id}`;return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:out.ok?'succeeded':'failed',eventId,body:`task pause: ${args.taskId}`,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});}
     if(action.tool==='stop_agent_task'){const args=action.args??{};const out=await stopAgentTask(args.taskId,args.reason);const eventId=`task-receipt:${action.id}`;return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:out.ok?'succeeded':'failed',eventId,body:`task stop: ${args.taskId}`,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});}
     if(action.tool==='redirect_agent_task'){const args=action.args??{};const out=await redirectAgentTask(args.taskId,args);const eventId=`task-receipt:${action.id}`;return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:out.ok?'succeeded':'failed',eventId,body:`task redirect: ${args.taskId}`,source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});}
+    if(action.tool==='channel_control'){
+      const args=action.args??{};ensure(['mute','unmute'].includes(args.op),'CHANNEL_OP','channel op required');const prefix=String(args.prefix??'').trim();ensure(prefix.length>0&&prefix.length<=200,'CHANNEL_PREFIX','channel prefix required');
+      if(args.op==='mute')policy.mute(prefix);else policy.unmute(prefix);saveState();
+      const eventId=`channel-control:${action.id}`;
+      return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:store.read(action.id).revision,status:'succeeded',eventId,body:JSON.stringify({op:args.op,prefix}),source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});
+    }
+    if(action.tool==='group_peek'){
+      const args=action.args??{};const prefix=String(args.prefix??'').trim();ensure(prefix.length>0&&prefix.length<=200,'CHANNEL_PREFIX','channel prefix required');const limit=Number.isSafeInteger(args.limit)?Math.max(1,Math.min(100,args.limit)):50;
+      const loaded=loadBacklog(prefix,limit);const eventId=`group-peek:${action.id}`;
+      return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:store.read(action.id).revision,status:'succeeded',eventId,body:JSON.stringify({prefix,loaded:loaded.loaded}),source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});
+    }
     if(action.tool==='remember_note'){
       const args=action.args??{};
-      const note=rememberNote({store,id:`note:${randomUUID()}`,body:args.body,kind:args.kind??'fact_claim',scene:args.scene??null,anchor:args.anchor??null});
+      const parent=[...store.all('decision')].find(d=>d.action?.id===action.id&&d.input?.payload?.continuity?.subject?.id===subjectId);
+      const evidence=parent?[parent.currentEvent,...parent.output.used.map(x=>x.ref)].filter(ref=>ref&&
+        ['event','note'].includes(store.read(ref.id,ref.revision)?.type)):[];
+      rememberNote({store,id:`note:${randomUUID()}`,body:args.body,kind:args.kind??'fact_claim',scene:args.scene??null,anchor:args.anchor??null,evidence});
       const eventId=`remember-receipt:${action.id}`;
       return store.execute({requestId:`execute:${action.id}`,commands:[{op:'record_receipt',actionId:action.id,expectedRevision:action.revision,status:'succeeded',eventId,body:'已记下',source:{system:'host',key:eventId},actor:'host',occurredAt:clock()}]});
     }
@@ -434,6 +708,73 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     syncSchedulerInbox();
     scheduleFollowupTick();
     return fixed;
+  }
+  // IR-03/D 主动联系 host 授权（M1/M2 仅私聊 initiation；群主动禁用）。
+  // 只读既有持久事实（Decision/Action/Response）重建当日账本；不新增表/字段；
+  // 失败一律 typed、transportInvoked=false、在任何 claim/send 之前抛出。
+  const PROACTIVE_TIMEZONE_MINUTES=480;
+  function proactiveLedgerEntries(now){
+    const cutoff=now-72*60*60*1000;
+    const decisions=[...store.all('decision')].filter(d=>{
+      if(!Number.isSafeInteger(d.recordedAt)||d.recordedAt<cutoff)return false;
+      const subject=d.input?.payload?.continuity?.subject?.id;
+      return subject===undefined||subject===null||subject===subjectId;
+    });
+    if(decisions.length>512)throw Object.assign(new Error('bounded proactive decision window exceeded'),{code:'PROACTIVE_LEDGER_BOUND',transportInvoked:false});
+    return decisions.sort((a,b)=>a.recordedAt-b.recordedAt).map(d=>{
+      const action=d.action?store.read(d.action.id,d.action.revision):null;
+      const response=store.read(d.id+':response');
+      // A ledger with a dangling Action/Response reference is incomplete. Never
+      // silently classify it as uncounted (that would let a proactive attempt
+      // escape the daily budget); fail closed before any claim/send.
+      if(d.action&&!action)throw Object.assign(new Error('proactive ledger action reference missing'),{code:'PROACTIVE_LEDGER_INCOMPLETE',transportInvoked:false});
+      const selected=d.output?.options?.find(o=>o.id===d.output.selected);
+      if(selected?.kind==='respond'&&!response)throw Object.assign(new Error('proactive ledger response reference missing'),{code:'PROACTIVE_LEDGER_INCOMPLETE',transportInvoked:false});
+      return {decision:d,...(action?{action}:{}),...(response?{response}:{})};
+    });
+  }
+  const PROACTIVE_COOLDOWN_MS=30*60*1000;
+  const PROACTIVE_MAX_UNANSWERED=2;
+  const PROACTIVE_UNANSWERED_WINDOW_MS=24*60*60*1000;
+  const PROACTIVE_ACTIVE_EXEMPT_MS=15*60*1000;
+  function authorizeProactiveAction(action,now=clock()){
+    const args=action.args??{};
+    const targetScene=String(args.targetScene??'');
+    if(targetScene.startsWith('qq/group/'))throw Object.assign(new Error('proactive contact to qq/group is disabled; group peek is read-only'),{code:'PROACTIVE_GROUP_DISABLED',transportInvoked:false,nativePreflight:true});
+    try{validateToolArguments(PROACTIVE_HOST_TOOL,args);}catch(error){error.transportInvoked=false;error.nativePreflight=true;throw error;}
+    const entries=proactiveLedgerEntries(now);
+    const host=assertProactiveHostSend({subjectId,entries,action,timezoneMinutes:PROACTIVE_TIMEZONE_MINUTES});
+    // 1. Separated recipient quiet hours (23:00-07:00): allow internal thinking/autonomy,
+    //    but block outbound proactive messages unless recipient was active in last 15 min.
+    const inboundEvents=[...store.all('event')].filter(e=>e.scene===targetScene&&['observed','reported'].includes(e.origin)&&e.actor!=='host'&&e.actor!==subjectId);
+    const lastInboundAt=inboundEvents.reduce((max,e)=>Math.max(max,Number(e.occurredAt??e.recordedAt??0)),0);
+    if(inQuietHours(now)&&(!lastInboundAt||(now-lastInboundAt)>PROACTIVE_ACTIVE_EXEMPT_MS)){
+      throw Object.assign(new Error('收件人处于夜间勿扰时段（23:00–07:00），暂不主动外发；内部思考与记忆整理不受影响'),{code:'POLICY_QUIET_HOURS',transportInvoked:false,nativePreflight:true,quietFrom:quietHours.quietFrom,quietTo:quietHours.quietTo});
+    }
+    // 2. Cross-entry target cooldown, unanswered backoff cap, and inputRefs dedup.
+    const priorProactive=[...store.all('action')]
+      .filter(a=>a.id!==action.id&&a.tool===PROACTIVE_HOST_TOOL&&a.args?.targetScene===targetScene&&a.status!=='failed')
+      .sort((a,b)=>(b.recordedAt??0)-(a.recordedAt??0));
+    const latestPrior=priorProactive[0]??null;
+    if(latestPrior&&Number.isSafeInteger(latestPrior.recordedAt)&&(now-latestPrior.recordedAt)<PROACTIVE_COOLDOWN_MS){
+      const retryAfterMs=PROACTIVE_COOLDOWN_MS-(now-latestPrior.recordedAt);
+      throw Object.assign(new Error(`同一对象主动联系冷却中，约 ${Math.ceil(retryAfterMs/60000)} 分钟后再试`),{code:'POLICY_COOLDOWN',retryAfterMs,transportInvoked:false,nativePreflight:true});
+    }
+    const unansweredSince=Math.max(lastInboundAt,now-PROACTIVE_UNANSWERED_WINDOW_MS);
+    const unansweredCount=priorProactive.filter(a=>Number.isSafeInteger(a.recordedAt)&&a.recordedAt>unansweredSince).length;
+    if(unansweredCount>=PROACTIVE_MAX_UNANSWERED){
+      throw Object.assign(new Error(`对方尚未回复前最多主动联系 ${PROACTIVE_MAX_UNANSWERED} 次，已触发未回复退避保护`),{code:'POLICY_UNANSWERED_CAP',unansweredCount,limit:PROACTIVE_MAX_UNANSWERED,transportInvoked:false,nativePreflight:true});
+    }
+    const basisSig=JSON.stringify((action.inputRefs??[]).map(r=>`${r.id}@${r.revision}`).sort());
+    const dupBasis=priorProactive.find(a=>Number.isSafeInteger(a.recordedAt)&&(now-a.recordedAt)<PROACTIVE_UNANSWERED_WINDOW_MS&&JSON.stringify((a.inputRefs??[]).map(r=>`${r.id}@${r.revision}`).sort())===basisSig);
+    if(dupBasis){
+      throw Object.assign(new Error('24 小时内已基于同一组记忆依据发起过主动联系，跳过重复打扰'),{code:'POLICY_DUPLICATE_BASIS',priorActionId:dupBasis.id,transportInvoked:false,nativePreflight:true});
+    }
+    const used=host.moduleInput.attempts.length;
+    const confirmation=used>=PROACTIVE_DAILY_SOFT_LIMIT
+      ?Object.freeze({approved:true,evidence:`host-auto-confirm:v1:${host.dayKey}:${used}`})
+      :null;
+    return authorizeProactiveContact({...host.moduleInput,confirmation});
   }
   async function dispatch(outbox,{scene,execute=false}={}){
     const sent=[];
@@ -456,12 +797,12 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
           }
           const claimed=responseClaim({response:item.response,worker:'brain-host'});let result,outcome='unknown';
           try{result=await adapter.send({scene:sendScene,text:current.body,response:claimed.response});outcome=result?.delivered===false?'failed':'sent';}
-          catch(error){result={error:error.code??'SEND_ERROR'};}
+          catch(error){result={error:error.code??'SEND_ERROR'};outcome=error?.transportInvoked===false?'failed':'unknown';}
           responseDelivered({response:claimed.response,claimId:claimed.claimId,outcome,body:JSON.stringify({...(result??{outcome}),scene:sendScene})});
           item.delivery={status:outcome};sent.push({...result,delivered:outcome==='sent',status:outcome});
         }else sent.push({kind:'respond',text:item.text,delivered:false});
       }else if(item.kind==='act'){
-        if(item.action&&['remember-binding','remember_note','start_agent_task','pause_agent_task','stop_agent_task','redirect_agent_task'].includes(item.tool)){
+        if(item.action&&['remember-binding','remember_note','channel_control','group_peek','start_agent_task','pause_agent_task','stop_agent_task','redirect_agent_task'].includes(item.tool)){
           try{const result=await executeAction(item.action);admitNativeReceipt(item.action.id);item.execution={status:store.read(item.action.id).status};sent.push(result);}
           catch(error){
             let current=store.read(item.action.id),recording='existing',recordingError=null;
@@ -477,11 +818,39 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
           }
         }
         else if(execute&&adapter?.act){
-          ensure(item.action,'ACTION','durable action identity required');const claim=actionClaim({action:item.action,worker:'brain-host'});let status='interrupted',body;
+          ensure(item.action,'ACTION','durable action identity required');
+          const persisted=store.read(item.action.id,item.action.revision)??store.read(item.action.id);
+          ensure(persisted?.type==='action','ACTION','persisted action required before external delivery');
+          if(persisted.tool===PROACTIVE_HOST_TOOL){
+            try{authorizeProactiveAction(persisted);}
+            catch(error){
+              if(error?.transportInvoked!==false)error.transportInvoked=false;
+              const current=store.read(persisted.id);let receiptRecording='not-needed';
+              if(current?.status==='proposed'){
+                const eventId='host-action:'+current.id;
+                try{receipt({scene,action:{id:current.id,revision:current.revision},status:'failed',
+                  body:JSON.stringify({error:error.code??'PROACTIVE_AUTH_ERROR',message:String(error.message??'').slice(0,600),transportInvoked:false}),
+                  eventId});receiptRecording='failed';}catch(e){receiptRecording='record-failed:'+(e.code??e.name);}
+              }
+              item.execution={status:current?.status??'failed',error:error.code??'PROACTIVE_AUTH_ERROR',receiptRecording};
+              try{store.recordDiagnostic({stage:'proactive-contact.blocked',status:'rejected',context:{subjectId},data:{actionId:persisted.id,errorCode:error.code??'PROACTIVE_AUTH_ERROR',message:String(error.message??'').slice(0,600)}});}catch{}
+              sent.push({kind:'act',tool:item.tool,action:item.action,delivered:false,error:{code:error.code??'PROACTIVE_AUTH_ERROR',message:error.message}});
+              continue;
+            }
+          }
+          const claim=actionClaim({action:item.action,worker:'brain-host'});let status='interrupted',body;
           try{body=JSON.stringify(await adapter.act({scene,tool:item.tool,args:item.args,action:claim.action}));status='succeeded';}catch(error){if(error.transportInvoked===false){status='failed';body=JSON.stringify({error:error.code,message:error.message,transportInvoked:false});}else body=error.message;}
           receipt({scene,action:claim.action,claimId:claim.claimId,status,body:body??'',eventId:'host-action:'+item.action.id});item.execution={status};sent.push({kind:'act',status});
         }
-        else sent.push({kind:'act',tool:item.tool,delivered:false});
+        else {
+          if(execute&&item.action){
+            const current=store.read(item.action.id);
+            if(current?.status==='proposed'){
+              try{receipt({scene,action:{id:current.id,revision:current.revision},status:'failed',body:JSON.stringify({error:'ENV_TOOL_UNAVAILABLE',message:'外部通道未连接或当前环境未提供该工具，未发起发送',transportInvoked:false}),eventId:'host-action:'+current.id});}catch{}
+            }
+          }
+          sent.push({kind:'act',tool:item.tool,delivered:false,error:{code:'ENV_TOOL_UNAVAILABLE',message:'外部通道未连接或当前环境未提供该工具'}});
+        }
       }
     }
     return sent;
@@ -489,7 +858,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function recoverSettledRejectedTurns(){
     const closed=[];if(!runtimeInfo?.ledgerPath)return closed;
     try{const bytes=readFileSync(runtimeInfo.ledgerPath),ledger=JSON.parse(bytes);
-      for(const t of store.all('affect_turn'))if(t.subject===subjectId&&['failed','uncertain'].includes(t.status)){
+      for(const t of store.all('affect_turn'))if(t.subject===subjectId&&['failed','uncertain'].includes(t.status)&&!isAttentionCapacityError(t.error)){
         const row=ledger.requests?.find(r=>r.id==='turn:'+t.packet.packetId);
         // Quota refusal is terminal for this source, not an interrupted provider
         // request. Require both durable no-transport proof and no budget row;
@@ -515,7 +884,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const scene=item?.scene??queueKey;
       const driver=driverFor(global?'global':scene);
       const eventId=item?.eventId??(item?.key?.startsWith('obs:')?item.key:null);
-      if(eventId&&process.env.JY_GROUP_INGEST==='off'&&String(scene).startsWith('qq/group/')){
+      if(eventId&&process.env.JY_GROUP_INGEST==='off'&&String(scene).startsWith('qq/group/')&&!groupPeeked.has(eventId)){
         const event=store.read(eventId);
         if(event?.type==='event')try{store.execute({requestId:'isolate-group:'+eventId,commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:event.revision},reason:'GROUP_ISOLATED'}]});}catch{}
         return {ok:true,skipped:true,silent:true,reason:'group-isolated',pending:scheduler.pending()};
@@ -527,6 +896,16 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
         if(inbox&&inbox.status!=='received'&&!subjectDeferred||terminal){
           if(inbox&&inbox.status==='received')try{store.execute({requestId:'terminal-skip:'+eventId,commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:eventId,revision:store.read(eventId).revision},reason:'TERMINAL_SKIP'}]});}catch{}
           return {ok:true,skipped:true,silent:true,reason:'terminal-skip',pending:scheduler.pending()};
+        }
+      }
+      // Agent-runtime tool_receipt decisions are a background entry. Never start a
+      // paid model call while the host desk is full; record a deferred marker and
+      // leave the event for the normal cadence after capacity is released.
+      if(eventId){
+        const sourceEvent=store.read(eventId);
+        if(sourceEvent?.origin==='tool_receipt'&&sourceEvent?.source?.system==='agent-runtime'){
+          const capGate=backgroundCapacityGate('agent',eventId);
+          if(capGate)return {...capGate,ok:false,id:null,status:null};
         }
       }
       let result;
@@ -559,6 +938,21 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
             processingOutcome={format:'host-processing-outcome-v1',status:'unknown-not-adopted',sourceEvent:id,packetId:'model:'+id,packetPrepared:false,adopted:false,execution:'unknown',accounting:'uncertain',closure:{id:record.id,revision:record.revision},error:error.code};
           }
         }
+        // A capacity refusal is a host resource fact, not a semantic rejection. Keep
+        // the source deferred and never auto-close/quarantine its affect turn; the
+        // existing requeue-event path may re-enter after operator releases capacity.
+        // Per-commit output-shape limit: typed failure, no capacity marker, no auto
+        // retry. Agent-runtime receipts become agent telemetry; foreground stays typed.
+        if(!processingOutcome&&error.code==='RESIDENCE_UPSERT_CAPACITY'){
+          const sourceEvent=eventId?store.read(eventId):null,entry=sourceEvent?.source?.system==='agent-runtime'?'agent':'foreground';
+          const marker=commitLimitMarker(entry,item?.eventId??item?.key??null,error.code);
+          return {ok:false,error:error.code,message:error.message,retryable:false,commitLimit:true,entry,marker,pending:scheduler.pending()};
+        }
+        if(!processingOutcome&&isAttentionCapacityError(error.code)){
+          try{store.recordDiagnostic({stage:'capacity.deferred',status:'deferred',context:{subjectId,eventId:item?.eventId??null},
+            data:{errorCode:error.code,capacity:capacitySnapshot(),meaning:'host attention capacity; source retained as deferred, no journal rejection/quarantine'}});}catch{}
+          return {ok:false,error:error.code,message:error.message,retryable:false,capacityDeferred:true,deferred:true,pending:scheduler.pending()};
+        }
         if(!processingOutcome)scheduler.enqueue(queueKey,item);driver.persistState();saveState();
         return {ok:false,error:error.code??'TURN_ERROR',message:error.message,retryable:!processingOutcome,...(processingOutcome?{processingOutcome}:{}),pending:scheduler.pending()};
       }
@@ -579,7 +973,23 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       return {ok:true,scene:targetScene,item:item?.key??null,result,outbox,delivery,silent:!outbox.some(o=>o.kind==='respond'),pending:scheduler.pending()};
     }finally{scheduler.complete(queueKey);}
   }
-  async function reply(input){
+  function authorizeInboundScene(body,serviceToken){
+    const policy=inboundScenePolicy;
+    if(!policy)return;
+    ensure(body?.protocol==='jingyang-brain-bridge-v1','INBOUND_PROTOCOL','bridge protocol required');
+    if(policy.requireToken&&!serviceToken)ensure(false,'UNAUTHORIZED','brain token required for inbound bridge');
+    const scene=String(body?.scene??'');
+    const match=/^qq\/(private|group)\/([0-9]+)$/.exec(scene);
+    ensure(match,'INBOUND_SCENE_FORMAT','unrecognized inbound qq scene');
+    const kind=match[1],id=match[2];
+    ensure(String(body?.key??'')===kind+':'+id,'INBOUND_SCENE_KEY','bridge key must match scene');
+    if(kind==='private'){
+      ensure((policy.ownerQQ&&id===String(policy.ownerQQ))||policy.allowAllPrivate===true,'INBOUND_SCENE_NOT_AUTHORIZED','private scene is not authorized');
+    }else{
+      ensure((policy.allowedGroups??[]).map(String).includes(id),'INBOUND_SCENE_NOT_AUTHORIZED','group scene is not whitelisted');
+    }
+  }
+  async function reply(input,{includeEvent=false}={}){
     const execute=input.execute!==false;
     const scene=String(input.scene??input.key??'');
     ensure(scene,'ADAPTER','scene required');
@@ -589,7 +999,11 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     ensure(body,'ADAPTER','reply needs message text');
     const chatKey=keyFor(scene,input.key);
     const sourceKey=`${chatKey}:${input.message_id??`${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
-    observe({source,key:chatKey,sourceKey,text:body,message:messageValue,scene,sender:input.sender??null,threadId:input.threadId??null,occurredAt:input.occurredAt??input.message_time??null});
+    const observed=observe({source,key:chatKey,sourceKey,text:body,message:messageValue,scene,sender:input.sender??null,threadId:input.threadId??null,occurredAt:input.occurredAt??input.message_time??null});
+    // Silence means this message was only recorded (muted or group-isolated).
+    // Never fall through to turn(): a preferred miss could otherwise pick up
+    // another scene's queued work.
+    if(observed?.queued!==true)return {ok:true,scene,text:'',outbox:[],silent:true,busy:false,deferred:false,queued:false,muted:observed?.muted===true,reason:observed?.reason??null};
     let result;
     for(let attempt=0;attempt<6;attempt++){
       result=await turn({preferred:global?null:scene,deliver:true,execute});
@@ -599,7 +1013,8 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     }
     if(result?.error)return {ok:false,error:result.error,message:result.message,retryable:false,scene,outbox:[],silent:true,busy:false,...(result.processingOutcome?{processingOutcome:result.processingOutcome}: {})};
     const text=result.outbox?.find(o=>o.kind==='respond')?.text??'';
-    return {ok:true,scene,text,outbox:result.outbox??[],silent:result.silent??true,busy:result.busy??false,deferred:result.deferred??false};
+    return {ok:true,scene,text,outbox:result.outbox??[],silent:result.silent??true,busy:result.busy??false,deferred:result.deferred??false,
+      ...(includeEvent?{eventId:observed.eventId}:{})};
   }
   function receipt({scene,action,status,body,eventId,claimId=null,actor='host',occurredAt=clock()}){
     ensure(scene&&action,'ADAPTER','receipt needs scene/action');
@@ -628,6 +1043,256 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     ensure(current.status==='dispatching'&&input.claimId===current.claimId,'RESPONSE_NOT_CLAIMED','claim before sending; do not send again when acknowledgement is missing');
     const receiptId='delivery:'+current.id+':'+input.claimId;
     return recordResponseDelivery({store,response:{id:current.id,revision:current.revision},claimId:input.claimId,outcome:input.outcome??'sent',eventId:receiptId,body:input.body??'发送回执',source:{system:'qq-host',key:receiptId},actor:'qq-connector',requestId:receiptId});
+  }
+  function capacitySnapshot(){
+    const subject=store.read(subjectId),frame=store.read(attentionId(subjectId));
+    ensure(subject&&frame,'ATTENTION_REQUIRED','subject/frame required');
+    // Host-only projection: prefer the B-owned policy snapshot; preserve the existing
+    // host shape expected by health/requeue. Never expose this through model input.
+    let measured=null;
+    if(attentionCapacityPolicy&&typeof attentionCapacityPolicy.snapshot==='function')measured=attentionCapacityPolicy.snapshot(frame,subject);
+    else if(attentionCapacityPolicy&&typeof attentionCapacityPolicy.measure==='function')measured=attentionCapacityPolicy.measure(frame,subject);
+    const activeDeferrals=()=>Array.isArray(frame.deferrals)?frame.deferrals.filter(d=>!['restored','cancelled'].includes(d.status)).length:0;
+    if(measured?.slots?.foreground){
+      const slots=measured.slots;
+      const used={foreground:(subject.foreground??[]).length,residences:slots.foreground.used??measured.used,processes:slots.processes?.used??0,relations:slots.relations?.used??0,questions:slots.questions?.used??0,followups:slots.followups?.used??0,deferrals:slots.deferrals?.used??activeDeferrals()};
+      const max={foreground:slots.foreground.max??measured.max,residences:slots.foreground.max??measured.max,processes:slots.processes?.max??128,relations:slots.relations?.max??256,questions:slots.questions?.max??64,followups:slots.followups?.max??32,deferrals:slots.deferrals?.max??32};
+      return {used,max,released:Object.keys(used).every(k=>used[k]<max[k]),full:measured.full===true,slots,counts:measured,
+        snapshot:digest({used,max,subject:{id:subject.id,revision:subject.revision},frame:{id:frame.id,revision:frame.revision}})};
+    }
+    const used={foreground:(subject.foreground??[]).length,residences:(frame.residences??[]).length,processes:liveProcesses(frame.processes??[]).length,relations:(frame.relations??[]).length,questions:(frame.questions??[]).length,followups:(frame.followups??[]).length,deferrals:activeDeferrals()};
+    const max={foreground:subject.maxForeground,residences:subject.maxForeground,processes:128,relations:256,questions:64,followups:32,deferrals:32};
+    return {used,max,released:Object.keys(used).every(k=>used[k]<max[k]),snapshot:digest({used,max,subject:{id:subject.id,revision:subject.revision},frame:{id:frame.id,revision:frame.revision}})};
+  }
+  // Background entries (autonomy/reflection/task/agent) must not pay a model call when
+  // the host attention desk is already full; only foreground may reclaim under policy.
+  // Markers reuse the existing operation-feedback extension record, never a new state.
+  function hostCapacity(){
+    const subject=store.read(subjectId),frame=store.read(attentionId(subjectId));
+    if(!subject||!frame)return {available:false,full:false,released:true,capacity:null};
+    try{
+      // All-dimension gate: attention capacity is not only foreground residences.
+      // Reuse capacitySnapshot().released plus every measured slot (graph/questions/
+      // followups/deferrals/...), so a full non-foreground slot cannot let a
+      // background entry start a paid model call.
+      const snapshot=capacitySnapshot();
+      const measured=attentionCapacityPolicy&&typeof attentionCapacityPolicy.snapshot==='function'?attentionCapacityPolicy.snapshot(frame,subject):null;
+      const dims={};
+      for(const [name,value] of Object.entries(snapshot.used??{}))if(Number.isSafeInteger(value)&&Number.isSafeInteger(snapshot.max?.[name]))dims[name]={used:value,max:snapshot.max[name]};
+      for(const [name,slot] of Object.entries(measured?.slots??{}))if(slot&&Number.isSafeInteger(slot.used)&&Number.isSafeInteger(slot.max))dims[name]={used:slot.used,max:slot.max};
+      // RESIDENCE_UPSERT_CAPACITY is an output-shape/commit limit, not a persistent
+      // capacity dimension: it must not gate background entries or produce a
+      // capacity-deferred marker. It is handled as a semantic failure by the entry.
+      const full=snapshot.released!==true||Object.values(dims).some(slot=>slot.max>0&&slot.used>=slot.max);
+      const used=Object.fromEntries(Object.entries(dims).map(([name,slot])=>[name,slot.used]));
+      const max=Object.fromEntries(Object.entries(dims).map(([name,slot])=>[name,slot.max]));
+      return {available:true,full,released:!full,capacity:{used,max,full,released:!full,slots:measured?.slots??null}};
+    }catch{return {available:false,full:false,released:true,capacity:null};}
+  }
+  function capacityDeferredMarker(entry,key=null,reason='FOREGROUND_CAPACITY'){
+    const identity=digest({entry,key:key??null,subject:subjectId});
+    const id='extension:'+subjectId+':runtime:capacity-deferred:'+entry+':'+identity;
+    try{
+      if(!store.read(id))store.execute({requestId:'capacity-deferred-marker:'+entry+':'+identity,commands:[{op:'put_extension_record',id,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'capacity-deferred',entry,key:key??null,reason,recordedAt:clock()}}]});
+    }catch{}
+    try{store.recordDiagnostic({stage:'capacity.deferred',status:'deferred',context:{subjectId,eventId:String(key??'').startsWith('obs:')?key:null},data:{entry,key:key??null,reason,capacity:hostCapacity().capacity}});}catch{}
+    return id;
+  }
+  function backgroundCapacityGate(entry,key=null){
+    const blocked=commitLimitBlocked(entry,key);
+    if(blocked)return {skipped:true,reason:'commit-limit-blocked',commitLimitBlocked:true,preflightable:false,autoRecoverable:false,entry,marker:blocked.id};
+    const host=hostCapacity();
+    if(!host.available||host.full!==true)return null;
+    return {skipped:true,reason:'capacity-deferred',capacityDeferred:true,entry,marker:capacityDeferredMarker(entry,key),capacity:host.capacity};
+  }
+  function markTaskCapacityDeferred(task,key='preflight'){
+    const current=loadAgent(task.id);
+    if(['done','failed','cancelled'].includes(current.status))return current;
+    const next=agentRuntime.restore(current);
+    next.status='blocked';
+    next.blockedReason=String(`TASK_CAPACITY_DEFERRED:${key}:FOREGROUND_CAPACITY`).slice(0,2000);
+    next.updatedAt=clock();
+    saveAgent(next);
+    try{recordAgentResult(loadAgent(task.id));}catch{}
+    return loadAgent(task.id);
+  }
+  // RESIDENCE_UPSERT_CAPACITY is a per-commit output-shape limit, not a persistent
+  // capacity dimension. It consumes the opportunity/typed failure slot and is never a
+  // preflightable capacity-deferred gate.
+  function commitLimitMarker(entry,key=null,code='RESIDENCE_UPSERT_CAPACITY'){
+    const identity=digest({entry,key:key??null,subject:subjectId,code});
+    const id='extension:'+subjectId+':runtime:commit-limit:'+entry+':'+identity;
+    try{
+      if(!store.read(id))store.execute({requestId:'commit-limit-marker:'+entry+':'+identity,commands:[{op:'put_extension_record',id,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:0,value:{stage:'commit-limit-blocked',entry,key:key??null,reason:code,code,preflightable:false,autoRecoverable:false,recordedAt:clock()}}]});
+    }catch{}
+    try{store.recordDiagnostic({stage:'commit.limit',status:'typed-failure',context:{subjectId},data:{entry,key:key??null,code,preflightable:false,autoRecoverable:false}});}catch{}
+    return id;
+  }
+  function commitLimitBlocked(entry,key=null){
+    return [...store.all('extension_record')].find(record=>{
+      if(record.owner!==subjectId||record.stateType!=='operation-feedback'||record.value?.stage!=='commit-limit-blocked'||record.value?.entry!==entry)return false;
+      // autonomy/reflection/agent have no per-source identity for this typed failure:
+      // one marker blocks the next automatic opportunity until an explicit operator
+      // clear. task is keyed by its own task id so unrelated tasks are unaffected.
+      return (entry==='autonomy'||entry==='reflection'||entry==='agent')||record.value?.key===key;
+    })??null;
+  }
+  function clearCommitLimitMarker(entry,key=null,operator='operator-control'){
+    let cleared=0;
+    for(const record of [...store.all('extension_record')]){
+      if(record.owner!==subjectId||record.stateType!=='operation-feedback'||record.value?.stage!=='commit-limit-blocked'||record.value?.entry!==entry)continue;
+      if(!((entry==='autonomy'||entry==='reflection'||entry==='agent')||record.value?.key===key))continue;
+      try{store.execute({requestId:'commit-limit-clear:'+record.id+':'+record.revision,commands:[{op:'put_extension_record',id:record.id,owner:subjectId,theory:'runtime',stateType:'operation-feedback',schemaVersion:'1',expectedRevision:record.revision,value:{...record.value,stage:'commit-limit-cleared',clearedAt:clock(),operator:String(operator??'operator-control')}}]});cleared++;}catch{}
+    }
+    return cleared;
+  }
+  function markTaskCommitLimitBlocked(task,key='marker'){
+    const current=loadAgent(task.id);if(['done','failed','cancelled'].includes(current.status))return current;
+    const next=agentRuntime.restore(current);next.status='blocked';next.blockedReason=String(`TASK_COMMIT_LIMIT:RESIDENCE_UPSERT_CAPACITY`).slice(0,2000);next.updatedAt=clock();
+    saveAgent(next);try{recordAgentResult(loadAgent(task.id));}catch{}return loadAgent(task.id);
+  }
+  function commitLimitEffects(){
+    const items=[];
+    for(const record of store.all('extension_record')){
+      if(record.owner!==subjectId||record.stateType!=='operation-feedback'||record.value?.stage!=='commit-limit-blocked')continue;
+      items.push({entry:record.value.entry??'background',id:record.id,key:record.value.key??null,reason:record.value.reason??record.value.code??'RESIDENCE_UPSERT_CAPACITY',code:record.value.code??'RESIDENCE_UPSERT_CAPACITY',preflightable:false,autoRecoverable:false,blocked:true,consumed:record.value.consumed!==false,marker:record.id});
+    }
+    for(const task of listAgent())if(String(task.blockedReason??'').startsWith('TASK_COMMIT_LIMIT:'))items.push({entry:'task',id:task.id,key:null,reason:String(task.blockedReason).slice('TASK_COMMIT_LIMIT:'.length),code:'RESIDENCE_UPSERT_CAPACITY',preflightable:false,autoRecoverable:false,blocked:true,consumed:false});
+    return items;
+  }
+  async function operatorEffect(input={}){
+    const type=input.type,id=input.id,transition=input.transition,evidence=input.evidence??{};
+    ensure(['response','action','turn-activity','maintenance','journal','task-source','commit-limit'].includes(type),'OPERATOR_TYPE','known operator effect type required');
+    ensure(typeof id==='string'&&typeof transition==='string','OPERATOR_INPUT','object id and transition required');
+    if(type==='response'){
+      const current=store.read(id);ensure(current?.type==='response','OPERATOR_OBJECT','response required');
+      if(current.status==='unknown')return {ok:true,type,id,status:'unknown',retained:true,reason:'unknown-not-safe-to-correct'};
+      if(!['failed','unknown'].includes(transition))throw Object.assign(Error('only failed/unknown closure is operator-supported'),{code:'OPERATOR_TRANSITION',transportInvoked:false});
+      let claimId=current.claimId??null,response={id:current.id,revision:current.revision};
+      if(current.status==='pending'){const claimed=responseClaim({response});claimId=claimed.claimId;response=claimed.response;}
+      else ensure(current.status==='dispatching'&&claimId,'OPERATOR_TRANSITION','claimed dispatching response required');
+      const evId='operator-response:'+id+':'+transition;
+      const written=store.execute({requestId:evId,commands:[{op:'record_response_delivery',response,claimId,outcome:transition,eventId:evId,body:JSON.stringify({reason:'OPERATOR_EVIDENCE',operator:String(evidence.operator??'operator-control'),transportInvoked:transition==='failed'?false:null,evidenceHash:digest(evidence)}),source:{system:'host-operator',key:evId},actor:'host-operator',occurredAt:clock(),admit:false}]}).at(-1);
+      return {ok:true,type,id,status:written.status,receipt:written.receipts?.at(-1)??null};
+    }
+    if(type==='action'){
+      const current=store.read(id);ensure(current?.type==='action','OPERATOR_OBJECT','action required');
+      if(!['failed','interrupted','cancelled'].includes(transition))throw Object.assign(Error('operator cannot declare success without a real receipt'),{code:'OPERATOR_TRANSITION',transportInvoked:false});
+      const claimId=current.status==='dispatching'?current.claimId:null;
+      ensure(current.status==='proposed'||current.status==='dispatching','OPERATOR_TRANSITION','proposed or claimed dispatching action required');
+      const evId='operator-action:'+id+':'+transition;
+      const written=store.execute({requestId:evId,commands:[{op:'record_receipt',actionId:current.id,expectedRevision:current.revision,claimId,status:transition,eventId:evId,body:JSON.stringify({reason:'OPERATOR_EVIDENCE',operator:String(evidence.operator??'operator-control'),transportInvoked:false,evidenceHash:digest(evidence)}),source:{system:'host-operator',key:evId},actor:'host-operator',occurredAt:clock()}]}).at(-1);
+      return {ok:true,type,id,status:store.read(id).status,receipt:written.receipt??null};
+    }
+    if(type==='turn-activity'){
+      const activity=store.read(id);ensure(activity?.type==='extension_record'&&activity.stateType==='turn-activity','OPERATOR_OBJECT','turn-activity required');
+      ensure(['succeeded','failed','not-executed'].includes(transition),'OPERATOR_TRANSITION','known turn outcome required');
+      const packetId=activity.value?.packet?.packetId;ensure(packetId,'OPERATOR_OBJECT','activity packet required');
+      const eventId='operator-verification:'+packetId,body=JSON.stringify({packetId,outcome:transition,operator:String(evidence.operator??'operator-control'),evidenceHash:digest(evidence)});
+      const existing=store.read(eventId);
+      const verification=existing??store.execute({requestId:'operator-verification:'+packetId,commands:[{op:'append_event',id:eventId,body,origin:'reported',actor:'host',source:{system:'host-verification',key:packetId},scene:store.read(activity.value.packet.payload.workspace.id)?.scene??'operator',occurredAt:clock()}]}).at(-1);
+      const workspace=activity.value.packet.payload.workspace;
+      const scene=workspace.scene??store.read(workspace.id)?.scene??'operator';
+      const resolved=driverFor(scene).resolveUnknown({activity:{id:activity.id,revision:activity.revision},evidence:{id:verification.id,revision:verification.revision},outcome:transition});
+      const after=store.read(activity.id);
+      ensure(after?.value?.phase==='complete','OPERATOR_ACTIVITY_CLOSURE','activity must be complete after verification');
+      return {ok:true,type,id,status:'complete',resolution:resolved};
+    }
+    if(type==='maintenance'){
+      const job=store.read(id);ensure(job?.type==='maintenance_job','OPERATOR_OBJECT','maintenance job required');
+      ensure(['failed','uncertain','stale'].includes(transition),'OPERATOR_TRANSITION','maintenance failure/uncertain/stale required');
+      const out=store.execute({requestId:'operator-maintenance:'+id+':'+transition,commands:[{op:'finish_maintenance',job:{id:job.id,revision:job.revision},status:transition,code:String(evidence.code??'OPERATOR_CLOSURE')}]}).at(-1);
+      return {ok:true,type,id,status:out.status};
+    }
+    if(type==='task-source'){
+      const task=loadAgent(id),journal=decide?.requestJournal;
+      ensure(journal&&typeof journal.taskSource==='function'&&typeof journal.taskSourceEvidence==='function','REQUEST_JOURNAL','task-source journal primitives unavailable');
+      const source=journal.taskSource({subject:subjectId,taskId:task.id,step:task.stepCount}),evidenceHash=digest(evidence);
+      const reviewRecords=()=>[...store.all('extension_record')].filter(r=>r.stateType==='task-source-review'&&r.value?.taskId===task.id&&r.value?.step===task.stepCount);
+      const artifactFor=name=>{
+        const id='extension:'+subjectId+':runtime:task-source-review:'+digest({taskId:task.id,step:task.stepCount,transition:name,evidenceHash});
+        return {id,value:{format:'jingyang-task-source-review-v1',taskId:task.id,step:task.stepCount,transition:name,source,
+          evidence:{operator:String(evidence.operator??'operator-control'),reason:String(evidence.reason??''),hash:evidenceHash},
+          task:{id:task.id,revision:task.revision,controlRevision:task.controlRevision??0,stepCount:task.stepCount,status:task.status},recordedAt:clock()}};
+      };
+      if(transition==='preview'){
+        const capture=driverFor(global?'global':task.target??'agent/task').capturedTaskAttempt(task);
+        const journalView=journal.inspectTaskSource(source,{packetId:capture.recoverable?capture.packet.packetId:null});
+        return {ok:true,type,id,transition,task:{id:task.id,status:task.status,stepCount:task.stepCount,controlRevision:task.controlRevision??0,blockedReason:task.blockedReason??null},source,journal:journalView,
+          capture:capture.recoverable?{recoverable:true,decisionId:capture.decisionId,attemptId:capture.attempt.id}:{recoverable:false,reason:capture.reason},
+          transitions:['preview','recover-capture','close'],retry:{blocked:true,reason:'task-source retry is not implemented (R3 blocked)'},
+          evidenceHash:journal.taskSourceEvidence(source,{packetId:capture.recoverable?capture.packet.packetId:null,reason:'task-source-preview'}).evidenceHash};
+      }
+      if(transition==='retry')throw Object.assign(Error('task-source retry is blocked (R3 not implemented)'),{code:'OPERATOR_TRANSITION',transportInvoked:false});
+      if(transition==='recover-capture'){
+        const existingReview=reviewRecords().find(r=>r.value?.transition==='recover-capture'&&['done','failed','cancelled'].includes(task.status));
+        if(existingReview)return {ok:true,type,id,transition,status:task.status,replayed:true,artifact:existingReview.id};
+        ensure(['blocked','running','waiting','paused'].includes(task.status),'OPERATOR_STATE','capturable task state required');
+        const driver=driverFor(global?'global':task.target??'agent/task'),capture=driver.capturedTaskAttempt(task);
+        ensure(capture.recoverable,'TASK_CAPTURE_UNAVAILABLE',capture.reason??'no recoverable captured attempt');
+        const artifact=artifactFor('recover-capture');
+        artifact.value.capture={packetId:capture.packet.packetId,decisionId:capture.decisionId,attemptId:capture.attempt.id};
+        artifact.value.journal=journal.inspectTaskSource(source,{packetId:capture.packet.packetId});
+        // Stay on the same controlRevision: the captured taskGuard was built for it.
+        const next={...task,status:'running',blockedReason:null,updatedAt:clock()};
+        const commands=[{op:'put_agent_task',task:next,expectedRevision:task.revision}];
+        if(!store.read(artifact.id))commands.push({op:'put_extension_record',id:artifact.id,owner:subjectId,theory:'runtime',stateType:'task-source-review',schemaVersion:'1',expectedRevision:0,value:artifact.value});
+        store.execute({requestId:'operator-task-source:'+task.id+':'+artifact.id.slice(-64),commands});
+        const stepped=await runAgentStep(task.id,'operator-recover-capture');
+        const adopted=store.read(capture.decisionId);
+        return {ok:true,type,id,transition,status:loadAgent(task.id)?.status??null,recovered:Boolean(adopted),decision:adopted?{id:adopted.id,revision:adopted.revision}:null,modelCalls:0,artifact:artifact.id,evidenceHash:artifact.value.evidence.hash,result:stepped};
+      }
+      if(transition==='close'){
+        const closeResult=(typeof evidence.reason==='string'&&evidence.reason.trim()?evidence.reason.trim():'operator-close').slice(0,2000);
+        const prior=reviewRecords().find(r=>r.value?.transition==='close');
+        if(['failed','cancelled'].includes(task.status))return {ok:true,type,id,transition,status:task.status,replayed:true,artifact:prior?.id??null};
+        ensure(!['done'].includes(task.status),'OPERATOR_STATE','task already terminal');
+        ensure(['blocked','running','waiting','paused'].includes(task.status),'OPERATOR_STATE','open task required for operator close');
+        const artifact=artifactFor('close');
+        const next={...task,status:'failed',blockedReason:null,result:{outcome:'operator-closed',reason:closeResult},controlRevision:(task.controlRevision??0)+1,lease:null,wakeAt:null,updatedAt:clock()};
+        const commands=[{op:'put_agent_task',task:next,expectedRevision:task.revision}];
+        if(!store.read(artifact.id))commands.push({op:'put_extension_record',id:artifact.id,owner:subjectId,theory:'runtime',stateType:'task-source-review',schemaVersion:'1',expectedRevision:0,value:artifact.value});
+        store.execute({requestId:'operator-task-source-close:'+task.id+':'+artifact.id.slice(-64),commands});
+        return {ok:true,type,id,transition,status:'failed',result:next.result,modelCalls:0,artifact:artifact.id,evidenceHash:artifact.value.evidence.hash};
+      }
+      throw Object.assign(Error('unknown task-source transition'),{code:'OPERATOR_TRANSITION'});
+    }
+    if(type==='commit-limit'){
+      ensure(transition==='clear','OPERATOR_TRANSITION','commit-limit clear transition required');
+      ensure(evidence?.operator!=null,'OPERATOR_EVIDENCE','explicit operator evidence required to clear commit-limit');
+      const record=store.read(id);
+      ensure(record?.type==='extension_record'&&record.owner===subjectId&&record.stateType==='operation-feedback'&&record.value?.stage==='commit-limit-blocked','OPERATOR_OBJECT','blocked commit-limit marker required');
+      const cleared=clearCommitLimitMarker(record.value.entry,record.value.key??null,String(evidence.operator));
+      return {ok:true,type,id,status:'cleared',cleared};
+    }
+    const journal=decide?.requestJournal;ensure(journal&&typeof journal.find==='function','REQUEST_JOURNAL','journal unavailable');
+    const row=journal.find(id);
+    if(transition==='readmit'){
+      ensure(row.status==='released'&&row.transportInvoked===false,'OPERATOR_STATE','released unsent event-source request required');
+      ensure(evidence.fingerprint===row.fingerprint,'OPERATOR_EVIDENCE','fingerprint must bind the original request');
+      ensure(row.source?.kind==='event'&&row.source?.event?.id,'OPERATOR_STATE','event-source request required');
+      const eventId=row.source.event.id;
+      ensure(evidence.eventId==null||evidence.eventId===eventId,'OPERATOR_EVIDENCE','eventId must equal the original source event');
+      const sourceEvent={id:eventId,revision:store.read(eventId)?.revision??row.source.event.revision};
+      ensure(store.subjectObservation(subjectId,eventId),'REQUEUE_NOT_ADMITTED','source event must already be admitted');
+      const ledgerHash=createHash('sha256').update(readFileSync(runtimeInfo?.ledgerPath??'')).digest('hex');
+      ensure(evidence.ledgerHash===ledgerHash,'OPERATOR_EVIDENCE','ledger hash mismatch');
+      // Make the source pending first. If the journal readmit fails, the
+      // released journal still blocks dispatch, so a retry is safe and no
+      // permanently reserved row can be stranded.
+      store.execute({requestId:'operator-readmit-source:'+id,commands:[{op:'requeue_subject_event',subjectId,event:sourceEvent,reason:String(evidence.reason??'OPERATOR_READMIT')}]});
+      const read=journal.readmit(id,{evidence:{...evidence,requestId:id,transportInvoked:false,eventId},verify:(ev,r)=>ev.requestId===id&&ev.fingerprint===r.fingerprint&&ev.ledgerHash===ledgerHash});
+      syncSchedulerInbox();return {ok:true,type,id,status:read.status,readmitted:true,eventId};
+    }
+    ensure(row.status==='uncertain','OPERATOR_STATE','only a recovered uncertain journal may be reconciled');
+    ensure(['not-sent','settled'].includes(transition),'OPERATOR_TRANSITION','known journal outcome required');
+    ensure(evidence.fingerprint===row.fingerprint,'OPERATOR_EVIDENCE','fingerprint mismatch');
+    const ledgerHash=createHash('sha256').update(readFileSync(runtimeInfo?.ledgerPath??'')).digest('hex');
+    ensure(evidence.ledgerHash===ledgerHash,'OPERATOR_EVIDENCE','ledger hash mismatch');
+    if(transition==='not-sent')ensure(evidence.transportInvoked===false&&evidence.noProviderCall===true,'OPERATOR_EVIDENCE','explicit no-transport evidence required');
+    if(transition==='settled')ensure(Number.isSafeInteger(evidence.usage?.upperMicros)&&evidence.usage.upperMicros>=0,'OPERATOR_EVIDENCE','usage evidence required');
+    const verified=journal.reconcile(id,{evidence:{...evidence,requestId:id,outcome:transition},verify:(ev,r)=>ev.requestId===id&&ev.fingerprint===r.fingerprint&&ev.ledgerHash===ledgerHash});
+    return {ok:true,type,id,status:verified.status};
   }
   function recoveryTurn(id){
     const turn=store.read(id);ensure(turn?.type==='affect_turn'&&turn.subject===subjectId,'AFFECT_TURN','own model turn required');
@@ -660,12 +1325,56 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   function pendingEffects(){return {responses:[...store.all('response')].filter(r=>r.subject===subjectId&&['pending','dispatching','unknown'].includes(r.status)).map(r=>({kind:'respond',text:r.body,scene:r.scene,response:{id:r.id,revision:r.revision},status:r.status})),
     actions:[...store.all('action')].filter(a=>['proposed','dispatching','interrupted'].includes(a.status)).map(a=>({kind:'act',tool:a.tool,action:{id:a.id,revision:a.revision},status:a.status}))};}
 
-  function stats(){const counts={};for(const type of ['event','note','entity','binding','personal_state','workspace','action','decision','link'])counts[type]=[...store.all(type)].length;return {ok:true,subjectId,counts,style:styles.status(),attention:policy.status(),context:cursor};}
+  // Read-only diagnostic join over existing records. Capacity refusals keep the
+  // input-failure decision_attempt marked deferred; this exposes them without
+  // adding a table/status or changing the journal.
+  function capacityDeferredEffects(){
+    const items=[],host=hostCapacity();
+    const seen=new Set(),push=item=>{const key=item.entry+':'+item.id;if(seen.has(key))return;seen.add(key);items.push({...item,releaseReady:host.released===true,capacity:host.capacity});};
+    for(const attempt of store.all('decision_attempt')){
+      if(attempt.status!=='deferred'||!String(attempt.requestKey??'').startsWith('input-failure:'))continue;
+      if(!isAttentionCapacityError(attempt.failure?.reason))continue;
+      const event=attempt.input?.currentEvent??null;
+      let row=null,inbox=null;
+      if(event){
+        try{row=decide?.requestJournal?.sourceRequest({subject:subjectId,kind:'event',event:{id:event.id,revision:event.revision}})??null;}catch{}
+        try{inbox=store.subjectObservation(subjectId,event.id);}catch{}
+      }
+      push({entry:'foreground',id:attempt.id,eventId:event?.id??null,reason:attempt.failure.reason,packetId:row?.packetId??null,
+        journalStatus:row?.status??null,validation:row?.validation?.status??null,retryAuthorized:Boolean(row?.retryAuthorization),
+        inboxStatus:inbox?.status??null,requeueCandidate:Boolean(row?.status==='settled'&&!row?.validation&&inbox&&['received','deferred'].includes(inbox.status))});
+    }
+    for(const turn of store.all('affect_turn')){
+      if(turn.subject!==subjectId||!isAttentionCapacityError(turn.error))continue;
+      push({entry:'affect-turn',id:turn.id,eventId:turn.packet?.payload?.current?.id??null,reason:turn.error,packetId:turn.packet?.packetId??null,status:turn.status??null});
+    }
+    for(const record of store.all('extension_record')){
+      if(record.owner!==subjectId||record.stateType!=='operation-feedback'||record.value?.stage!=='capacity-deferred')continue;
+      push({entry:record.value.entry??'background',id:record.id,key:record.value.key??null,reason:record.value.reason??'FOREGROUND_CAPACITY',marker:record.id});
+    }
+    for(const task of listAgent()){
+      if(!String(task.blockedReason??'').startsWith('TASK_CAPACITY_DEFERRED:'))continue;
+      push({entry:'task',id:task.id,key:null,reason:task.blockedReason,taskStatus:task.status});
+    }
+    return items;
+  }
+  function stats(){const counts={};for(const type of ['event','note','entity','binding','personal_state','workspace','action','decision','link'])counts[type]=[...store.all(type)].length;
+   const subjects=[...store.all('subject')],frames=[...store.all('attention_frame')],extensions=[...store.all('extension_record')];
+   const received=store.subjectInbox({subjectId,pendingOnly:true,excludeDeferred:true,limit:1});
+   const deferred=store.subjectInbox({subjectId,pendingOnly:true,limit:1});
+   const capacityDeferred=capacityDeferredEffects();const commitLimits=commitLimitEffects();
+   const metrics={subjectVersions:subjects.map(x=>({id:x.id,revision:x.revision})),attentionFrameVersions:frames.map(x=>({id:x.id,revision:x.revision})),extensionRecords:extensions.length,
+     inbox:{pendingReceived:received.total,deferredAudit:Math.max(0,deferred.total-received.total),capacityDeferred:{count:capacityDeferred.length,items:capacityDeferred}},
+     commitLimits:{count:commitLimits.length,items:commitLimits},operations:extensions.filter(x=>x.stateType==='operation-feedback').length};
+   return {ok:true,subjectId,counts,metrics,style:styles.status(),attention:policy.status(),context:cursor};}
   function recoveryStatus(){
     const own=[...store.all('affect_turn')].filter(t=>t.subject===subjectId&&!['committed','closed-incomplete','superseded'].includes(t.status));
     const activities=[...store.all('extension_record')].filter(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='turn-activity'&&r.value.phase!=='complete');
-    const effects=pendingEffects();return {modelTurns:own.map(t=>({id:t.id,status:t.status,error:t.error??null})).slice(0,32),modelTurnCount:own.length,activities:activities.map(r=>({id:r.id,phase:r.value.phase})).slice(0,32),
+    const effects=pendingEffects();const capacityDeferred=capacityDeferredEffects();const commitLimits=commitLimitEffects();
+    return {modelTurns:own.map(t=>({id:t.id,status:t.status,error:t.error??null})).slice(0,32),modelTurnCount:own.length,activities:activities.map(r=>({id:r.id,phase:r.value.phase})).slice(0,32),
       responses:{pending:effects.responses.filter(r=>r.status==='pending').length,unconfirmed:effects.responses.filter(r=>r.status!=='pending').length},actions:{pending:effects.actions.filter(r=>r.status==='proposed').length,unconfirmed:effects.actions.filter(r=>r.status!=='proposed').length},
+      capacityDeferred:{count:capacityDeferred.length,items:capacityDeferred.slice(0,32)},
+      commitLimits:{count:commitLimits.length,items:commitLimits.slice(0,32)},
       toolsUnconfirmed:listAgent().reduce((n,t)=>n+(agentRuntime?.pendingToolOperations(t).length??0),0)};
   }
   function health(){const theory=typeof theoryStatus==='function'?theoryStatus():null;return {ok:true,draining,recovery:recoveryStatus(),mode:decide===dryDecide?'dry-run':'custom',subjectId,global,cognitionBusy:agentBusy||reflectionBusy||scheduler.active()!==null||(agentRuntime?.pendingExecutions()??0)>0,externalWorkPending:agentRuntime?.pendingExecutions()??0,active:scheduler.active(),pending:scheduler.pending(),scenes:global?1:drivers.size,attention:policy.status(),...(runtimeInfo?{runtime:runtimeInfo}:{}),scheduling:{enabled:timer!==null,intervalMs:scheduleIntervalMs},...(theory?{theory}: {})};}
@@ -718,7 +1427,7 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     try{
       let afterSeq=0;
       for(;;){
-        const rows=store.subjectInbox({subjectId,pendingOnly:true,afterSeq,limit:100}).items;
+        const rows=store.subjectInbox({subjectId,pendingOnly:true,excludeDeferred:true,afterSeq,limit:100}).items;
         if(!rows.length)break;
         afterSeq=rows.at(-1).seq;
         for(const row of rows){
@@ -740,45 +1449,133 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
   }
   syncSchedulerInbox();
   const cursorFile=stateDirectory?join(stateDirectory,'context-cursor.json'):null;
-  let cursor={lastEventId:null,lastAt:null,eventsSince:0,lastMemoryAt:clock(),lastIdleAt:clock()};
+  let cursor={lastEventId:null,lastAt:null,eventsSince:0,firstPendingAt:null,lastMemoryAt:clock(),lastIdleAt:clock()};
   if(cursorFile&&existsSync(cursorFile)){
     try{const saved=JSON.parse(readFileSync(cursorFile,'utf8'));if(saved&&Number.isSafeInteger(saved.eventsSince)&&saved.eventsSince>=0)cursor={...cursor,...saved};}catch{}
   }
   function saveCursor(){if(!cursorFile)return;try{writeFileSync(cursorFile,JSON.stringify(cursor),'utf8');}catch{}}
-  const memoryDue=()=>cursor.eventsSince>=50||clock()-cursor.lastMemoryAt>=2*60*60*1000;
+  const hourMs=3_600_000;
+  const memoryDue=()=>{
+    if(!cursor.eventsSince)return false;
+    const age=clock()-(cursor.firstPendingAt??cursor.lastAt??cursor.lastMemoryAt);
+    return cursor.eventsSince>=50||cursor.eventsSince>=4&&age>=2*hourMs||age>=6*hourMs;
+  };
+  function advanceReflectionCursor({memory,idle,covered,coveredEventId}){
+    const now=clock();
+    const remaining=memory?Math.max(0,cursor.eventsSince-covered):cursor.eventsSince;
+    cursor={...cursor,eventsSince:remaining,
+      ...(memory?{lastMemoryAt:now,firstPendingAt:remaining?(cursor.lastAt??now):null,
+        ...(compactReflection&&coveredEventId?{lastReflectedEventId:coveredEventId}:{})}:{}),
+      ...(idle?{lastIdleAt:now}:{})};
+    saveCursor();
+  }
   const idleDue=()=>clock()-cursor.lastIdleAt>=idleIntervalMs;
-  async function idleReflect(){
+  async function idleReflect({manual=false}={}){
     if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(draining||!global||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {skipped:true};
-    const memory=memoryDue();
+    if(!manual&&scheduleIntervalMs>0&&inQuietHours())return {skipped:true,reason:'quiet-hours'};
+    const memory=memoryDue(),idle=idleDue(),covered=cursor.eventsSince,coveredEventId=cursor.lastEventId;
     if(lifePolicy&&!lifePolicy.canReflect(clock()))return {skipped:true,reason:'open-life-reflection-cooldown'};
-    if(!memory&&!idleDue())return {skipped:true};
+    if(!memory&&!idle)return {skipped:true};
     reflectionBusy=true;try{
+    const capGate=backgroundCapacityGate('reflection',memory?'memory-update':'idle');
+    if(capGate)return capGate;
     const driver=driverFor('global');
     lifePolicy?.recordReflection(clock());
-    const result=await driver.tick({now:clock(),memoryUpdate:memory,idleReflection:!memory});
+    const result=await driver.tick({now:clock(),memoryUpdate:memory,idleReflection:!memory,
+      ...(memory&&compactReflection?{reflectionAfterEventId:cursor.lastReflectedEventId??null}:{})});
     driver.persistState();
-    if(result?.wake){
+    if(result?.wake&&result.decision){
       const outbox=driver.takeOutbox();
       const delivery=outbox.length?await dispatch(outbox,{scene:'global',execute:true}):null;
-      cursor={...cursor,eventsSince:memory?0:cursor.eventsSince,...(memory?{lastMemoryAt:clock()}:{}),...(!memory?{lastIdleAt:clock()}:{})};
-      saveCursor();
+      // A resumed packet may predate new arrivals. Only advance the compact
+      // input boundary when this exact memory decision actually carried it.
+      const reflection=compactReflection&&coveredEventId?store.read(result.decision.id,result.decision.revision)?.input?.payload:null;
+      const deliveredBoundary=reflection?.memoryUpdate?.due&&reflection.continuity?.recent?.items.some(item=>item.ref?.id===coveredEventId);
+      advanceReflectionCursor({memory,idle,covered,coveredEventId:deliveredBoundary?coveredEventId:null});
       return {...result,outbox,delivery};
     }
     return result;
-    }catch(error){recoverSettledRejectedTurns();throw error;}finally{reflectionBusy=false;}
+    }catch(error){
+      recoverSettledRejectedTurns();
+      // Per-commit output-shape limit: consume the due window/cursor as a typed failure
+      // and do not treat it as a preflightable capacity wait.
+      if(error?.code==='RESIDENCE_UPSERT_CAPACITY'){
+        commitLimitMarker('reflection',memory?'memory-update':'idle',error.code);
+        advanceReflectionCursor({memory,idle,covered});
+        throw error;
+      }
+      // Capacity is a host resource fact: do not consume the due cursor, do not
+      // terminalize the opportunity, and do not pay again until the preflight gate
+      // observes released capacity on a later cadence.
+      if(isAttentionCapacityError(error.code)){
+        const marker=capacityDeferredMarker('reflection',memory?'memory-update':'idle',error.code);
+        return {skipped:true,reason:'capacity-deferred',capacityDeferred:true,entry:'reflection',marker,capacity:hostCapacity().capacity,error:error.code};
+      }
+      // A deterministic reflection failure consumes the existing due window.
+      // Activity is the evidence; the existing cursor is the due-gate, so no
+      // second failure-state system is introduced.
+      const activity=[...store.all('extension_record')].find(r=>r.owner===subjectId&&r.theory==='runtime'&&r.stateType==='turn-activity'&&r.value?.context?.kind==='reflection');
+      const failure=activity?.value?.failure;
+      const deterministic=failure&&typeof failure.outcome==='string'&&!['uncertain'].includes(failure.outcome)&&!['unknown'].includes(failure.execution);
+      if(deterministic){
+        advanceReflectionCursor({memory,idle,covered});
+        // Surface the first deterministic failure to the caller, but the due
+        // window is consumed so the next heartbeat cannot repackage/pay again.
+        throw error;
+      }
+      throw error;
+    }finally{reflectionBusy=false;}
   }
   async function recoverPendingEffects(){
     if(draining||agentBusy||reflectionBusy||scheduler.active()!==null)return {skipped:true};
-    const pending=pendingEffects().responses.filter(r=>r.status==='pending');if(!pending.length||!adapter?.send)return {skipped:true};
+    const pending=pendingEffects().responses.filter(r=>r.status==='pending').filter(r=>{
+      const response=r.response?store.read(r.response.id,r.response.revision):null;
+      const decision=response?.decision?store.read(response.decision.id,response.decision.revision):null;
+      // Autonomy has no external reply opportunity. Historical orphan responses
+      // are retained for audit but must never become a QQ send during recovery.
+      if(String(decision?.id??'').startsWith('decision:autonomy:')||decision?.input?.payload?.internal?.kind==='autonomy'){
+        try{
+          const current=store.read(response.id);
+          if(current?.status==='pending'){
+            const claimed=responseClaim({response:{id:current.id,revision:current.revision}});
+            responseDelivered({response:claimed.response,claimId:claimed.claimId,outcome:'failed',eventId:'orphan-response:'+current.id,body:JSON.stringify({reason:'AUTONOMY_RESPONSE_ORPHAN',transportInvoked:false,automaticRetry:false}),source:{system:'host-operator',key:'orphan-response:'+current.id}});
+          }
+          store.recordDiagnostic({stage:'response.autonomy-orphan',status:'closed',context:{subjectId,decisionId:decision?.id??null},data:{responseId:response?.id??null,reason:'autonomy-response-failed-not-sent'}});
+        }catch(error){try{store.recordDiagnostic({stage:'response.autonomy-orphan',status:'failed',context:{subjectId,decisionId:decision?.id??null},data:{responseId:response?.id??null,error:error.code??'CLOSE_FAILED'}});}catch{}}
+        return false;
+      }
+      return true;
+    });if(!pending.length||!adapter?.send)return {skipped:true};
     reflectionBusy=true;try{return await dispatch(pending,{scene:'global',execute:true});}finally{reflectionBusy=false;}
   }
   async function followupTick(){
     if(officialSpend&&!officialSpend.gate().allow)return {skipped:true,reason:'official-spend-paused'};
     if(draining||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {skipped:true};
     const frame=store.read(attentionId(subjectId));if(!frame)return {skipped:true};
+    // A claimed followup has no live in-memory owner after restart. It must be
+    // settled as unknown, not silently left claimed or automatically resent.
+    const stale=(frame.followups??[]).filter(f=>f.status==='claimed');
+    if(stale.length){
+      for(const f of stale){
+        const current=store.read(attentionId(subjectId));
+        store.execute({requestId:`followup-claimed-recovery:${f.id}:${current.revision}`,commands:[{op:'update_followup',subjectId,id:f.id,status:'unknown',expectedRevision:current.revision,lastResponse:{error:'FOLLOWUP_CLAIM_INTERRUPTED',outcome:'unknown',automaticRetry:false}}]});
+      }
+      return {ok:true,recovered:stale.length,status:'unknown'};
+    }
     const due=(frame.followups??[]).filter(f=>f.status==='scheduled'&&f.dueAt<=clock()).sort((a,b)=>a.dueAt-b.dueAt)[0];
     if(!due)return {skipped:true};
+    const authorized=(()=>{try{
+      const entry=(store.read(attentionId(subjectId))?.followups??[]).find(f=>f.id===due.id);
+      if(!entry||entry.status!=='scheduled'||entry.targetScene!==due.targetScene)return false;
+      for(const r of entry.basis??[]){const ev=store.read(r.id,r.revision);if(ev?.type==='event'&&['observed','reported'].includes(ev.origin)&&ev.scene===entry.targetScene)return true;}
+      return false;
+    }catch{return false;}})();
+    if(!authorized){
+      const current=store.read(attentionId(subjectId));
+      store.execute({requestId:`followup-auth-fail:${due.id}:${current.revision}`,commands:[{op:'update_followup',subjectId,id:due.id,status:'failed',expectedRevision:current.revision,lastResponse:{error:'FOLLOWUP_AUTHORIZATION',automaticRetry:false}}]});
+      return {ok:true,followup:due.id,status:'failed',reason:'FOLLOWUP_AUTHORIZATION'};
+    }
     reflectionBusy=true;try{
     store.execute({requestId:`followup-claim:${due.id}:${frame.revision}`,commands:[{op:'update_followup',subjectId,id:due.id,status:'claimed',expectedRevision:frame.revision}]});
     const driver=driverFor(global?'global':due.targetScene);
@@ -799,21 +1596,31 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     return {ok:true,followup:due.id,status};
     }finally{reflectionBusy=false;}
   }
-  let timer=null,followupTimer=null,scheduleIntervalMs=0,scheduleGeneration=0,closed=false;
+  let timer=null,followupTimer=null,scheduleIntervalMs=0,scheduleGeneration=0,closed=false,lastStorageMaintenance=clock();
   function stopScheduling(){scheduleGeneration++;if(timer)clearInterval(timer);timer=null;if(followupTimer)clearTimeout(followupTimer);followupTimer=null;scheduleIntervalMs=0;}
-  function runScheduledTick(generation=scheduleGeneration){
+  async function runScheduledTick(generation=scheduleGeneration){
     if(closed||draining||scheduler.active()!==null)return;
     syncSchedulerInbox();
-    agentTick().catch(()=>{}).finally(()=>{if(generation!==scheduleGeneration)return;
-      recoverPendingEffects().then(()=>followupTick()).catch(()=>{}).finally(()=>{if(generation!==scheduleGeneration)return;
-        // A durable user observation outranks due reflection. The old order
-        // chose idleReflect first, which then skipped forever because the queue
-        // was non-empty. Drain the queue through the same turn/budget/mutex path.
-        if(scheduler.pending().length)idleTurn().catch(()=>{});
-        else if(global&&(memoryDue()||idleDue()))idleReflect().catch(()=>{});
-        else idleTurn().catch(()=>{});
-      });
-    });
+    try{
+      const taskResult=await agentTick();
+      await recoverPendingEffects();
+      const followed=await followupTick();
+      if(generation!==scheduleGeneration)return;
+      const worked=!!(taskResult&&!taskResult.skipped&&taskResult.decision||followed?.decision);
+      // A durable user observation outranks due reflection. The old order
+      // chose idleReflect first, which then skipped forever because the queue
+      // was non-empty. Drain the queue through the same turn/budget/mutex path.
+      if(scheduler.pending().length)return await idleTurn();
+      const now=clock();
+      if(now-lastStorageMaintenance>=24*60*60*1000&&!health().cognitionBusy){
+        lastStorageMaintenance=now;
+        store.maintainRuntimeStorage();
+        cleanStaleBlobTemps({directory:blobs,now});
+      }
+      if(global&&(memoryDue()||idleDue()))return await idleReflect();
+      if(autonomy&&!worked){const result=await autonomyTick();if(result&&!result.skipped)return result;}
+      return {ok:true,idle:true};
+    }catch(error){reportSchedulerFailure(error);}
   }
   function scheduleFollowupTick(){
     if(closed||draining||scheduleIntervalMs<=0||followupTimer)return;
@@ -830,12 +1637,13 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
     if(officialSpend&&!officialSpend.gate().allow)return {status:'busy',reason:'official-spend-paused',modelCalled:false};
     ensure(typeof callback==='function','COGNITION_CALLBACK','host callback required');
     syncSchedulerInbox();
-    if(closed||draining||agentBusy||reflectionBusy||scheduler.active()!==null||scheduler.pending().length)return {status:'busy',modelCalled:false};
+    if(closed||draining||agentBusy||reflectionBusy||autonomyBusy||(agentRuntime?.pendingExecutions()??0)>0
+      ||scheduler.active()!==null||scheduler.pending().length)return {status:'busy',modelCalled:false};
     reflectionBusy=true;try{return await callback();}finally{reflectionBusy=false;}
   }
   startScheduling();
   function beginShutdown(){draining=true;stopScheduling();}
-  function close(){if(closed)return;stopScheduling();saveState();store.close();closed=true;}
+  function close(){if(closed)return;stopScheduling();semanticMemory?.stop();saveState();store.close();closed=true;}
   const server=createServer(async (req,res)=>{
     if(req.method==='POST'&&req.url==='/v1/official-usage'&&officialSpend){try{return json(res,200,officialSpend.accept(await readBody(req),req.headers['x-usage-token']));}catch(error){return json(res,400,{error:error.code??'OFFICIAL_USAGE_INVALID'});}}
     const token=req.headers['x-brain-token'];
@@ -853,6 +1661,54 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       }
       if(req.method==='POST'&&req.url==='/v1/recovery/close-turn'){
         ensure(shutdownControl&&req.headers['x-jingyang-control']===shutdownControl.token,'UNAUTHORIZED','operator control required');return json(res,200,closeRecoveryTurn(await readBody(req)));
+      }
+      if(req.method==='POST'&&req.url==='/v1/operator/effect'){
+        ensure(shutdownControl&&req.headers['x-jingyang-control']===shutdownControl.token,'UNAUTHORIZED','operator control required');
+        return json(res,200,await operatorEffect(await readBody(req)));
+      }
+      if(req.method==='POST'&&req.url==='/v1/recovery/requeue-event'){
+        ensure(shutdownControl&&req.headers['x-jingyang-control']===shutdownControl.token,'UNAUTHORIZED','operator control required');
+        const body=await readBody(req);
+        ensure(typeof body?.eventId==='string'&&typeof body?.reason==='string','INVALID_INPUT','eventId and reason required');
+        const event={id:body.eventId,revision:store.read(body.eventId)?.revision??1};
+        const journal=decide?.requestJournal;
+        ensure(journal&&typeof journal.sourceRequest==='function','REQUEST_JOURNAL','request journal unavailable');
+        const subject=store.read(subjectId),frame=store.read(attentionId(subjectId));
+        const capacity=capacitySnapshot();
+        ensure(capacity.released,'CAPACITY_NOT_RELEASED','all attention dimensions must be below capacity before requeue; no model call made',{capacity});
+        const row=journal.sourceRequest({subject:subjectId,kind:'event',event});
+        ensure(row?.id&&row.status==='settled'&&row.validation==null,'REQUEUE_EVIDENCE','settled capacity-deferred request required');
+        // IR-01: preflight the inbox before any durable retry authorization.
+        // A handled/quarantined source would make requeue_subject_event throw
+        // REQUEUE_STATE after authorizeRetry already unblocked the journal.
+        const inbox=store.subjectObservation(subjectId,event.id);
+        ensure(inbox&&['received','deferred'].includes(inbox.status),'REQUEUE_STATE','only received or deferred source can be requeued',{status:inbox?.status??null});
+        // Requeue first; only a successful source transition earns retry
+        // authorization. If authorization then fails, restore the inbox to
+        // deferred via the existing failure marker so no stale half-open state
+        // remains and no dispatch can happen. Each attempt needs a unique store
+        // requestId: otherwise a compensation followed by an identical retry is
+        // replayed by Store.execute and never actually requeues the source.
+        const requeueRequestId='operator-requeue:'+event.id+':'+randomUUID();
+        const out=store.execute({requestId:requeueRequestId,commands:[{op:'requeue_subject_event',subjectId,event,reason:body.reason}]});
+        let authorized;
+        try{
+          authorized=journal.authorizeRetry(row.id,{evidence:{requestId:row.id,capacityReleased:true,capacity,operator:'operator-control',eventId:event.id,reason:body.reason}});
+        }catch(error){
+          try{store.execute({requestId:'operator-requeue-compensate:'+event.id+':'+randomUUID(),commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:store.read(event.id).revision},reason:'REQUEUE_COMPENSATION'}]});}catch(compensationError){error.compensation=compensationError.code??'REQUEUE_COMPENSATION_FAILED';try{store.recordDiagnostic({stage:'operator-requeue.compensation-failed',status:'rejected',context:{subjectId,eventId:event.id,requestId:row.id},data:{error:error.code??'REQUEUE_ERROR',compensation:error.compensation}});}catch{}}
+          throw error;
+        }
+        // Scheduler sync is outside the authorize transaction. If it fails, the
+        // durable authorization must be revoked before compensating the source,
+        // otherwise the journal says retryable while the source is deferred.
+        try{syncSchedulerInbox();}
+        catch(error){
+          try{journal.revokeRetry(row.id,{expectedEvidenceHash:authorized.evidenceHash,reason:'REQUEUE_SYNC_FAILED'});}catch(revokeError){error.revoked=false;error.revokeError=revokeError.code??'REVOKE_FAILED';}
+          try{store.execute({requestId:'operator-requeue-compensate:'+event.id+':'+randomUUID(),commands:[{op:'fail_subject_event',subject:{id:subjectId,revision:store.read(subjectId).revision},event:{id:event.id,revision:store.read(event.id).revision},reason:'REQUEUE_COMPENSATION'}]});}catch(compensationError){error.compensation=compensationError.code??'REQUEUE_COMPENSATION_FAILED';}
+          try{store.recordDiagnostic({stage:'operator-requeue.sync-failed',status:'rejected',context:{subjectId,eventId:event.id,requestId:row.id},data:{error:error.code??'REQUEUE_SYNC_ERROR',revoked:error.revoked!==false,compensation:error.compensation??null}});}catch{}
+          throw error;
+        }
+        return json(res,200,{ok:true,event:body.eventId,requestId:row.id,evidenceHash:authorized.evidenceHash,capacity,observation:out.at(-1)});
       }
       if(req.method==='GET'&&req.url==='/v1/outbox')return json(res,200,pendingEffects());
       if(req.method==='POST'&&req.url==='/v1/response/claim')return json(res,200,responseClaim(await readBody(req)));
@@ -873,10 +1729,10 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       if(req.method==='POST'&&req.url==='/v1/observe')return json(res,200,observe(await readBody(req)));
       if(req.method==='POST'&&req.url==='/v1/turn'){const body=await readBody(req);return json(res,200,await turn({preferred:body.preferred??null,deliver:body.deliver===true}));}
       if(req.method==='POST'&&req.url==='/v1/blob'){const body=await readBody(req);ensure(typeof body?.bytes==='string'&&body.bytes.length<=12*1024*1024,'BLOB','base64 image required');const bytes=Buffer.from(body.bytes,'base64');return json(res,200,putBlob({directory:blobs,bytes,mediaType:body.mediaType??'application/octet-stream'}));}
-  if(req.method==='POST'&&req.url==='/v1/reply'){const body=await readBody(req);ensure(body.protocol?body.protocol==='jingyang-brain-bridge-v1':true,'ADAPTER','unsupported protocol');return json(res,200,await reply(body));}
+  if(req.method==='POST'&&req.url==='/v1/reply'){const body=await readBody(req);try{authorizeInboundScene(body,service.token);ensure(body.protocol?body.protocol==='jingyang-brain-bridge-v1':true,'INBOUND_PROTOCOL','unsupported protocol');return json(res,200,await reply(body));}catch(error){const status=error.code==='INBOUND_SCENE_NOT_AUTHORIZED'?403:error.code==='UNAUTHORIZED'?401:400;return json(res,status,{error:error.code??'ERROR',message:error.message});}}
       if(req.method==='POST'&&req.url==='/v1/receipt'){return json(res,200,receipt(await readBody(req)));}
       if(req.method==='POST'&&req.url==='/v1/attention/mute'){const b=await readBody(req);return json(res,200,mute(b.prefix));}
-      if(req.method==='POST'&&req.url==='/v1/attention/unmute'){const b=await readBody(req);return json(res,200,unmute(b.prefix,{load:b.load!==false}));}
+      if(req.method==='POST'&&req.url==='/v1/attention/unmute'){const b=await readBody(req);return json(res,200,unmute(b.prefix,{load:b.load===true}));}
       if(req.method==='POST'&&req.url==='/v1/attention/load'){const b=await readBody(req);return json(res,200,loadBacklog(b.prefix,b.limit??50));}
       if(req.method==='GET'&&req.url==='/v1/stats')return json(res,200,stats());
       if(req.method==='GET'&&req.url==='/v1/followups'){const f=store.read(attentionId(subjectId));return json(res,200,{format:'followups-v1',items:f?.followups??[]});}
@@ -901,8 +1757,14 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       const head=store.read(pending[0].eventId);
       if(head?.origin!=='tool_receipt')return turn({preferred:null,deliver:true,execute:true});
     }
+    if(!pending.length&&scheduleIntervalMs>0&&inQuietHours())return {skipped:true,reason:'quiet-hours'};
     reflectionBusy=true;try{
     if(pending.length){
+      const head=store.read(pending[0].eventId);
+      if(head?.origin!=='tool_receipt')return turn({preferred:null,deliver:true,execute:true});
+      // A tool_receipt is background unless it is a normal foreground action receipt.
+      const entry=head?.source?.system==='agent-runtime'?'agent':null;
+      if(entry){const capGate=backgroundCapacityGate(entry,head.id);if(capGate)return capGate;}
       const driver=driverFor('global'),result=await driver.tick({now:clock()});
       if(!result?.wake)return {ok:true,idle:true,result};
       const outbox=driver.takeOutbox();let targetScene='global';
@@ -912,15 +1774,23 @@ export function createBrainService({storePath=':memory:',subjectId='jingyang',id
       driver.persistState();saveState();
       return {ok:true,idle:true,result,outbox,delivery};
     }
+    const capGate=backgroundCapacityGate('reflection','idle-turn');
+    if(capGate)return capGate;
     const driver=driverFor('global'),result=await driver.tick({now:clock()});
     if(!result?.wake)return {ok:true,idle:true,result};
     const outbox=driver.takeOutbox();
     const delivery=outbox.length?await dispatch(outbox,{scene:'global',execute:true}):null;
     driver.persistState();saveState();
     return {ok:true,idle:true,result,outbox,delivery};
-    }catch(error){recoverSettledRejectedTurns();throw error;}finally{reflectionBusy=false;}
+    }catch(error){recoverSettledRejectedTurns();
+      if(isAttentionCapacityError(error.code)){
+        const marker=capacityDeferredMarker('reflection','idle-turn',error.code);
+        return {skipped:true,reason:'capacity-deferred',capacityDeferred:true,entry:'reflection',marker,capacity:hostCapacity().capacity,error:error.code};
+      }
+      throw error;
+    }finally{reflectionBusy=false;}
   }
-  const service={server,observe,turn,reply,receipt,responseDelivered,health,stats,close,beginShutdown,startScheduling,stopScheduling,runCognitionExclusive,idleTurn,dispatch,executeAction,mute,unmute,loadBacklog,attention:()=>policy.status(),context:()=>cursor,style:()=>styles.status(),styleUpdate:(v)=>styles.update(v),styleDelete:(id)=>styles.remove(id),tick:()=>turn(),idleReflect,store,responseClaim,actionClaim,pendingEffects,recoverPendingEffects,reconcileAgentTool,recoveryTurn,closeRecoveryTurn,createAgentTask,stepAgentTask,interruptAgentTask,stopAgentTask,pauseAgentTask,redirectAgentTask,resumeAgentTask,stopAllAgentTasks,listAgent,agentTick,subjectContext,token:null};
+  const service={server,observe,turn,reply,receipt,responseDelivered,health,stats,close,beginShutdown,startScheduling,stopScheduling,runCognitionExclusive,idleTurn,dispatch,executeAction,mute,unmute,loadBacklog,attention:()=>policy.status(),context:()=>cursor,style:()=>styles.status(),styleUpdate:(v)=>styles.update(v),styleDelete:(id)=>styles.remove(id),tick:()=>turn(),idleReflect,autonomyDriver,autonomyTick,agentTools,store,responseClaim,actionClaim,pendingEffects,recoverPendingEffects,reconcileAgentTool,recoveryTurn,closeRecoveryTurn,createAgentTask,stepAgentTask,interruptAgentTask,stopAgentTask,pauseAgentTask,redirectAgentTask,resumeAgentTask,stopAllAgentTasks,listAgent,agentTick,subjectContext,semanticMemory,token:null};
   return service;
 }
 

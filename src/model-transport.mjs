@@ -10,16 +10,19 @@ import {ensure,digest} from './contracts.mjs';
 import {verifiedModelInput} from './cognition.mjs';
 function verifiedBeforeTransport(packet){try{return verifiedModelInput(packet);}catch(error){error.transportInvoked=false;error.failurePhase='host-input-validation';throw error;}}
 import {readBlob} from './blobs.mjs';
+import {redactSensitiveEgress} from './security-guard.mjs';
+import {buildWorkChannelRequest,sanitizeWorkChannelResponse,validateWorkApiRequest} from './work-channel.mjs';
 import {messageImageRefs} from './message.mjs';
-import {DeepSeekStudyClient,RATES,requireStudyNetwork} from './model-client.mjs';
+import {DeepSeekStudyClient,RATES,requireStudyNetwork,reuseSuccessfulNetworkProbe} from './model-client.mjs';
 import {writeLedgerAtomically} from './ledger-io.mjs';
 import {studyKey} from './model-credential.mjs';
 import {resetAuthorization,verifyResetLedger} from '../tools/ops/reset-budget-contract.mjs';
 import {recoverOutputOnce,selectedModelOutput,proposalFormatIssue} from './model-output-recovery.mjs';
 
-export function toProviderMessages(messages,{blobDirectory=null,packet=null}={}){
+export function toProviderMessages(messages,{blobDirectory=null,packet=null,stagedHistory=false}={}){
   const marker=/\[\[image:(https?:\/\/[^\]\s]+|data:image\/[^\]\s]+)\]\]/g;
-  const out=messages.map(m=>{
+  const out=messages.map((m,index)=>{
+    if(stagedHistory&&index>0&&index<messages.length-1)return m;
     if(typeof m?.content!=='string'||!m.content.includes('[[image:'))return m;
     const parts=[];let last=0;marker.lastIndex=0;let x;
     while((x=marker.exec(m.content))){const text=m.content.slice(last,x.index).trim();if(text)parts.push({type:'text',text});parts.push({type:'image_url',image_url:{url:x[1]}});last=x.index+x[0].length;}
@@ -115,6 +118,7 @@ export class DailyBudgetLedger {
   uncertain(id,code){const r=this.find(id);if(r.status==='uncertain')return;ensure(r.status==='dispatched','REQUEST_STATE','only dispatched requests can become cost-unknown');r.status='uncertain';r.error=code;this.data.halted='request cost not confirmed; do not auto-retry';this.save();}
   attachOutput(id,output){const r=this.find(id);ensure(r.status==='settled','REQUEST_STATE','only settled requests keep output');r.output=output;this.save();}
   attachProviderResult(id,response){const r=this.find(id);ensure(r.status==='settled','REQUEST_STATE','only settled requests keep provider result');r.providerResult={complete:response.complete===true,finishReason:response.finishReason??null,reportedModel:response.reportedModel??null,providerResponseId:response.providerResponseId??null,output:response.output??''};this.save();}
+  attachWireTelemetry(id,telemetry){const r=this.tryFind(id);if(!r||!telemetry)return;r.wireTelemetry=telemetry;this.save();}
   find(id){const r=this.data.requests.find(r=>r.id===id);ensure(r,'REQUEST_STATE','unknown request');return r;}
   tryFind(id){return this.data.requests.find(r=>r.id===id)??null;}
   refreshDay(){if(!this.daily)return;const day=beijingDay(this.clock());ensure(day>=this.data.dayKey,'BUDGET_CLOCK','accounting clock moved backwards');if(day!==this.data.dayKey){this.data.dayKey=day;this.save();}}
@@ -135,6 +139,7 @@ export function modelRequestSource(packet,provided=null){
   return {subject,kind:'reflection',opportunity:{id:provided.opportunity.id,revision:provided.opportunity.revision}};
 }
 import {intentEligible,intentPacket,intentFormatIssue} from './intent-protocol.mjs';
+import {buildStagedMessages,buildStagedReflectionMessages,createSceneWindowTracker,resolveWireLayout} from './staged-wire-layout.mjs';
 export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyKey,transport=fetch,networkCheck=requireStudyNetwork,profile={},dayKey=null,timeoutMs=120000,enforceBudget=true,requestJournal=null,officialSpend=null}={}){
   ensure(typeof ledgerPath==='string'&&ledgerPath.length>0,'TRANSPORT_CONFIG','ledger path required');
   const limits={...(dayKey?{dayKey}:{}),...(Number.isSafeInteger(profile.dailyMicros)?{dailyMicros:profile.dailyMicros}:{}),
@@ -142,13 +147,23 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
   const ledger=requestJournal??new DailyBudgetLedger(ledgerPath,{...limits,enforce:enforceBudget});
   const journalled=typeof ledger.sourceRequest==='function';
   const admitRequest=officialSpend?()=>{const g=officialSpend.gate();ensure(g.allow,g.known?'OFFICIAL_BUDGET_LIMIT':'OFFICIAL_USAGE_UNAVAILABLE','official usage must be fresh and below 5 yuan');}:null;
-  const client=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
+  const preflight=networkCheck===requireStudyNetwork?reuseSuccessfulNetworkProbe(networkCheck):networkCheck;
+  const client=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck:preflight,stream:profile.upstreamSse===true,maxTokens:profile.maxTokens??3000,timeoutMs,
     outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet,admitRequest});
-  const maintenanceClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck,maxTokens:profile.maxTokens??3000,timeoutMs,
+  const maintenanceClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck:preflight,stream:profile.upstreamSse===true,maxTokens:profile.maxTokens??3000,timeoutMs,
     outputFormat:'json',reasoning:profile.reasoning??'low',inputVerifier:packet=>packet,admitRequest});
   // Opt-in: ordinary event decisions are sent as the small intent protocol; the
   // answer is compiled into the full output at commit. Request identity is unchanged.
   const intentWire=packet=>profile.intentProtocol===true&&intentEligible(packet)?intentPacket(packet):null;
+  // Opt-in Phase 1 wire layout ('legacy' by default; 'staged-v1' reorders messages without altering ContinuitySession).
+  const wireLayoutMode=resolveWireLayout(profile.wireLayout??process.env.THREADLINE_WIRE_LAYOUT??'legacy');
+  const sceneWindowTracker=wireLayoutMode==='staged-v1'?createSceneWindowTracker():null;
+  const stagedOptions={...profile.wireLayoutOptions,provider:'deepseek',anthropicCacheControl:false};
+  const prepareWireMessages=(packet,verified,wire)=>{
+    if(wireLayoutMode!=='staged-v1')return {applied:false,messages:wire?.messages??verified.messages};
+    if(wire)return buildStagedMessages({wire,packet,tracker:sceneWindowTracker,options:stagedOptions});
+    return buildStagedReflectionMessages(packet,verified);
+  };
   async function decide(packet,{beforeCorrection=null,source:providedSource=null}={}){
     const startedAt=Date.now();
     const source=journalled?modelRequestSource(packet,providedSource):null,prior=source?ledger.sourceRequest(source):null;
@@ -159,15 +174,40 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(existing?.validation?.status!=='rejected','SOURCE_OUTPUT_REJECTED','original output was rejected; do not resubmit its source');
     if(existing?.status==='settled'&&typeof existing.output==='string'){
       if(existing.proposalRecovery){
-        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){const verified=verifiedBeforeTransport(packet),wire=intentWire(packet);return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages:toProviderMessages(wire?.messages??verified.messages,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,expectedPacketId:wire?.packetId??packet.packetId,...(wire?{formatIssue:raw=>intentFormatIssue(raw,wire)}:{})});}
+        if(profile.formatRecovery===true&&!existing.proposalRecovery.closed){
+          const verified=verifiedBeforeTransport(packet),wire=intentWire(packet);
+          const staged=existing.wireTelemetry?.wireLayout==='staged-v1'&&wire
+            ?buildStagedMessages({wire,packet,tracker:createSceneWindowTracker({initialAnchor:existing.wireTelemetry.historyAnchor}),
+                options:{...stagedOptions,legacyStableProfileOrder:existing.wireTelemetry.variant!=='intent-profile-prefix-v2'}})
+            :existing.wireTelemetry?.variant==='reflection-prefix-v1'
+              ?buildStagedReflectionMessages(packet,verified)
+              :{applied:false,messages:wire?.messages??verified.messages};
+          const providerMessages=toProviderMessages(staged.messages,{blobDirectory,packet,stagedHistory:staged.applied});
+          return recoverOutputOnce({packet,primary:existing,ledger,client,verified,providerMessages,timeoutMs,startedAt,beforeCorrection,expectedPacketId:wire?.packetId??packet.packetId,...(wire?{formatIssue:raw=>intentFormatIssue(raw,wire)}:{})});
+        }
         return selectedModelOutput(ledger.data.requests,existing).output;
       }
       return existing.output;
     }
     ensure(!existing||journalled&&existing.status==='reserved'&&existing.fingerprint===null,'TRANSPORT_REPLAY','request already attempted; never auto-resend');
-    const verified=verifiedBeforeTransport(packet),wire=intentWire(packet),sent=wire?.messages??verified.messages;
-    let response=await client.call({id,packet:{...verified,payload:packet.payload,messages:toProviderMessages(sent,{blobDirectory,packet})},requestContext:source?{source,packetId:packet.packetId}:null});
+    const verified=verifiedBeforeTransport(packet),wire=intentWire(packet),staged=prepareWireMessages(packet,verified,wire);
+    const providerMessages=toProviderMessages(staged.messages,{blobDirectory,packet,stagedHistory:staged.applied});
+    const bytes=Buffer.byteLength(JSON.stringify(providerMessages));
+    const response=await client.call({id,packet:{...verified,payload:packet.payload,messages:providerMessages,bytes},requestContext:source?{source,packetId:packet.packetId}:null});
     ledger.attachProviderResult(id,response);
+    if(typeof ledger.attachWireTelemetry==='function'){
+      ledger.attachWireTelemetry(id,{
+        wireLayout:staged.applied?'staged-v1':'legacy',fallback:staged.fallback===true,
+        durationMs:response.latencyMs,firstContentMs:response.firstContentMs??null,preflightMs:response.preflightMs,
+        preflightReused:response.preflightReused,stream:profile.upstreamSse===true,reportedModel:response.reportedModel??null,
+        reasoning:profile.reasoning??'low',maxTokens:profile.maxTokens??3000,scene:packet?.payload?.current?.scene??null,
+        ...(staged.meta?.variant?{variant:staged.meta.variant}:{}),
+        ...(staged.meta?.anchorKey?{historyAnchor:staged.meta.anchorKey}:{}),
+        sourceKind:source?.kind??(packet?.payload?.task?'task':packet?.payload?.current?'event':'reflection'),
+        ...(packet.stage==='reflection'&&packet.payload?.internal?.kind!=='autonomy'?{reflectionProjection:packet.payload.continuity?.recent?.batchDelivery?.omittedEarlierTurns>0?'incremental':'full'}:{}),
+        ...(staged.meta?{layer0Bytes:staged.meta.layer0Bytes??null,layer1Count:staged.meta.layer1Count??0,layer1Bytes:staged.meta.layer1Bytes??0,layer2Bytes:staged.meta.layer2Bytes??null,rolled:staged.meta.rolled===true}:{}),
+      });
+    }
     // JSON mode can replace an unrecognized JSON answer with spaces even with
     // finish_reason=stop (documented provider behavior). Treat this narrow,
     // fully-accounted case as a format error, not a network/content-filter retry.
@@ -175,7 +215,7 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     ensure(blankJson||response.complete===true&&typeof response.output==='string'&&response.output.trim().length>0,
       'MODEL_INCOMPLETE','provider returned no final text; recorded without retry');
     ledger.attachOutput(id,response.output);
-    if(profile.formatRecovery===true){const formatIssue=wire?r=>intentFormatIssue(r,wire):r=>proposalFormatIssue(r,packet);const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages:toProviderMessages(sent,{blobDirectory,packet}),timeoutMs,startedAt,beforeCorrection,expectedPacketId:wire?.packetId??packet.packetId,formatIssue});if(journalled&&formatIssue(raw))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
+    if(profile.formatRecovery===true){const formatIssue=wire?r=>intentFormatIssue(r,wire):r=>proposalFormatIssue(r,packet);const raw=await recoverOutputOnce({packet,primary:ledger.find(id),ledger,client,verified,providerMessages,timeoutMs,startedAt,beforeCorrection,expectedPacketId:wire?.packetId??packet.packetId,formatIssue});if(journalled&&formatIssue(raw))ledger.recordValidation(packet.packetId,{status:'rejected',error:'OUTPUT_FORMAT'});return raw;}
     return response.output;
   }
   async function invokeMaintenance(input){
@@ -184,15 +224,92 @@ export function createModelDecision({ledgerPath,blobDirectory=null,getKey=studyK
     if(existing?.status==='settled'&&typeof existing.output==='string')return existing.output;
     ensure(!existing,'TRANSPORT_REPLAY','maintenance request already attempted; never auto-resend');
     if(journalled)ensure(input.source?.kind==='maintenance','REQUEST_SOURCE','persisted maintenance job required');
-    const response=await maintenanceClient.call({id,packet:{messages:toProviderMessages(input.messages,{blobDirectory})},requestContext:journalled?{source:input.source,packetId:input.packetId}:null});
+    const messages=toProviderMessages(input.messages,{blobDirectory});
+    const response=await maintenanceClient.call({id,packet:{messages,bytes:Buffer.byteLength(JSON.stringify(messages)),packetId:input.packetId},requestContext:journalled?{source:input.source,packetId:input.packetId}:null});
     ensure(response.complete===true&&typeof response.output==='string'&&response.output.trim().length>0,
       'MODEL_INCOMPLETE','provider returned no final maintenance text; recorded without retry');
     ledger.attachOutput(id,response.output);
     return response.output;
   }
+  // This route shares the resident journal and can only call a text model.
+  // It cannot originate an Event, Decision, note, task or host tool.
+  const fastClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck:preflight,stream:true,
+    maxTokens:Math.min(profile.maxTokens??3000,1024),timeoutMs,outputFormat:'text',reasoning:'off',
+    inputVerifier:packet=>packet,admitRequest});
+  async function invokeFastChat({requestKey,subjectId,identity,style='',messages,signal,onTextDelta}){
+    ensure(journalled&&typeof requestKey==='string'&&/^[a-f0-9]{64}$/.test(requestKey)&&typeof subjectId==='string',
+      'FAST_CHAT_JOURNAL','fast chat requires the current resident journal and key');
+    ensure(Array.isArray(messages)&&messages.length>=1&&messages.length<=32&&messages.at(-1)?.role==='user'&&
+      messages.every(m=>['user','assistant'].includes(m?.role)&&typeof m.content==='string'),
+      'FAST_CHAT_INPUT','fast chat uses caller-provided plain-text turns');
+    ensure(!messages.some(m=>redactSensitiveEgress(m.content).redacted||/-----BEGIN/i.test(m.content)),
+      'FAST_CHAT_PRIVATE_INPUT','remove credentials before using fast chat');
+    const system='Reply naturally in plain text. You only receive caller-provided conversation and the resident profile. You cannot use tools, access long-term memory, or save changes.\n'+identity+(style?'\n'+style:'');
+    const wire=[{role:'system',content:system},...messages.map(({role,content})=>({role,content}))];
+    const bytes=Buffer.byteLength(JSON.stringify(wire));
+    ensure(bytes<=24_000,'FAST_CHAT_INPUT','fast chat has a 24 KB input limit');
+    // A changed style or message cannot be mistaken for a replay of the previous result.
+    const packetId=digest({route:'fast-chat-v1',subjectId,wire,maxTokens:fastClient.maxTokens});
+    const id='fast-chat:'+requestKey, prior=ledger.tryFind(id);
+    if(prior){
+      ensure(prior.packetId===packetId,'IDEMPOTENCY_CONFLICT','fast chat key already bound to different input');
+      ensure(prior.status==='settled'&&typeof prior.output==='string','GATEWAY_RESULT_UNAVAILABLE','original fast chat outcome must not be resubmitted');
+      return {text:prior.output,usage:prior.usage};
+    }
+    const source={subject:subjectId,kind:'fast-chat',key:requestKey};
+    const response=await fastClient.call({id,packet:{packetId,messages:wire,bytes},signal,onTextDelta,
+      requestContext:{source,packetId}});
+    ensure(response.complete,'MODEL_INCOMPLETE','fast chat did not finish normally');
+    const text=redactSensitiveEgress(response.output).text.replace(/-----BEGIN[\s\S]*/i,'[REDACTED_PRIVATE_KEY]');
+    ledger.attachOutput(id,text);
+    ledger.attachWireTelemetry(id,{sourceKind:'fast-chat',durationMs:response.latencyMs,firstContentMs:response.firstContentMs,
+      preflightMs:response.preflightMs,preflightReused:response.preflightReused,stream:true,reportedModel:response.reportedModel,
+      reasoning:'off',maxTokens:fastClient.maxTokens});
+    return {text,usage:response.usage};
+  }
+  async function invokeWork({requestKey,subjectId,body,signal}){
+    ensure(journalled&&typeof requestKey==='string'&&/^[a-f0-9]{64}$/.test(requestKey)&&typeof subjectId==='string',
+      'WORK_REQUEST','work channel requires its resident journal and request key');
+    const validation=validateWorkApiRequest(body);
+    ensure(validation.ok,'WORK_REQUEST',validation.message??'invalid work input');
+    const maxTokens=profile.maxTokens??3000;
+    const {upstream}=buildWorkChannelRequest({body:{...body,stream:false,max_tokens:maxTokens},upstreamModel:'deepseek-flash'});
+    upstream.thinking={type:'disabled'};
+    const bytes=Buffer.byteLength(JSON.stringify(upstream));
+    ensure(bytes<=120_000,'WORK_REQUEST','work request exceeds 120 KB');
+    const packetId=digest({kind:'work-v1',subjectId,upstream});
+    const id='work:'+requestKey,prior=ledger.tryFind(id);
+    if(prior){
+      ensure(prior.packetId===packetId,'IDEMPOTENCY_CONFLICT','work request key already has different input');
+      ensure(prior.status==='settled'&&typeof prior.output==='string','GATEWAY_RESULT_UNAVAILABLE','original work request cannot be resent');
+      return JSON.parse(prior.output);
+    }
+    const source={subject:subjectId,kind:'work',key:requestKey};
+    const response=await workClient.call({id,workRequest:upstream,packet:{packetId,messages:upstream.messages,bytes},signal,requestContext:{source,packetId}});
+    const message=response.workMessage,calls=message?.tool_calls??[];
+    ensure(Array.isArray(calls)&&calls.every(call=>Object.keys(call??{}).every(k=>['id','type','function'].includes(k))&&
+      call.type==='function'&&typeof call.id==='string'&&call.id.length>0&&typeof call.function?.name==='string'&&
+      typeof call.function?.arguments==='string'&&Object.keys(call.function).every(k=>['name','arguments'].includes(k)))&&new Set(calls.map(call=>call.id)).size===calls.length,
+      'WORK_RESPONSE','provider returned malformed tool calls');
+    const externalTools=new Set((upstream.tools??[]).map(tool=>tool.function.name));
+    ensure(calls.every(call=>externalTools.has(call.function.name))&&!redactSensitiveEgress(JSON.stringify(calls)).redacted,
+      'WORK_RESPONSE','provider returned unrequested tools or credential-like data');
+    ensure(['stop','length','tool_calls','content_filter'].includes(response.finishReason)&&
+      (response.finishReason==='tool_calls'?calls.length>0:calls.length===0),'WORK_RESPONSE','unexpected provider finish reason');
+    ensure(typeof message?.content==='string'||message?.content===null&&(calls.length>0||response.finishReason==='content_filter'),'WORK_RESPONSE','missing provider response content');
+    const output=sanitizeWorkChannelResponse({completionId:'chatcmpl-work-'+requestKey.slice(0,32),model:body.model,
+      content:message.content===null?null:redactSensitiveEgress(message.content).text,toolCalls:calls,finishReason:response.finishReason,
+      usage:{prompt_tokens:response.usage.prompt,completion_tokens:response.usage.completion,total_tokens:response.usage.prompt+response.usage.completion,
+        prompt_cache_hit_tokens:response.usage.hit,prompt_cache_miss_tokens:response.usage.miss}});
+    ledger.attachOutput(id,JSON.stringify(output));
+    ledger.attachWireTelemetry(id,{sourceKind:'work',durationMs:response.latencyMs,stream:false,reportedModel:response.reportedModel,reasoning:'off',maxTokens});
+    return output;
+  }
+  const workClient=new DeepSeekStudyClient({ledger,getKey,transport,networkCheck:preflight,maxTokens:profile.maxTokens??3000,
+    timeoutMs,outputFormat:'text',reasoning:'off',inputVerifier:packet=>packet,admitRequest});
   decide.requestJournal=journalled?ledger:null;
   decide.recordValidation=(packet,value)=>journalled?ledger.recordValidation(packet.packetId,value):null;
-  return {decide,invokeMaintenance,ledger,state:()=>ledger.state(),close:()=>ledger.close()};
+  return {decide,invokeMaintenance,invokeFastChat,invokeWork,ledger,state:()=>ledger.state(),close:()=>ledger.close()};
 }
 
 export const TRANSPORT_RATES=RATES;

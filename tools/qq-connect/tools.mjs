@@ -67,7 +67,7 @@ export const BASE_TOOL_NAMES=Object.freeze([
   'qq_list_stickers','qq_send_sticker','qq_send_voice','qq_send_poke','qq_get_forward_msg','qq_necklace','qq_watch_video','qq_pet','qq_minecraft','qq_speak','qq_list_voices','qq_sticker_note','attention_mute','attention_unmute','attention_load','attention_status','anchor_recall','style_status','style_update','style_delete','web_search','web_fetch','office_status','office_list','office_read','office_search','office_audit','github_status','github_repo','github_issues','github_issue','github_pulls','github_branches','office_write','office_edit','office_run','office_npm','office_plugin_list','office_plugin_run','office_plugin_install','github_create_branch','github_put_file','github_create_pr',
 ]);
 
-export const UNAVAILABLE_TOOLS=Object.freeze(['qq_speak',...(!process.env.JY_MINECRAFT_WORLD?['qq_minecraft']:[]),...(!process.env.JY_VOICE_DIRECTORY?['qq_send_voice','qq_list_voices']:[])]);
+export const UNAVAILABLE_TOOLS=Object.freeze(['qq_speak',...(!process.env.NECKLACE_ADAPTER_MODULE?['qq_necklace']:[]),...(!process.env.THREADLINE_DESKTOP_ADAPTER?['qq_pet']:[]),...(!process.env.JY_MINECRAFT_WORLD?['qq_minecraft']:[]),...(!process.env.JY_VOICE_DIRECTORY?['qq_send_voice','qq_list_voices']:[])]);
 export const TOOL_NAMES=Object.freeze([...BASE_TOOL_NAMES,'tool_contract','qq_send_image','qq_get_group_info','bilibili_search','bilibili_video_meta','bilibili_comments','bilibili_column_text','github_search','github_repo_readme','github_repo_tree','github_issue_read','github_release_read']);
 
 async function speak(args={}){
@@ -134,7 +134,43 @@ export function readStickerPage(path,args={}){
  if(!existsSync(path))throw Object.assign(Error('本地表情库文件缺失；没有完成查询，不能据此判断没有匹配表情'),{code:'STICKER_LIBRARY_MISSING',transportInvoked:false});
  return stickerPage(JSON.parse(readFileSync(path,'utf8')),args);
 }
+export const SEND_TOOLS=Object.freeze(['qq_send_message','qq_send_private_message','qq_send_group_message','qq_send_sticker','qq_send_image','qq_send_voice','qq_send_poke','proactive_contact']);
+const QQ_SCENE=/^qq\/(private|group)\/\d+$/;
+// Target derivation is transport metadata only; it never grants a destination.
+export function sendTargetScene(tool,args={}){
+  if(tool==='proactive_contact')return QQ_SCENE.test(String(args?.targetScene??''))?String(args.targetScene):null;
+  const target=args?.target??(args?.group_id?'group':args?.user_id?'private':null);
+  const id=args?.id??args?.group_id??args?.user_id;
+  if(!['private','group'].includes(target)||!/^\d+$/.test(String(id??'')))return null;
+  const scene=`qq/${target}/${id}`;
+  return QQ_SCENE.test(scene)?scene:null;
+}
+const deliveryReject=(code,message)=>Object.assign(Error(message),{code,transportInvoked:false});
 export async function executeTool(tool,args={},context={}){
+  if(context?.task?.metadata?.origin==='autonomy'&&String(tool).startsWith('qq_'))
+    throw Object.assign(Error(`Tool not granted to an autonomy task: ${tool}`),{code:'TOOL_NOT_GRANTED',transportInvoked:false});
+  if(SEND_TOOLS.includes(tool)&&Array.isArray(context.allowedTools)&&!context.allowedTools.includes(tool))
+    throw Object.assign(Error(`Tool not granted: ${tool}`),{code:'TOOL_NOT_GRANTED',transportInvoked:false});
+  if(SEND_TOOLS.includes(tool)){
+    // proactive_contact is an explicit Action with a persisted targetScene; group
+    // initiation is disabled in M1/M2 and never reaches pin or transport.
+    if(tool==='proactive_contact'){
+      const scene=String(args?.targetScene??'');
+      if(/^qq\/group\//.test(scene))throw deliveryReject('PROACTIVE_GROUP_DISABLED','proactive contact to qq/group is disabled; group peek is read-only');
+      if(!/^qq\/private\/[0-9]+$/.test(scene))throw deliveryReject('PROACTIVE_TARGET','proactive_contact requires an explicit qq/private targetScene');
+    }
+    const pinTargets=context?.pinTargets;
+    const pinRequired=context?.pinRequired===true||process.env.JY_REQUIRE_DELIVERY_PIN==='1';
+    if(pinRequired&&!Array.isArray(pinTargets))
+      throw deliveryReject('DELIVERY_PIN_UNAVAILABLE','a committed delivery pin is required before an external send');
+    if(pinTargets!==undefined){
+      const scene=sendTargetScene(tool,args);
+      if(!scene)throw deliveryReject('QQ_TARGET_ARGUMENTS','send target cannot be derived for the delivery pin');
+      if(!Array.isArray(pinTargets)||!pinTargets.includes(scene))
+        throw deliveryReject('UNDELIVERED_TARGET','target is outside the committed delivery pin');
+    }
+  }
+  if(SEND_TOOLS.includes(tool)&&process.env.QQ_SEND_DISABLED==='1') return {delivered:false,disabled:true,mode:'receive-only'};
   if(process.env.JY_OPEN_LIFE==='1'){const life=await import('../open-life/tools.mjs');const result=await life.handleLifeTool(tool,args,context);if(result.handled)return result.value;}
   validateToolArguments(tool,args);
   if(TOOL_NAMES.includes(tool)&&!BASE_TOOL_NAMES.includes(tool))
@@ -142,6 +178,15 @@ export async function executeTool(tool,args={},context={}){
   switch(tool){
     case 'qq_send_message':return send(args);
     case 'qq_send_private_message':return send({...args,target:'private'});
+    case 'proactive_contact':{
+      // Reuse the existing private-send implementation and its confirmed message_id
+      // receipt; reason/confirmation belong to the server-side host authorization layer.
+      const targetScene=String(args.targetScene??'');
+      if(/^qq\/group\//.test(targetScene))throw deliveryReject('PROACTIVE_GROUP_DISABLED','proactive contact to qq/group is disabled; group peek is read-only');
+      const match=/^qq\/private\/(\d+)$/.exec(targetScene);
+      if(!match)throw deliveryReject('PROACTIVE_TARGET','proactive_contact requires an explicit qq/private targetScene');
+      return send({target:'private',id:match[1],text:args.text});
+    }
     case 'qq_send_group_message':return send({...args,target:'group'});
     case 'qq_list_groups':return (await call('get_group_list')).map(g=>({group_id:g.group_id,group_name:g.group_name,member_count:g.member_count}));
     case 'qq_list_friends':return (await call('get_friend_list')).map(f=>({user_id:f.user_id,nickname:f.nickname,remark:f.remark??''}));
@@ -186,7 +231,7 @@ export async function executeTool(tool,args={},context={}){
     case 'qq_list_voices':return listVoices(args);
     case 'qq_sticker_note':return stickerNote(args);
     case 'attention_mute':return brainJson('/v1/attention/mute',{prefix:args.prefix});
-    case 'attention_unmute':return brainJson('/v1/attention/unmute',{prefix:args.prefix,load:args.load!==false});
+    case 'attention_unmute':return brainJson('/v1/attention/unmute',{prefix:args.prefix,load:args.load===true});
     case 'attention_load':return brainJson('/v1/attention/load',{prefix:args.prefix,limit:args.limit??50});
     case 'attention_status':return brainJson('/v1/attention',null,'GET');
     case 'anchor_recall':return brainJson('/v1/anchor/query',{anchor:args.anchor,role:args.role??null,limit:args.limit??12});

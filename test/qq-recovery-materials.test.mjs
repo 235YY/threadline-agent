@@ -3,8 +3,8 @@ import {focusedProcessMaterials} from '../tools/brain-service/server.mjs';import
 test('focused fixed source becomes a full qualified material in the sealed request and supports a process update',()=>{
  const store=new ContinuityStore(':memory:');try{
  store.execute({requestId:'seed',commands:[{op:'set_workspace',id:'w',expectedRevision:0,scene:'synthetic',focus:{id:'now',label:'now'}},...['old','now'].map(id=>({op:'append_event',id,body:id==='old'?'original fixed evidence':'new feedback',origin:'reported',actor:'fixture',scene:'synthetic',occurredAt:1000,source:{system:'fixture',key:id}}))]});
- const session=new ContinuitySession({store,subjectId:'s',attention:true}),frame={subject:'s',focus:{selection:[{kind:'process',id:'p'}]},processes:[{id:'p',basis:[{id:'old',revision:1}]},{id:'unselected',basis:[{id:'not-readable',revision:1}]}]};
- const reader={read:(id,rev)=>id===attentionId('s')?frame:store.read(id,rev),all:type=>store.all(type)};
+ const session=new ContinuitySession({store,subjectId:'s',attention:true});store.execute({requestId:'admit',commands:['old','now'].map(id=>({op:'admit_subject_event',subjectId:'s',event:{id,revision:1}}))});const frame={subject:'s',focus:{selection:[{kind:'process',id:'p'}]},processes:[{id:'p',basis:[{id:'old',revision:1}]},{id:'unselected',basis:[{id:'not-readable',revision:1}]}]};
+ const reader={read:(id,rev)=>id===attentionId('s')?frame:store.read(id,rev),all:type=>store.all(type),subjectObservation:(subjectId,eventId)=>store.subjectObservation(subjectId,eventId)};
  const materials=focusedProcessMaterials({store:reader,subjectId:'s',event:{id:'now',revision:1}});assert.deepEqual(materials,[{ref:{id:'old',revision:1},aspect:'experience'}]);
  const p=session.prepare({workspace:{id:'w',revision:1},currentEvent:{id:'now',revision:1},materials,mind:true,unified:true,localLookupPolicy:{maxReads:2,maxHits:4},budgetBytes:131072});
  assert.equal(p.payload.materials[0].record.body,'original fixed evidence');assert.equal(verifiedModelInput(p).bytes,p.bytes);

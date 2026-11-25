@@ -1,5 +1,6 @@
 import * as sqlite from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
+import {gzipSync, gunzipSync} from 'node:zlib';
 import {APPLICATION_ID, SCHEMA, SCHEMA_VERSION} from './schema.mjs';
 import {canonical, digest, ensure, oneOf, refKey, revision, text, time, uniqueRefs} from './contracts.mjs';
 import {normalizeStateDelta,personalStateChange,stateIds,normalizeDomains,normalizeAbout} from './personal-state.mjs';
@@ -7,7 +8,7 @@ import {normalizeAnchor} from './anchor.mjs';
 import {validateMindPatch} from './mind.mjs';
 import {GRAPH_RECORD_TYPES,projectGraphRecord,nodeKey,nodeRef,walkKnowledgeGraph,traceQuery} from './knowledge-graph.mjs';
 import {lookupRoundId,lookupResultId,lookupPolicy,normalizeLookupQuery,sameRef} from './local-query.mjs';
-import {attentionId,emptyAttention,advanceAttention,expandEvents,materialPurposeStatus} from './attention.mjs';
+import {attentionId,emptyAttention,advanceAttention,expandEvents,materialPurposeStatus,capacityLimits} from './attention.mjs';
 import {maintenancePolicy,maintenanceScheduleId,maintenanceJobId,maintenanceSlot,verifyMaintenancePacket,maintenanceOutput} from './maintenance-protocol.mjs';
 import {diagnostic,transactionContext,debugRef,failureMetadata} from './debug-contract.mjs';
 import {consultationOperation,consultationState,rankConsultation,consultationCandidate} from './consultation.mjs';
@@ -17,25 +18,44 @@ import {normalizeContent,contentView} from './node-content.mjs';
 import {normalizeMessage,projectText} from './message.mjs';
 import {sourceReplyRoute} from './reply-route.mjs';
 import {EVENT_PROCESS_THEORY,eventProcessId,eventProcessEvents} from './task-threads.mjs';
+import {searchMemoryIndex} from './memory-index.mjs';
+import {rankMemory} from './memory-reminders.mjs';
+import {memoryAudience} from './memory-access.mjs';
+import {isTurnActivity,packetFields,packMotivation,unpackMotivation,packLargeRuntimeFields,unpackLargeRuntimeFields} from './runtime-record-codec.mjs';
 
 const Database = sqlite.Database ?? sqlite.DatabaseSync;
 const NOTE_KINDS = ['fact_claim', 'interpretation', 'value', 'preference', 'dream', 'tension', 'feeling', 'skill'];
 const TYPES = ['event', 'note', 'workspace', 'link', 'action', 'decision', 'review', 'subject', 'personal_state', 'decision_attempt', 'response', 'lookup_round', 'lookup_result','attention_frame','maintenance_schedule','maintenance_job','entity','binding','agent_task','motivation_state','affect_turn','extension_record','intent'];
 const asRef = record => ({id: record.id, revision: record.revision});
+const REPLAY_REF='$version';
+const DEFAULT_DEBUG_EVENTS_LIMIT=512;
+const DEFAULT_DEBUG_PACKET_BYTES=8*1024*1024;
+const DEFAULT_HOT_DECISION_PACKETS=64;
+const DEFAULT_TERMINAL_AFFECT_PACKETS=64;
+const PACKET_REF='$packetRef', PACKET_META='$packetMeta';
 
 // Local persistence and consistency only. This class neither calls a model nor executes actions.
 export class ContinuityStore {
-  #db; #clock; #readDepth = 0; #closed = false; #transactionWrites=null; #debugFailures=0; #debugFailureCode=null; #maxDebugPacketBytes;
-  constructor(path = ':memory:', {clock = Date.now, migrateV1 = false, migrateV2 = false, migrateV3 = false, migrateV4 = false, migrateV5 = false, migrateV6 = false, migrateV7 = false,migrateV8 = false,migrateV9 = false,migrateV10 = false,maxDebugPacketBytes=64*1024*1024} = {}) {
+  #db; #clock; #readDepth = 0; #closed = false; #transactionWrites=null; #debugFailures=0; #debugFailureCode=null; #maxDebugPacketBytes; #maxDebugEvents; #hotDecisionPackets; #terminalAffectPackets; #maxModelPacketBytes; #packetWrites=0;
+  constructor(path = ':memory:', {clock = Date.now, migrateV1 = false, migrateV2 = false, migrateV3 = false, migrateV4 = false, migrateV5 = false, migrateV6 = false, migrateV7 = false,migrateV8 = false,migrateV9 = false,migrateV10 = false,migrateV11 = false,maxDebugPacketBytes=DEFAULT_DEBUG_PACKET_BYTES,maxDebugEvents=DEFAULT_DEBUG_EVENTS_LIMIT,hotDecisionPackets=DEFAULT_HOT_DECISION_PACKETS,terminalAffectPackets=DEFAULT_TERMINAL_AFFECT_PACKETS,maxModelPacketBytes=DEFAULT_DEBUG_PACKET_BYTES} = {}) {
     this.#clock = clock;
     ensure(Number.isSafeInteger(maxDebugPacketBytes)&&maxDebugPacketBytes>=0&&maxDebugPacketBytes<=1024*1024*1024,'DEBUG_LIMIT','bounded debug snapshot quota required');
+    ensure(Number.isSafeInteger(maxDebugEvents)&&maxDebugEvents>=0&&maxDebugEvents<=1000000,'DEBUG_LIMIT','bounded debug event retention required');
+    ensure(Number.isSafeInteger(hotDecisionPackets)&&hotDecisionPackets>=0&&hotDecisionPackets<=100000,'MODEL_PACKET_LIMIT','bounded hot packet window required');
+    ensure(Number.isSafeInteger(maxModelPacketBytes)&&maxModelPacketBytes>=1024&&maxModelPacketBytes<=1024*1024*1024,'MODEL_PACKET_LIMIT','bounded model packet size required');
+    ensure(Number.isSafeInteger(terminalAffectPackets)&&terminalAffectPackets>=0&&terminalAffectPackets<=100000,'MODEL_PACKET_LIMIT','bounded terminal affect packet window required');
     this.#maxDebugPacketBytes=maxDebugPacketBytes;
+    this.#maxDebugEvents=maxDebugEvents;
+    this.#hotDecisionPackets=hotDecisionPackets;
+    this.#terminalAffectPackets=terminalAffectPackets;
+    this.#maxModelPacketBytes=maxModelPacketBytes;
     this.#db = new Database(path, {timeout: 3000});
     try {
       this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;');
       const version = this.#db.prepare('PRAGMA user_version').get().user_version;
       const applicationId = this.#db.prepare('PRAGMA application_id').get().application_id;
-      ensure([0,1,2,3,4,5,6,7,8,9,10,SCHEMA_VERSION].includes(version), 'SCHEMA_VERSION', 'unsupported database schema');
+      ensure([0,1,2,3,4,5,6,7,8,9,10,11,SCHEMA_VERSION].includes(version), 'SCHEMA_VERSION', 'unsupported database schema');
+      ensure(version !== 11 || migrateV11 === true, 'MIGRATION_REQUIRED', 'schema 11 requires explicit migrateV11=true on a reviewed copy; schema 12 packet references cannot be interpreted by an old reader');
       ensure(version === 0 ? applicationId === 0 : applicationId === APPLICATION_ID,
         'FOREIGN_DATABASE', 'database does not belong to the new core');
       ensure(version !== 1 || migrateV1 === true, 'MIGRATION_REQUIRED', 'schema 1 requires explicit migrateV1=true; no live database is selected automatically');
@@ -63,11 +83,62 @@ export class ContinuityStore {
     } catch (error) { this.#db.close(); throw error; }
   }
   close() { if(!this.#closed){this.#db.close();this.#closed=true;} }
-  debugHealth(){return {failedWrites:this.#debugFailures,lastErrorCode:this.#debugFailureCode,maxPacketBytes:this.#maxDebugPacketBytes};}
+  maintainRuntimeStorage(){
+    ensure(this.#readDepth===0,'WRITE_IN_READ_VIEW','maintenance must be outside read snapshots');
+    this.#db.exec('BEGIN IMMEDIATE');
+    try{
+      this.#pruneModelPackets();
+      this.#pruneVersions();
+      this.#db.prepare('DELETE FROM debug_events WHERE seq <= (SELECT coalesce(max(seq),0)-? FROM debug_events)').run(this.#maxDebugEvents);
+      this.#db.exec('COMMIT');
+    }catch(error){this.#db.exec('ROLLBACK');throw error;}
+  }
+  // This lossless conversion is an explicit offline operation, never a startup
+  // migration. It changes only the encoding of registered engineering records.
+  repackRuntimeStorage({expand=false}={}){
+    ensure(this.#readDepth===0,'WRITE_IN_READ_VIEW','encoding conversion must be offline');
+    this.#db.exec('BEGIN IMMEDIATE');
+    let scanned=0,changed=0,previous=null;
+    try{
+      const rows=this.#db.prepare(`SELECT v.id,v.revision FROM versions v JOIN objects o ON o.id=v.id
+        WHERE o.type IN ('motivation_state','affect_turn') OR (o.type='extension_record'
+        AND json_extract(v.body,'$.theory')='runtime' AND json_extract(v.body,'$.stateType')='turn-activity')
+        ORDER BY v.id,v.revision`).all();
+      const query=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?');
+      const write=this.#db.prepare('UPDATE versions SET body=? WHERE id=? AND revision=?');
+      for(const {id,revision} of rows){
+        const {body}=query.get(id,revision);
+        const raw=JSON.parse(body),plain=unpackLargeRuntimeFields(raw);
+        let next=plain;
+        if(plain.type==='motivation_state'){
+          const full=unpackMotivation(plain,(key,rev)=>previous?.id===key&&previous.revision===rev?previous:this.#read(key,rev));
+          next=expand?full:packMotivation(full,previous?.id===id&&previous.revision===revision-1?previous:null);
+          previous=full;
+        }else if(expand&&isTurnActivity(plain)){
+          // A retired packet expands to its explicit metadata-only sentinel.
+          next=this.#hydratePackets(plain);
+        }
+        const encoded=canonical(expand?next:packLargeRuntimeFields(next));
+        scanned++;
+        if(encoded!==body){write.run(encoded,id,revision);changed++;}
+      }
+      this.#db.exec('COMMIT');
+      return {scanned,changed,expanded:expand};
+    }catch(error){this.#db.exec('ROLLBACK');throw error;}
+  }
+  debugHealth(){
+    const packets=this.#db.prepare('SELECT count(*) AS n,coalesce(sum(body_bytes),0) AS bytes,coalesce(sum(compressed_bytes),0) AS compressed FROM model_packets').get();
+    return {failedWrites:this.#debugFailures,lastErrorCode:this.#debugFailureCode,maxPacketBytes:this.#maxDebugPacketBytes,
+      maxEvents:this.#maxDebugEvents,hotDecisionPackets:this.#hotDecisionPackets,terminalAffectPackets:this.#terminalAffectPackets,
+      modelPackets:packets.n,modelPacketBytes:packets.bytes,modelPacketCompressedBytes:packets.compressed};
+  }
   #logDebug(value){
     const entry=diagnostic(value),c=entry.context;
-    this.#db.prepare('INSERT INTO debug_events(at,stage,status,subject_id,decision_id,packet_id,job_id,entry) VALUES(?,?,?,?,?,?,?,?)')
+    const result=this.#db.prepare('INSERT INTO debug_events(at,stage,status,subject_id,decision_id,packet_id,job_id,entry) VALUES(?,?,?,?,?,?,?,?)')
       .run(this.#now(),entry.stage,entry.status,c.subjectId,c.decisionId,c.packetId,c.jobId,canonical(entry));
+    // This journal is diagnostic metadata, not crash recovery or subject memory.
+    if(Number(result.lastInsertRowid)%128===0||this.#maxDebugEvents===0)
+      this.#db.prepare('DELETE FROM debug_events WHERE seq<=?').run(Number(result.lastInsertRowid)-this.#maxDebugEvents);
   }
   #debugTransactionContext(args,results=[]){
     const context=transactionContext(args),records=[...results];
@@ -99,8 +170,20 @@ export class ContinuityStore {
       ensure(packet&&/^[a-f0-9]{64}$/.test(packet.packetId),'DEBUG_SHAPE','prepared packet required');
       const body=canonical(packet),bytes=Buffer.byteLength(body),fingerprint=digest(body);
       if(bytes>524288)return 'snapshot-too-large';
+      if(this.#maxDebugPacketBytes===0)return 'quota-exceeded';
       const old=this.#db.prepare('SELECT fingerprint FROM debug_packets WHERE packet_id=?').get(packet.packetId);
       if(old){ensure(old.fingerprint===fingerprint,'DEBUG_PACKET_COLLISION','prepared packet content changed');return 'already-captured';}
+      if(bytes>this.#maxDebugPacketBytes)return 'snapshot-too-large';
+      let used=this.#db.prepare('SELECT coalesce(sum(body_bytes),0) AS n FROM debug_packets').get().n;
+      if(bytes+used>this.#maxDebugPacketBytes){
+        const evict=this.#db.prepare('SELECT packet_id,body_bytes FROM debug_packets ORDER BY at,rowid').all();
+        const remove=this.#db.prepare('DELETE FROM debug_packets WHERE packet_id=?');
+        for(const row of evict){
+          if(bytes+used<=this.#maxDebugPacketBytes)break;
+          remove.run(row.packet_id);used-=row.body_bytes;
+        }
+      }
+      if(bytes+used>this.#maxDebugPacketBytes)return 'quota-exceeded';
       this.#db.prepare(`INSERT OR IGNORE INTO debug_packets(packet_id,fingerprint,at,body_bytes,body)
         SELECT ?,?,?,?,? WHERE ?+(SELECT coalesce(sum(body_bytes),0) FROM debug_packets)<=?`)
         .run(packet.packetId,fingerprint,this.#now(),bytes,body,bytes,this.#maxDebugPacketBytes);
@@ -109,7 +192,7 @@ export class ContinuityStore {
     }catch(error){this.#debugFailures++;this.#debugFailureCode=failureMetadata(error).errorCode;return 'capture-failed';}
   }
   view(reader) {
-    const outer = this.#readDepth === 0;
+    const outer = this.#readDepth === 0&&this.#transactionWrites===null;
     if (outer) this.#db.exec('BEGIN');
     this.#readDepth++;
     try {
@@ -161,11 +244,213 @@ export class ContinuityStore {
       const items=query(afterSeq);return {items:items.length||afterSeq===0?items:query(0)};
     });
   }
+  // Repeated recovery fields point to their first full version on this same
+  // record. Fixed reads and replay still return complete values.
+  #decode(body){
+    const row=unpackMotivation(unpackLargeRuntimeFields(JSON.parse(body)),(id,revision)=>this.#read(id,revision));
+    if(row.$recoveryFrom){
+      const holder=row.type==='extension_record'?row.value:row;
+      for(const [field,rev] of Object.entries(row.$recoveryFrom)){
+        const source=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(row.id,rev);
+        const record=source?this.#decode(source.body):null,origin=row.type==='extension_record'?record?.value:record;
+        ensure(origin&&Object.hasOwn(origin,field),'MISSING_REFERENCE','fixed recovery field is unavailable');
+        holder[field]=origin[field];
+      }
+      delete row.$recoveryFrom;
+    }
+    return this.#hydratePackets(row);
+  }
+  #packetMeta(packet,{bytes,fingerprint}={}) {
+    const payload=packet.payload??{},continuity=payload.continuity??{};
+    const current=payload.current??null,workspace=payload.workspace??null;
+    const compact=value=>{
+      if(value==null)return null;
+      const encoded=canonical(value);
+      if(Buffer.byteLength(encoded)<=4096)return value;
+      return {id:value.id??null,type:value.type??null,revision:value.revision??null,scene:value.scene??null,
+        ref:value.ref??null,summary:value.summary??null,compact:true,bytes:Buffer.byteLength(encoded)};
+    };
+    return {packetId:packet.packetId,stage:packet.stage??null,bytes:bytes??Buffer.byteLength(canonical(packet)),
+      fingerprint:fingerprint??digest(canonical(packet)),instructionHash:packet.instruction?digest(packet.instruction):null,
+      messageHash:Array.isArray(packet.messages)?digest(canonical(packet.messages)):null,
+      current:compact(current),workspace:compact(workspace),subject:continuity.subject??null,
+      algorithmV011:payload.algorithmV011??null,format:payload.format??null};
+  }
+  #putModelPacket(packet){
+    ensure(packet&&packet.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','retired model packet cannot be persisted');
+    const body=canonical(packet),bytes=Buffer.byteLength(body),fingerprint=digest(body);
+    if(bytes>this.#maxModelPacketBytes)return null;
+    const old=this.#db.prepare('SELECT fingerprint FROM model_packets WHERE packet_id=?').get(packet.packetId);
+    if(old){ensure(old.fingerprint===fingerprint,'MODEL_PACKET_COLLISION','model packet content changed');return this.#packetMeta(packet,{bytes,fingerprint});}
+    const compressed=gzipSync(Buffer.from(body,'utf8'),{level:6});
+    this.#db.prepare('INSERT INTO model_packets(packet_id,fingerprint,at,body_bytes,compressed_bytes,body) VALUES(?,?,?,?,?,?)')
+      .run(packet.packetId,fingerprint,this.#now(),bytes,compressed.byteLength,compressed);
+    return this.#packetMeta(packet,{bytes,fingerprint});
+  }
+  #readModelPacket(packetId){
+    const row=this.#db.prepare('SELECT body FROM model_packets WHERE packet_id=?').get(packetId);
+    if(!row)return null;
+    return JSON.parse(gunzipSync(Buffer.from(row.body)).toString('utf8'));
+  }
+  #packetMissing(ref){
+    const meta=ref?.[PACKET_META]??{};
+    return {...meta,packetId:meta.packetId??ref?.[PACKET_REF]??null,packetUnavailable:true,
+      payload:{current:meta.current??null,workspace:meta.workspace??null,
+        continuity:meta.subject?{subject:meta.subject}:{}}};
+  }
+  #hydratePackets(row){
+    const holder=row.type==='extension_record'?row.value:row;
+    for(const field of packetFields(row)){
+      const value=holder?.[field];
+      if(!value||typeof value!=='object'||!value[PACKET_REF])continue;
+      const packet=this.#readModelPacket(value[PACKET_REF]);
+      holder[field]=packet??this.#packetMissing(value);
+    }
+    return row;
+  }
+  #packetize(record){
+    const fields=packetFields(record);
+    if(!fields.length)return record;
+    const next=record.type==='extension_record'?{...record,value:{...record.value}}:{...record};
+    const holder=record.type==='extension_record'?next.value:next;
+    for(const field of fields){
+      const packet=holder[field];
+      if(!packet||typeof packet!=='object'||!/^[a-f0-9]{64}$/.test(packet.packetId??''))continue;
+      ensure(packet.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','retired model packet cannot be re-persisted',{packetId:packet.packetId});
+      const meta=this.#putModelPacket(packet);
+      if(meta)holder[field]={[PACKET_REF]:packet.packetId,[PACKET_META]:meta};
+    }
+    if(record.type==='affect_turn'&&holder.preview&&!['prepared','dispatched','captured'].includes(holder.status)){
+      const preview=holder.preview;
+      holder.preview={baseRef:preview.baseRef??null,baseHash:preview.baseHash??null,
+        previewHash:preview.previewHash??(preview.snapshot?digest(canonical(preview.snapshot)):null),
+        snapshotHash:preview.snapshotHash??(preview.snapshot?digest(canonical(preview.snapshot)):null),
+        compact:true};
+    }
+    return next;
+  }
+  #pruneModelPackets(){
+    const total=this.#db.prepare('SELECT count(*) AS n FROM model_packets').get().n;
+    if(total<=this.#hotDecisionPackets)return;
+    const keep=new Set();
+    const rows=this.#db.prepare(`SELECT o.type AS type,v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type IN ('decision','review','decision_attempt','affect_turn') AND v.body LIKE '%"$packetRef"%'`).all();
+    const activityHeads=this.#db.prepare(`SELECT o.id,v.body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='extension_record' AND json_extract(v.body,'$.stateType')='turn-activity'
+      AND json_extract(v.body,'$.theory')='runtime'`).all();
+    const fixedVersion=this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?');
+    for(const {id,body} of activityHeads){
+      const row=JSON.parse(body);
+      // The current recovery version may refer to an older row of this workspace.
+      const source=row.$recoveryFrom?.packet;
+      const fixed=source?fixedVersion.get(id,source):null;
+      const ref=(fixed?JSON.parse(fixed.body):row).value?.packet?.[PACKET_REF];
+      if(ref)keep.add(ref);
+    }
+    const recentActivity=this.#db.prepare(`SELECT packetId FROM (
+      SELECT json_extract(v.body,'$.value.packet."$packetRef"') AS packetId,max(v.rowid) AS written
+      FROM versions v JOIN objects o ON o.id=v.id WHERE o.type='extension_record'
+      AND json_extract(v.body,'$.stateType')='turn-activity' AND json_extract(v.body,'$.theory')='runtime'
+      AND json_extract(v.body,'$.value.packet."$packetRef"') IS NOT NULL GROUP BY packetId
+      ORDER BY written DESC LIMIT ?)`).all(this.#hotDecisionPackets);
+    for(const {packetId} of recentActivity)keep.add(packetId);
+    const recent=new Set(this.#db.prepare(`SELECT json_extract(v.body,'$.input."$packetRef"') AS packetId FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='decision' ORDER BY o.rowid DESC LIMIT ?`).all(this.#hotDecisionPackets).map(r=>r.packetId).filter(Boolean));
+    // A live task keeps its origin/step decisions addressable even after the
+    // generic prompt window moves on. Protect the exact packet versions those
+    // task references point at, not just the latest decision body.
+    // A task keeps its evidence only while it is live, or while its process
+    // is still in the working frame. Once the task is terminal and its process
+    // has completed, old task packets must be allowed to retire.
+    const activeProcesses=new Set();
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='attention_frame'`).all()){
+      try{for(const process of JSON.parse(row.body).processes??[])if(!['completed','abandoned'].includes(process.status))activeProcesses.add(process.id);}catch{}
+    }
+    const taskPackets=new Set(),taskRefs=new Map();
+    const addTaskRef=ref=>{
+      if(typeof ref==='string'&&ref)taskRefs.set(ref,null);
+      else if(ref&&typeof ref.id==='string'&&ref.id)
+        taskRefs.set(ref.id,Number.isSafeInteger(ref.revision)?ref.revision:null);
+    };
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='agent_task'`).all()){
+      try{const task=JSON.parse(row.body);
+        if(['done','failed','cancelled'].includes(task.status)&&!activeProcesses.has(task.processId))continue;
+        addTaskRef(task.originDecisionRef);for(const ref of task.decisionRefs??[])addTaskRef(ref);}catch{}
+    }
+    for(const [id,revision] of taskRefs){
+      const rows=revision===null
+        ?this.#db.prepare('SELECT body FROM versions WHERE id=?').all(id)
+        :this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').all(id,revision);
+      for(const row of rows){try{const packetId=JSON.parse(row.body).input?.[PACKET_REF];if(packetId)taskPackets.add(packetId);}catch{}}
+    }
+    const terminalAffect=new Set();
+    for(const row of this.#db.prepare(`SELECT v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type='affect_turn' AND json_extract(v.body,'$.status') IN ('committed','superseded') ORDER BY o.rowid DESC LIMIT ?`).all(this.#terminalAffectPackets)){
+      try{const packetId=JSON.parse(row.body).packet?.[PACKET_REF];if(packetId)terminalAffect.add(packetId);}catch{}
+    }
+    for(const row of rows){
+      const record=JSON.parse(row.body),holder=record.type==='extension_record'?record.value:record;
+      const packetIds=[];
+      for(const field of packetFields(record))if(holder[field]?.[PACKET_REF])packetIds.push(holder[field][PACKET_REF]);
+      if(!packetIds.length)continue;
+      let protect=packetIds.some(id=>recent.has(id)||taskPackets.has(id));
+      if(!protect&&record.type==='decision_attempt'&&['captured','quarantined','deferred'].includes(record.status))protect=true;
+      if(!protect&&record.type==='affect_turn'&&['prepared','dispatched','captured','failed','uncertain'].includes(record.status))protect=true;
+      if(!protect&&record.type==='affect_turn'&&['committed','superseded'].includes(record.status))protect=packetIds.some(id=>terminalAffect.has(id));
+      if(!protect&&record.type==='review'&&['proposed','deferred','needs-information'].includes(record.status))protect=true;
+      if(protect)for(const id of packetIds)keep.add(id);
+    }
+    const ids=JSON.stringify([...keep]);
+    this.#db.prepare('DELETE FROM model_packets WHERE packet_id NOT IN (SELECT value FROM json_each(?))').run(ids);
+  }
+  #pruneVersions(){
+    // Execution records can retire the intermediate snapshots that are no
+    // longer referenced by any current record. Memory records are never
+    // selected here; they keep their append-only history.
+    const current=new Map(),keep=new Set();
+    const heads=this.#db.prepare(`SELECT o.id AS id,o.type AS type,o.current_revision AS revision,v.body AS body
+      FROM objects o JOIN versions v ON o.id=v.id AND v.revision=o.current_revision
+      WHERE o.type IN ('decision_attempt','affect_turn')`).all();
+    for(const row of heads)current.set(row.id,{type:row.type,revision:row.revision,status:JSON.parse(row.body).status});
+    const refs=this.#db.prepare(`SELECT o.id AS id,v.body AS body FROM objects o JOIN versions v ON o.id=v.id AND v.revision=o.current_revision
+      WHERE v.body LIKE '%"$recoveryFrom"%'`).all();
+    for(const row of refs){
+      const body=JSON.parse(row.body);
+      for(const revision of Object.values(body.$recoveryFrom??{}))keep.add(`${row.id}@${revision}`);
+    }
+    for(const [id,head] of current){
+      const versions=this.#db.prepare('SELECT revision,body FROM versions WHERE id=? ORDER BY revision').all(id);
+      for(const row of versions){
+        if(row.revision===head.revision||keep.has(`${id}@${row.revision}`))continue;
+        const old=JSON.parse(row.body);
+        const safe=head.type==='decision_attempt'
+          ? head.status==='adopted'&&old.status==='captured'
+          : ['committed','superseded'].includes(head.status)&&['prepared','dispatched','captured'].includes(old.status);
+        if(safe)this.#db.prepare('DELETE FROM versions WHERE id=? AND revision=?').run(id,row.revision);
+      }
+    }
+  }
+  #encode(record,previous){
+    if(!previous||!(record.type==='decision_attempt'||record.type==='affect_turn'||record.type==='extension_record'&&record.theory==='runtime'&&record.stateType==='turn-activity'))return record;
+    const next=record.type==='extension_record'?{...record,value:{...record.value}}:{...record};
+    const [before,after]=record.type==='extension_record'?[previous.value,next.value]:[previous,next];
+    const stored=JSON.parse(this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(previous.id,previous.revision).body);
+    const refs={},fields={affect_turn:['rawOutput'],decision_attempt:[],extension_record:['packet','context','output']};
+    for(const field of fields[record.type]){
+      if(after[field]!=null&&before?.[field]!=null&&canonical(after[field])===canonical(before[field])){
+        refs[field]=stored.$recoveryFrom?.[field]??previous.revision;
+        delete after[field];
+      }
+    }
+    return Object.keys(refs).length?{...next,$recoveryFrom:refs}:record;
+  }
   #read(id, rev) {
     const row = rev === undefined
       ? this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.id=?').get(id)
       : this.#db.prepare('SELECT body FROM versions WHERE id=? AND revision=?').get(id, rev);
-    return row ? JSON.parse(row.body) : null;
+    return row ? this.#decode(row.body) : null;
   }
   read(id, rev) { text(id, 'id'); if (rev !== undefined) revision(rev); return this.#read(id, rev); }
   #require(ref, types = TYPES) {
@@ -184,9 +469,10 @@ export class ContinuityStore {
     const next = {id, type, revision: expected + 1, ...fields};
     if (old) this.#db.prepare('UPDATE objects SET current_revision=? WHERE id=?').run(next.revision, id);
     else this.#db.prepare('INSERT INTO objects(id,type,current_revision) VALUES(?,?,?)').run(id, type, next.revision);
-    this.#db.prepare('INSERT INTO versions(id,revision,body) VALUES(?,?,?)').run(id, next.revision, canonical(next));
+    this.#db.prepare('INSERT INTO versions(id,revision,body) VALUES(?,?,?)').run(id, next.revision, canonical(packLargeRuntimeFields(this.#packetize(this.#encode(packMotivation(next,old),old)))));
     this.#indexGraph(next);
     this.#transactionWrites?.push(debugRef(next));
+    if(++this.#packetWrites%32===0){this.#pruneModelPackets();this.#pruneVersions();}
     return next;
   }
   #indexGraph(record) {
@@ -277,10 +563,21 @@ export class ContinuityStore {
       if (previous) {
         ensure(previous.fingerprint === fingerprint, 'REQUEST_COLLISION', 'request id reused with different content');
         this.#logDebug({stage:'transaction.replayed',status:'replayed',context:this.#debugTransactionContext({requestId,commands}),data:{writeCount:0,operations:commands.slice(0,32).map(c=>String(c?.op??'invalid').slice(0,80))}});
-        this.#db.exec('COMMIT'); return JSON.parse(previous.result);
+        const replay=JSON.parse(previous.result);
+        const restored=Array.isArray(replay)?replay:replay.items.map(item=>{
+          const decode=r=>r&&Object.hasOwn(r,REPLAY_REF)?this.#require(r[REPLAY_REF]):r;
+          return item?.record?{...item,record:decode(item.record)}:decode(item);
+        });
+        this.#db.exec('COMMIT'); return restored;
       }
       const results = commands.map(command => this.#command(command));
-      this.#db.prepare('INSERT INTO operations(request_id,fingerprint,result) VALUES(?,?,?)').run(requestId, fingerprint, canonical(results));
+      const written=new Set(writes.map(refKey));
+      // Replay points at the revision written by this exact transaction, never the mutable head.
+      // Non-record return values and old inline rows remain readable without a migration.
+      const encode=r=>r&&typeof r==='object'&&written.has(refKey(r))&&r.type&&canonical(this.#read(r.id,r.revision))===canonical(r)
+        ?{[REPLAY_REF]:asRef(r)}:r;
+      const items=results.map(r=>r?.record?{...r,record:encode(r.record)}:encode(r));
+      this.#db.prepare('INSERT INTO operations(request_id,fingerprint,result) VALUES(?,?,?)').run(requestId, fingerprint, canonical({items}));
       this.#logDebug({stage:'transaction.committed',status:'ok',context:this.#debugTransactionContext({requestId,commands},results),
         data:{writes:writes.slice(0,16),writeCount:writes.length,operations:commands.slice(0,32).map(c=>String(c?.op??'invalid').slice(0,80))}});
       this.#db.exec('COMMIT'); return results;
@@ -333,7 +630,7 @@ export class ContinuityStore {
       case 'adopt_maintenance': return this.#adoptMaintenance(command);
       case 'finish_maintenance': return this.#finishMaintenance(command);
       case 'admit_subject_event': return this.#admitSubjectEvent(command);
-      case 'release_completed_workbench': return this.#releaseCompletedWorkbench(command);
+      case 'requeue_subject_event': return this.#requeueSubjectEvent(command);      case 'release_completed_workbench': return this.#releaseCompletedWorkbench(command);
       case 'retire_subject_events': return this.#retireSubjectEvents(command);
       case 'capture_decision_attempt': return this.#captureDecisionAttempt(command);
       case 'advance_subject': return this.#advanceSubject(command);
@@ -494,7 +791,8 @@ export class ContinuityStore {
     oneOf(c.status,['scheduled','claimed','sent','failed','unknown','cancelled','deferred'],'followup status');
     const old=current[index];
     current[index]={...old,status:c.status,attempts:old.attempts+(c.status==='claimed'?1:0),updatedAt:this.#now(),lastResponse:c.lastResponse??old.lastResponse??null};
-    return this.#write(attentionId(c.subjectId),'attention_frame',frame.revision,{...frame,followups:current,recordedAt:this.#now()});
+    const {id:_frameId,type:_frameType,revision:_frameRevision,recordedAt:_frameRecordedAt,...frameFields}=frame;
+    return this.#write(attentionId(c.subjectId),'attention_frame',frame.revision,{...frameFields,followups:current,recordedAt:this.#now()});
   }
   #validateAbout(subjectId,refs,frame){
     for(const r of refs){
@@ -629,7 +927,10 @@ export class ContinuityStore {
       ensure(selected.kind==='act'&&refKey(action.workspace)===refKey(c.workspace)
         && action.tool===selected.payload.tool&&canonical(action.args)===canonical(selected.payload.args),
         'ACTION_MISMATCH','decision does not match proposed action');
-    }else ensure(selected.kind!=='act','ACTION_MISMATCH','action choice must have an action intent');
+    }else{
+      ensure(selected.kind!=='act'||c.taskStep===true,'ACTION_MISMATCH','action choice must have an action intent');
+      ensure(c.taskStep!==true||(c.input?.payload?.task?.id&&c.taskGuard?.id===c.input.payload.task.id&&Number.isSafeInteger(c.taskGuard?.controlRevision)),'TASK_STEP_SCOPE','task-step exemption requires matching task guard/context');
+    }
     return this.#write(c.id,'decision',0,{currentEvent:reflection?null:c.currentEvent,workspace:c.workspace,materials:c.materials,
       ...(reflection?{reflection:true}:{}),
       ...(c.input.payload.continuity?{requestKey:c.requestKey,invocationKey:c.invocationKey}:{}),
@@ -654,6 +955,7 @@ export class ContinuityStore {
   #adoptReview(c) {
     const review=this.#require(c.review,['review']);
     ensure(this.#read(review.id).revision===review.revision,'VERSION_CONFLICT','review changed');
+    ensure(review.input?.packetUnavailable!==true,'MODEL_PACKET_UNAVAILABLE','review input packet is unavailable');
     ensure(review.status==='proposed'&&review.output.updates.length>0,'REVIEW_NOT_PENDING','review has no pending updates');
     this.#checkCognitionMaterials(review.materials);
     const results=review.output.updates.map(u=>this.#note(u));
@@ -673,12 +975,21 @@ export class ContinuityStore {
   #admitSubjectEvent(c) {
     const subject=this.#read(c.subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','initialize one subject before admitting events');
     const event=this.#require(c.event,['event']);
+    const disposition=c.disposition??'received';ensure(['received','handled'].includes(disposition),'INVALID_INPUT','inbox disposition');
     ensure(['observed','reported','tool_receipt'].includes(event.origin),'NOT_AN_ENCOUNTER','only actual encounters may enter this inbox');
     this.#db.prepare("INSERT OR IGNORE INTO subject_inbox(subject_id,event_id,status,decision_id,updated_at) VALUES(?,?,'received',NULL,?)").run(subject.id,event.id,this.#now());
+    if(disposition==='handled')this.#db.prepare("UPDATE subject_inbox SET status='handled',updated_at=? WHERE subject_id=? AND event_id=? AND status='received'").run(this.#now(),subject.id,event.id);
     return this.subjectObservation(subject.id,event.id);
   }
-  #retireSubjectEvents(c){
+  #requeueSubjectEvent(c){
     const subject=this.#read(c.subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','subject required');
+    const event=this.#require(c.event,['event']);text(c.reason,'requeue reason');
+    const inbox=this.subjectObservation(subject.id,event.id);ensure(inbox,'REQUEUE_NOT_ADMITTED','source event was not admitted');
+    ensure(inbox.status==='deferred'||inbox.status==='received','REQUEUE_STATE','only deferred or received source can be requeued');
+    if(inbox.status==='deferred')this.#db.prepare("UPDATE subject_inbox SET status='received',decision_id=NULL,updated_at=? WHERE subject_id=? AND event_id=?").run(this.#now(),subject.id,event.id);
+    return this.subjectObservation(subject.id,event.id);
+  }
+  #retireSubjectEvents(c){    const subject=this.#read(c.subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','subject required');
     const ids=Array.isArray(c.eventIds)?c.eventIds:[];
     for(const id of ids)this.#db.prepare("UPDATE subject_inbox SET status='handled',updated_at=? WHERE subject_id=? AND event_id=?").run(this.#now(),c.subjectId,id);
     return {retired:ids.length};
@@ -739,6 +1050,8 @@ export class ContinuityStore {
     const selected=decision.output.options.find(o=>o.id===decision.output.selected);
     ensure(selected?.kind==='lookup','NOT_LOOKUP','execute only a committed lookup choice');
     const requested=normalizeLookupQuery(selected.payload),id=lookupResultId(asRef(decision)),roundId=lookupRoundId(subject.id,decision.currentEvent,decision.reflection?decision.input.payload.memoryAccess?.roundScope??null:null);
+    const hybrid=decision.input.payload.intentProtocol?.format==='intent-base-v5'&&decision.currentEvent
+      ?{store:this,subjectId:subject.id,event:this.#require(decision.currentEvent,['event']),now:this.#now()}:null;
     const consultEnabled=decision.input.payload.memoryAccess?.consultation?.enabled===true;
     ensure(!requested.consult||consultEnabled&&decision.input.stage==='decisionGraph','CONSULT_CAPABILITY','consultation requires an explicit unified capability');
     ensure(!requested.trace||decision.input.stage==='decisionGraph'||decision.reflection===true&&decision.input.payload.memoryAccess?.historyRecovery?.enabled===true,'UNIFIED_PROTOCOL_REQUIRED','cross-type reads require explicit unified mode');
@@ -753,12 +1066,19 @@ export class ContinuityStore {
     if(old){ensure(old.type==='lookup_result'&&old.subject===subject.id&&sameRef(old.decision,c.decision),'LOOKUP_COLLISION','lookup result identity changed');return old;}
     if(!round)round=this.#write(roundId,'lookup_round',0,{subject:subject.id,anchor:decision.currentEvent,workspace:decision.workspace,
       policy,reads:0,seenRefs:[],queries:[],recordedAt:this.#now()});
-    const compile=q=>q.consult?consultationOperation(q.consult,{read:(id,rev)=>this.#read(id,rev),subjectId:subject.id}):q;
+    const compile=q=>q.consult&&!hybrid?consultationOperation(q.consult,{read:(id,rev)=>this.#read(id,rev),subjectId:subject.id}):q;
     const getEpoch=(q,op)=>op.trace?this.#db.prepare('SELECT epoch FROM graph_meta WHERE id=1').get().epoch:q.consult?
       this.#db.prepare("SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note','personal_state','action')").get().epoch:
-      q.workbench?(q.workbench.frame??q.workbench.source.frame).revision:q.graph?attention.revision:q.stateRef?q.stateRef.revision:this.#db.prepare("SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note')").get().epoch;
+      q.workbench?(q.workbench.frame??q.workbench.source.frame).revision:q.graph?attention.revision:q.stateRef?q.stateRef.revision:this.#db.prepare(
+        hybrid?"SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note','personal_state','link')":
+          "SELECT coalesce(max(v.rowid),0) AS epoch FROM versions v JOIN objects o ON o.id=v.id WHERE o.type IN ('event','note')").get().epoch;
     let operation=compile(requested),epoch=getEpoch(requested,operation);
     let outcome=null,method=null,total=null,nextOffset=null,entries=[],novelRefs=[],repeatOf=null,readPerformed=false,query=requested,offset=0,graph=null,states=[],failure=null,trace=null,novelNodes=[],consultation=null,workbench=null,opened=null;
+    let semantic=hybrid?(c.semantic??[]):[];
+    ensure(Array.isArray(semantic)&&semantic.length<=24&&semantic.every(x=>x?.ref&&Number.isFinite(x.similarity)
+      &&x.similarity>=0&&x.similarity<=1.000001&&(x.relevance===undefined||Number.isFinite(x.relevance))),
+      'MEMORY_VECTOR_HINT','bounded host semantic candidates required');
+    uniqueRefs(semantic.map(x=>x.ref));
     if(!sameRef(subject.lastDecision,c.decision))outcome='superseded';
     else if(this.#read(decision.workspace.id).revision!==decision.workspace.revision)outcome='different-context';
     else if(!sameRef(round.workspace,decision.workspace)){
@@ -774,9 +1094,11 @@ export class ContinuityStore {
       ensure(!previous.query.consult||consultEnabled&&decision.input.stage==='decisionGraph','CONSULT_CAPABILITY','consultation pages require explicit capability');
       query=previous.query.consult?{consult:{...previous.query.consult,need:asRef(previous)}}:previous.query.trace?{trace:{...previous.query.trace,offset:previous.nextOffset}}:previous.query.context?{context:previous.query.context}:{terms:previous.query.terms};offset=previous.nextOffset;
       operation=compile(query);epoch=getEpoch(query,operation);
+      semantic=hybrid?(previous.semanticHints??[]):[];
       if(previous.epoch!==epoch)outcome='source-changed';
     }
-    if(query.consult)consultation=consultationState(query.consult,{load:(id,rev)=>this.#read(id,rev),subjectId:subject.id,roundId,workspace:decision.workspace,resultRef:{id,revision:1}});
+    if(hybrid&&!outcome&&!operation.terms&&!operation.ref)outcome='route-not-available';
+    if(query.consult&&!hybrid)consultation=consultationState(query.consult,{load:(id,rev)=>this.#read(id,rev),subjectId:subject.id,roundId,workspace:decision.workspace,resultRef:{id,revision:1}});
     const signature=digest({query:operation,offset,epoch});
     if(operation.navigate&&!outcome){
       const source=this.#require(query.consult.need,['lookup_result']),pages=this.#consultationPages({subjectId:subject.id,root:consultation.root,currentEvent:decision.currentEvent,workspace:decision.workspace});
@@ -804,7 +1126,14 @@ export class ContinuityStore {
       else if(!outcome){
         readPerformed=true;
         let hits=[];
-        if(operation.workbench){
+        if(hybrid&&operation.terms){
+          const {ranked,saturated}=rankMemory({...hybrid,query:operation.terms,semantic});
+          const page=ranked.slice(offset,offset+policy.maxHits);
+          hits=page.filter(hit=>hit.record.type!=='personal_state').map(hit=>({ref:hit.ref,hits:[]}));
+          states=page.filter(hit=>hit.record.type==='personal_state').map(hit=>({ref:hit.ref,historical:false}));
+          total=saturated?null:ranked.length;nextOffset=offset+page.length<ranked.length?offset+page.length:null;
+          method='audience-scoped-hybrid';outcome=nextOffset===null&&saturated?'scan-limit':page.length?'found':'empty';
+        }else if(operation.workbench){
           method='versioned-material-use-history';const q=operation.workbench;
           if(q.via==='list'){
             const snapshot=this.#require(q.frame,['attention_frame']);ensure(snapshot.subject===subject.id,'RECOVERY_SCOPE','own history only');
@@ -842,7 +1171,8 @@ export class ContinuityStore {
           else {states=[{ref:asRef(value),historical:this.#read(value.id).revision!==value.revision}];outcome='found';total=1;}
         }else if(operation.ref){
           method='pinned-read';const record=this.#read(operation.ref.id,operation.ref.revision);
-          if(!record){outcome='not-found';total=0;}
+          if(!record||record.id==='note:slow-watermark'||hybrid&&!memoryAudience(hybrid)(record,{historical:true})){outcome='not-found';total=0;}
+          else if(hybrid&&record.type==='personal_state'){states=[{ref:asRef(record),historical:this.#read(record.id).revision!==record.revision}];total=1;outcome='found';}
           else if(!['event','note'].includes(record.type)){outcome='invalid-target';total=0;}
           else{hits=[{ref:asRef(record),hits:[]}];total=1;outcome='found';}
         }else if(operation.open){
@@ -900,7 +1230,8 @@ export class ContinuityStore {
     return this.#write(id,'lookup_result',0,{subject:subject.id,round:asRef(round),decision:asRef(decision),anchor:decision.currentEvent,
       workspace:decision.workspace,requested,query,offset,epoch,outcome,method,total,nextOffset,entries,novelRefs,repeatOf,readPerformed,
       reads:round.reads,remainingReads:round.policy.maxReads-round.reads,...(operation.graph?{graph}:{}),...(operation.stateRef?{states}:{}),
-      ...(trace?{trace,novelNodes}:{}),...(workbench?{workbench}:{}),...(consultation?{consultation,operation}:{}),...(opened?{opened}:{}),...(failure?{failure}:{}),recordedAt:this.#now()});
+      ...(trace?{trace,novelNodes}:{}),...(workbench?{workbench}:{}),...(consultation?{consultation,operation}:{}),...(opened?{opened}:{}),...(failure?{failure}:{}),
+      ...(hybrid&&semantic.length?{semanticHints:semantic}:{}),recordedAt:this.#now()});
   }
   #consultationPages({subjectId,root,currentEvent,workspace}){
     return this.#db.prepare(`SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
@@ -1002,7 +1333,7 @@ export class ContinuityStore {
     const attentionPolicy=delta.attentionPolicy??subject.attentionPolicy;
     const choice=decision.output.options.find(o=>o.id===decision.output.selected);
     const {foreground,fields,attentionFrame,processRefs}=this.#continuationPatch({subject,input,delta,at,currentEvent,
-      currentObservations,observationRefs,responseIntent:choice.kind==='respond'?{id:`${decision.id}:response`,revision:1}:null});
+      currentObservations,observationRefs,foregroundRecovery:c.foregroundRecovery===true,responseIntent:choice.kind==='respond'?{id:`${decision.id}:response`,revision:1}:null});
     this.#applyEventProcesses({subject,decision,input,delta,attentionFrame,processRefs});
     let motivationState=subject.motivationState??null;
     ensure(!c.affectTurn||c.motivationTransition,'AFFECT_BINDING','turn adoption requires its state transition');
@@ -1052,7 +1383,7 @@ export class ContinuityStore {
       this.#putExtensionRecord({id,owner:subject.id,theory:EVENT_PROCESS_THEORY,stateType:'event-process-link',schemaVersion:'1',expectedRevision:old?.revision??0,value});
     }
   }
-  #continuationPatch({subject,input,delta,at,currentEvent=null,currentObservations=[],observationRefs=[],responseIntent=null}) {
+  #continuationPatch({subject,input,delta,at,currentEvent=null,currentObservations=[],observationRefs=[],foregroundRecovery=false,responseIntent=null}) {
     ensure(this.#read(subject.id).revision===subject.revision,'STALE_SUBJECT','subject changed during background work');
     const context=input.continuity;
     ensure(!delta.attention?.eventProcesses||context.attention?.eventProcessSupport?.enabled===true,'EVENT_PROCESS_DISABLED','explicit event-process capability required');
@@ -1107,13 +1438,15 @@ export class ContinuityStore {
       const deliveredProcesses=(input.knowledge?.cards??[]).filter(c=>c.type==='process'&&!c.historical&&sameRef(c.ref.frame,asRef(attention))).map(c=>c.record);
       processRefs=[...context.attention.processes,...graphReads.flatMap(r=>r.graph.nodes),...deliveredProcesses].map(asRef);
       const relationRefs=[...context.attention.relations,...context.attention.staleRelations,...graphReads.flatMap(r=>r.graph.relations)].map(asRef);
-      const updated=advanceAttention(attention,delta.attention,{read:(id,rev)=>this.#read(id,rev),at,maxForeground:subject.maxForeground,currentEvent:currentEvent,
+      const limits=capacityLimits(subject);
+      const updated=advanceAttention(attention,delta.attention,{read:(id,rev)=>this.#read(id,rev),at,limits,maxForeground:limits.foreground,foregroundRecovery:foregroundRecovery===true,currentEvent:currentEvent,
         processRefs,relationRefs,questionRefs:context.attention.questions.map(asRef),residenceIds:context.attention.residences.map(r=>r.id),stateRefs:delivered,changedStateIds:fields.map(f=>f.id),
         observations:observationRefs.map(r=>this.#require(r,['event'])),memoryRefs,workbenchMaterials:context.attention.materialSupport?.enabled===true,
         workbenchFocus:context.attention.focusSupport?.enabled===true,focusMenu:context.attention.focusSupport?.menu??[],
         workbenchRecovery:context.attention.recoverySupport?.enabled===true,
         recoverySources:results.filter(r=>r.workbench).map(r=>this.#require(r.ref,['lookup_result'])),
-        responseIntent});
+        responseIntent,
+        onCapacityEviction:ids=>{try{if(ids?.length)this.recordDiagnostic({stage:'attention.capacity-evicted',status:'ok',context:{subjectId:subject.id},data:{ids:[...ids].slice(0,16)}});}catch{}}});
       const {id:aid,type:atype,revision:arev,recordedAt:recorded,...oldFields}=attention;
       const {id:uid,type:utype,revision:urev,recordedAt:urecorded,...newFields}=updated;
       attentionFrame=canonical(oldFields)===canonical(newFields)?attention:this.#write(aid,'attention_frame',arev,{...newFields,recordedAt:at});
@@ -1224,9 +1557,9 @@ export class ContinuityStore {
     ensure(['dispatching','unknown'].includes(response.status)&&response.claimId===c.claimId,'RESPONSE_NOT_CLAIMED','matching response claim required');
     oneOf(c.outcome,['sent','failed','unknown'],'delivery outcome');
     const receipt=this.#event({id:c.eventId,body:c.body,origin:'tool_receipt',source:c.source,actor:c.actor,scene:response.scene,occurredAt:c.occurredAt});
-    // 发送回执是事实记录，不是新的对话观察；入箱但立即 handled，避免叫醒她。
-    this.#admitSubjectEvent({subjectId:response.subject,event:asRef(receipt)});
-    this.#db.prepare("UPDATE subject_inbox SET status='handled',updated_at=? WHERE subject_id=? AND event_id=?").run(this.#now(),response.subject,receipt.id);
+    // Normal delivery receipts are admitted-handled; host-only operator evidence
+    // must not enter the subject inbox at all.
+    if(c.admit!==false){this.#admitSubjectEvent({subjectId:response.subject,event:asRef(receipt)});this.#db.prepare("UPDATE subject_inbox SET status='handled',updated_at=? WHERE subject_id=? AND event_id=?").run(this.#now(),response.subject,receipt.id);}
     const {id,type,revision:oldRevision,...fields}=response;
     return this.#write(id,type,response.revision,{...fields,status:c.outcome,receipts:[...response.receipts,asRef(receipt)],recordedAt:this.#now()});
   }
@@ -1239,11 +1572,11 @@ export class ContinuityStore {
     const row=this.#db.prepare('SELECT seq,subject_id AS subjectId,event_id AS eventId,status,decision_id AS decisionId,updated_at AS updatedAt FROM subject_inbox WHERE subject_id=? AND event_id=?').get(subjectId,eventId);
     return row?{...row}:null;
   }
-  subjectInbox({subjectId,afterSeq=0,limit=32,pendingOnly=true}) {
+  subjectInbox({subjectId,afterSeq=0,limit=32,pendingOnly=true,excludeDeferred=false}) {
     const subject=this.#read(subjectId);ensure(subject?.type==='subject','MISSING_SUBJECT','unknown subject');
-    ensure(Number.isSafeInteger(afterSeq)&&afterSeq>=0&&Number.isSafeInteger(limit)&&limit>0&&limit<=100&&typeof pendingOnly==='boolean','INVALID_INPUT','bounded inbox page required');
+    ensure(Number.isSafeInteger(afterSeq)&&afterSeq>=0&&Number.isSafeInteger(limit)&&limit>0&&limit<=100&&typeof pendingOnly==='boolean'&&typeof excludeDeferred==='boolean','INVALID_INPUT','bounded inbox page required');
     return this.view(()=>{
-      const filter=pendingOnly?" AND (status='received' OR (status='deferred' AND decision_id IN (SELECT id FROM objects WHERE type='decision')))":'',rows=this.#db.prepare(`SELECT seq,event_id AS eventId,status,decision_id AS decisionId FROM subject_inbox WHERE subject_id=? AND seq>?${filter} ORDER BY seq LIMIT ?`).all(subjectId,afterSeq,limit+1);
+      const filter=pendingOnly?(excludeDeferred?" AND status='received'":" AND (status='received' OR (status='deferred' AND decision_id IN (SELECT id FROM objects WHERE type='decision')))"):'',rows=this.#db.prepare(`SELECT seq,event_id AS eventId,status,decision_id AS decisionId FROM subject_inbox WHERE subject_id=? AND seq>?${filter} ORDER BY seq LIMIT ?`).all(subjectId,afterSeq,limit+1);
       const items=rows.slice(0,limit).map(row=>({...row}));
       const total=this.#db.prepare(`SELECT count(*) AS n FROM subject_inbox WHERE subject_id=?${filter}`).get(subjectId).n;
       return {items,total,next:rows.length>limit?items.at(-1).seq:null};
@@ -1269,12 +1602,12 @@ export class ContinuityStore {
     oneOf(type, TYPES, 'record type');
     ensure(Number.isSafeInteger(limit) && limit > 0 && limit <= 500, 'INVALID_INPUT', 'limit must be 1..500');
     const rows = this.#db.prepare('SELECT v.body FROM objects o JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.type=? AND o.id>? ORDER BY o.id LIMIT ?').all(type, after, limit + 1);
-    const items = rows.slice(0, limit).map(row => JSON.parse(row.body));
+    const items = rows.slice(0, limit).map(row => this.#decode(row.body));
     return {items, next: rows.length > limit ? items.at(-1).id : null};
   }
   // Indexed, read-only lookups over current record versions (see versions_by_* in schema).
   // Each returns parsed records; "newest" ones are ordered newest first.
-  #byIndex(sql,...args){return this.#db.prepare(`SELECT v.body FROM versions v CROSS JOIN objects o ON o.id=v.id AND o.current_revision=v.revision WHERE ${sql}`).all(...args).map(r=>JSON.parse(r.body));}
+  #byIndex(sql,...args){return this.#db.prepare(`SELECT v.body FROM versions v CROSS JOIN objects o ON o.id=v.id AND o.current_revision=v.revision WHERE ${sql}`).all(...args).map(r=>this.#decode(r.body));}
   #bound(limit){ensure(Number.isSafeInteger(limit)&&limit>0&&limit<=1000,'INVALID_INPUT','limit must be 1..1000');return limit;}
   newestInScene({type,scene,limit=50,since=null}){text(type,'type');text(scene,'scene');
     return since===null?this.#byIndex(`o.type=? AND json_extract(v.body,'$.scene')=? ORDER BY coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt')) DESC LIMIT ?`,type,scene,this.#bound(limit))
@@ -1314,7 +1647,55 @@ export class ContinuityStore {
     return {items:matches.slice(offset,offset+limit).map(({ts,score,...hit})=>hit),total:matches.length,method:'recall-intersection'};
   }
   search(options) { return this.view(() => this.#search(options)); }
-  #search({terms, types = ['event', 'note'], scene, origins, from, until, limit = 20, offset = 0, excludeRefs = [],contextAnchor}) {
+  memoryLexicalRefs({terms,accept,limit=64}){
+    ensure(Number.isSafeInteger(limit)&&limit>=1&&limit<=256,'MEMORY_SEARCH_LIMIT','bounded lexical lane required');
+    try{return searchMemoryIndex(this.#db,terms,accept,limit);}
+    catch(error){
+      if(!/no such module: fts5/i.test(String(error.message)))throw error;
+      const matches=this.#search({terms,limit:100,accept});
+      return matches.items.slice(0,limit).map(row=>row.ref);
+    }
+  }
+  slowBrainInputs({subjectId,eventSeq,statePosition,since,eventLimit=24,stateLimit=16}){
+    const events=this.#db.prepare(`SELECT i.seq AS position,v.body FROM subject_inbox i
+      JOIN objects o ON o.id=i.event_id AND o.type='event'
+      JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
+      WHERE i.subject_id=? AND i.seq>? AND json_extract(v.body,'$.origin') IN ('observed','reported')
+        AND (? IS NULL OR coalesce(json_extract(v.body,'$.occurredAt'),json_extract(v.body,'$.recordedAt'))>=?)
+      ORDER BY i.seq LIMIT ?`).all(subjectId,eventSeq,since,since,eventLimit);
+    const states=this.#db.prepare(`SELECT v.rowid AS position,v.body FROM objects o
+      JOIN versions v ON v.id=o.id AND v.revision=o.current_revision
+      WHERE o.type='personal_state' AND v.rowid>? AND json_extract(v.body,'$.subject')=?
+        AND json_extract(v.body,'$.status')='open' AND (? IS NULL OR json_extract(v.body,'$.recordedAt')>=?)
+      ORDER BY v.rowid LIMIT ?`).all(statePosition,subjectId,since,since,stateLimit);
+    const records=rows=>rows.map(({position,body})=>({position,record:JSON.parse(body)}));
+    return {events:records(events),states:records(states)};
+  }
+  memoryEmbeddingChanges({subjectId,after=0,limit=32}){
+    return this.#db.prepare(`SELECT o.id,o.current_revision AS revision,v.rowid AS position,
+      CASE WHEN (o.type='note' AND json_extract(v.body,'$.status')='current')
+        OR (o.type='personal_state' AND json_extract(v.body,'$.status')='open')
+        THEN substr(json_extract(v.body,'$.body'),1,1800) ELSE null END AS body
+      FROM versions v JOIN objects o ON o.id=v.id AND v.revision=o.current_revision
+      WHERE v.rowid>? AND (o.type='note' OR (o.type='personal_state' AND json_extract(v.body,'$.subject')=?))
+        AND o.id NOT LIKE 'rhythm:%' AND o.id NOT LIKE 'note:journal:%' AND o.id != 'note:slow-watermark'
+      ORDER BY v.rowid LIMIT ?`).all(after,subjectId,limit);
+  }
+  memoryPeopleRefs({people,accept}){
+    const rows=this.#db.prepare(`SELECT o.id,o.current_revision AS revision FROM versions v
+      JOIN objects o ON o.id=v.id AND o.current_revision=v.revision
+      WHERE o.type IN ('note','personal_state') AND (json_extract(v.body,'$.anchor.id') IN (SELECT value FROM json_each(?))
+        OR EXISTS(SELECT 1 FROM json_each(v.body,'$.about') WHERE json_extract(value,'$.kind')='entity'
+          AND json_extract(value,'$.id') IN (SELECT value FROM json_each(?))))
+      ORDER BY v.rowid DESC LIMIT 64`);
+    const ids=JSON.stringify(people),result=[];
+    for(const {id,revision} of rows.iterate(ids,ids)){
+      const ref={id,revision};if(accept(ref))result.push(ref);
+      if(result.length===8)break;
+    }
+    return result;
+  }
+  #search({terms, types = ['event', 'note'], scene, origins, from, until, limit = 20, offset = 0, excludeRefs = [],contextAnchor,accept=null}) {
     ensure(Array.isArray(terms) && terms.length > 0 && terms.length <= 16, 'INVALID_INPUT', 'supply 1..16 explicit terms');
     terms.forEach(term => text(term, 'term')); types.forEach(type => oneOf(type, ['event', 'note'], 'search type'));
     ensure(Number.isSafeInteger(limit) && limit > 0 && limit <= 100, 'INVALID_INPUT', 'invalid search limit');
@@ -1340,7 +1721,8 @@ export class ContinuityStore {
       ?this.#db.prepare(`SELECT v.body FROM objects o CROSS JOIN versions v ON v.id=o.id AND v.revision=o.current_revision WHERE o.type=? AND (${normalized.map(()=>"instr(lower(json_extract(v.body,'$.body')),?)>0").join(' OR ')})`).all(type,...normalized).map(r=>JSON.parse(r.body))
       :this.all(type);
     for (const type of [...new Set(types)]) for (const record of candidates(type)) {
-      if(excluded.has(refKey(record)))continue;
+      if(record.id==='note:slow-watermark'||excluded.has(refKey(record)))continue;
+      if(accept&&!accept(asRef(record)))continue;
       if (record.type === 'note' && record.status !== 'current') continue;
       if (scene && (record.type === 'event' ? record.scene !== scene : record.scope.scenes.length && !record.scope.scenes.includes(scene))) continue;
       if (origins && !origins.includes(record.origin)) continue;

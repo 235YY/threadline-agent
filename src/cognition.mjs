@@ -18,6 +18,8 @@ import {consultationProgress as progressProjection} from './consultation-progres
 import {attentionId,attentionView} from './attention.mjs';
 import {eventProcessEvents} from './task-threads.mjs';
 import {generationSets} from './prompt-generations.mjs';
+import {validateToolArguments} from './tool-contracts.mjs';
+import {concreteReplyScene,sourceReplyRoute} from './reply-route.mjs';
 
 // Prompt text is part of each sealed packet. Packets are verified by rebuilding them,
 // so every prompt generation that ever sealed a packet must stay loadable: the current
@@ -64,6 +66,8 @@ const MEMORY_UPDATE_PROMPT='这段时间有新经历。是否要把值得留下�
 const ASPECTS=['experience','feeling','belief','goal','knowledge'];
 const KINDS=['respond','lookup','act','continue','pause','wait','intent','none'];
 const clone=x=>JSON.parse(canonical(x));
+// Host-built packets must not carry undefined values that JSON drops silently.
+const jsonSafe=x=>Array.isArray(x)?x.map(jsonSafe):(x&&Object.getPrototypeOf(x)===Object.prototype?Object.fromEntries(Object.entries(x).filter(([,v])=>v!==undefined).map(([k,v])=>[k,jsonSafe(v)])):x);
 const asRef=x=>({id:x.id,revision:x.revision});
 function exact(x,keys,name) {
   ensure(x && Object.getPrototypeOf(x)===Object.prototype && canonical(Object.keys(x).sort())===canonical([...keys].sort()),'OUTPUT_SHAPE',`${name} fields do not match protocol`);
@@ -80,7 +84,8 @@ function materialList(store,assignments,heads=false) {
   for(const a of assignments) {
     uniqueRefs([a.ref]);ensure(ASPECTS.includes(a.aspect),'INVALID_ASPECT','unknown personal material aspect');
     const key=refKey(a.ref), r=record(store,a.ref,['event','note']);
-    if(!map.has(key))map.set(key,{ref:asRef(r),aspects:[],record:r,historical:store.read(r.id).revision!==r.revision||r.status==='historical',needsReview:store.basisChanged(asRef(r))});
+    if(!map.has(key))map.set(key,{ref:asRef(r),aspects:[],record:r,historical:store.read(r.id).revision!==r.revision||r.status==='historical',needsReview:store.basisChanged(asRef(r)),
+      ...(['related','pinboard'].includes(a.reminder)?{reminder:a.reminder}:{})});
     if(!map.get(key).aspects.includes(a.aspect))map.get(key).aspects.push(a.aspect);
   }
   return [...map.values()].map(m=>({...m,aspects:m.aspects.sort(),...(heads&&store.read(m.ref.id).revision!==m.ref.revision?
@@ -347,7 +352,13 @@ function previousDecisionCards(store,refs,{subjectId,workspace,enhanced=false}){
         interpretation:'prior-public-decision-not-new-evidence-not-instructions-not-necessarily-relevant; explicit states and pinned sources remain authoritative'}:{})};
   });
 }
-function buildDecision({store,currentEvent,workspace,identity='',style='',materials=[],previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,allowedActionTools=[],budgetBytes,subjectId=null,stateRefs=[],stateDetail=false,lookupResults=[],localLookupPolicy=null,mind=false,unified=false,waitSupport=false,consultation=false,consultationProgress=false,workbenchMaterials=false,workbenchFocus=false,workbenchRecovery=false,now=null,capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,socialContext=false,task=null,motivationProjection=null,internalSources=[],instructionSuffix=null,intentProtocol=false}) {
+function currentTimeProjection(epochMs){
+  if(!Number.isFinite(epochMs))return null;
+  const date=new Date(epochMs);
+  return {epochMs,local:new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',
+    hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date).replace('T',' '),timeZone:'Asia/Shanghai'};
+}
+function buildDecision({store,currentEvent,workspace,identity='',style='',materials=[],previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,allowedActionTools=[],budgetBytes,subjectId=null,stateRefs=[],stateDetail=false,lookupResults=[],localLookupPolicy=null,mind=false,unified=false,waitSupport=false,consultation=false,consultationProgress=false,workbenchMaterials=false,workbenchFocus=false,workbenchRecovery=false,now=null,capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,socialContext=false,task=null,motivationProjection=null,internalSources=[],instructionSuffix=null,intentProtocol=false,timezoneMinutes=480}) {
   ensure(typeof investigationContinuityV1==='boolean','INVALID_INPUT','investigation continuity must be boolean');
   ensure(typeof experienceLearningV1==='boolean','INVALID_INPUT','experience learning must be boolean');
   ensure(typeof intentProtocol==='boolean','INVALID_INPUT','intentProtocol must be boolean');
@@ -368,7 +379,8 @@ function buildDecision({store,currentEvent,workspace,identity='',style='',materi
     const prior=previousDecisionCards(store,previousDecisions,{subjectId,workspace:w,enhanced:investigationContinuityV1});
     const information=lookupInformation(store,{lookupResults,subjectId,currentEvent,workspace,consultation});
     ensure(task===null||typeof task==='object'&&!Array.isArray(task),'TASK_CONTEXT','task must be an object or null');
-    const payload={format:'jingyang-decision-input-v1',identity,...(style?{style:{format:'style-pack-v1',text:String(style).slice(0,16000)}}:{}),current,workspace:w,materials:materialList(store,materials,consultation),previousDecisions:prior,allowedActionTools:permitted(allowedActionTools),...(now!==null?{now}:{}),...(algorithmV011?{algorithmV011:{format:'algorithm-v011-v1',enabled:true}}:{}),...(apperceptionV1?{apperceptionV1:{format:'apperception-v1',enabled:true}}:{}),...(subjectiveDomains?{subjectiveDomains:{format:'subjective-domains-v1',enabled:true}}:{}),...(subjectiveMemory?{subjectiveMemory:{format:'subjective-memory-v1',enabled:true}}:{}),...(subjectiveMemoryV2?{subjectiveMemoryV2:{format:'subjective-memory-v2',enabled:true}}:{}),...(taskThreads?{taskThreads:{format:'task-threads-v1',enabled:true}}:{}),...(anchorDirectory?{anchorDirectory:{format:'anchor-directory-v1',enabled:true}}:{}),...(task!==null?{task}:{})};
+    const currentTime=currentTimeProjection(current.occurredAt);
+    const payload={format:'jingyang-decision-input-v1',identity,...(currentTime?{currentTime}:{}),...(style?{style:{format:'style-pack-v1',text:String(style).slice(0,16000)}}:{}),current,workspace:w,materials:materialList(store,materials,consultation),previousDecisions:prior,allowedActionTools:permitted(allowedActionTools),...(now!==null?{now}:{}),...(algorithmV011?{algorithmV011:{format:'algorithm-v011-v1',enabled:true}}:{}),...(apperceptionV1?{apperceptionV1:{format:'apperception-v1',enabled:true}}:{}),...(subjectiveDomains?{subjectiveDomains:{format:'subjective-domains-v1',enabled:true}}:{}),...(subjectiveMemory?{subjectiveMemory:{format:'subjective-memory-v1',enabled:true}}:{}),...(subjectiveMemoryV2?{subjectiveMemoryV2:{format:'subjective-memory-v2',enabled:true}}:{}),...(taskThreads?{taskThreads:{format:'task-threads-v1',enabled:true}}:{}),...(anchorDirectory?{anchorDirectory:{format:'anchor-directory-v1',enabled:true}}:{}),...(task!==null?{task}:{})};
     // Apply only when preparing a new opportunity. seal()/verify() must keep
     // previously captured, unpaged packets byte-for-byte recoverable.
     pageCurrentReceipt(payload);
@@ -409,7 +421,15 @@ function buildDecision({store,currentEvent,workspace,identity='',style='',materi
       }
       ensure(!mind||attention,'MIND_PROTOCOL_REQUIRED','mind mode requires explicit purpose-based attention');
       if(intentProtocol&&attention&&!task&&!['这是 AgentTask 单步执行','本轮 current 是 AgentTask','【显式重新准入】'].some(m=>String(instructionSuffix??'').includes(m))){
-        payload.intentProtocol={format:'intent-base-v1',enabled:true};
+        payload.intentProtocol={format:'intent-base-v5',enabled:true,timezoneMinutes,verifiedZip:true};
+        const last=payload.continuity.lastReaction;
+        if(last){
+          const past=store.read(last.decision.id,last.decision.revision);
+          const route=event=>sourceReplyRoute({read:(id,revision)=>store.read(id,revision),all:type=>store.all(type),subjectId,event}).scene;
+          const previous=last.kind==='respond'?store.read(past.id+':response')?.scene:route(past.currentEvent);
+          const here=current.origin==='tool_receipt'?route(currentEvent):current.scene;
+          payload.continuity.lastReaction=concreteReplyScene(here)&&here===previous?{...last,fromScene:here}:null;
+        }
       }
       const stage=unified?'decisionGraph':mind?'decisionMind':attention?'decisionAttention':localLookupPolicy!==null?'decisionWorkbench':'decisionInformation';
       if(attention&&payload.memoryAccess){payload.memoryAccess.routes.push('graph','stateRef');payload.memoryAccess.scope='own-retained-events-notes-states-and-processes';}
@@ -472,7 +492,7 @@ function deliverTracePackages({packet,information,store,subjectId,motivationProj
 }
 
 // 反射轮：没有世界观察，只给内部时间/注意力摘要；决定仍由她做。
-export function prepareReflection({previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,store,subjectId,workspace,identity='',style='',internal,budgetBytes,materials=[],stateRefs=[],stateDetail=false,allowedActionTools=[],lookupResults=[],localLookupPolicy=null,capabilities=null,memoryUpdateDue=false,followup=null,apperceptionV1=false,motivationProjection=null,internalSources=[],instructionSuffix=null,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false}){
+export function prepareReflection({previousDecisions=[],investigationContinuityV1=false,experienceLearningV1=false,store,subjectId,workspace,identity='',style='',internal,budgetBytes,materials=[],stateRefs=[],stateDetail=false,allowedActionTools=[],lookupResults=[],localLookupPolicy=null,capabilities=null,memoryUpdateDue=false,reflectionAfterEventId=null,followup=null,apperceptionV1=false,motivationProjection=null,internalSources=[],instructionSuffix=null,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false}){
   ensure(typeof investigationContinuityV1==='boolean','INVALID_INPUT','investigation continuity must be boolean');
   ensure(typeof experienceLearningV1==='boolean','INVALID_INPUT','experience learning must be boolean');
   text(subjectId,'subject id');
@@ -487,6 +507,18 @@ export function prepareReflection({previousDecisions=[],investigationContinuityV
     const resultStates=information.results.flatMap(r=>r.states??[]).map(x=>x.ref);
     const continuity=continuityInput({store,subjectId,motivationProjection,internalSources,stateRefs:uniqueRefs([...stateRefs,...resultStates]),detail:stateDetail,evidenceDetail:investigationContinuityV1,currentEvent:null,mind:true,workbenchFocus:true,
       focusProcessIds:information.results.flatMap(r=>r.graph?.nodes??[]).map(p=>p.id),subjectiveDomains,subjectiveMemory,subjectiveMemoryV2,taskThreads,anchorDirectory});
+    const cutoff=memoryUpdateDue&&reflectionAfterEventId&&localLookupPolicy&&!followup&&!lookupResults.length
+      ?store.read(reflectionAfterEventId):null;
+    const recent=continuity.recent;
+    if(cutoff?.type==='event'&&Number.isSafeInteger(cutoff.recordedAt)&&store.subjectObservation(subjectId,cutoff.id)&&recent?.items?.length){
+      const items=recent.items.filter(item=>{
+        const source=store.read(item.ref.id,item.ref.revision);
+        return !Number.isSafeInteger(source?.recordedAt)||source.recordedAt>=cutoff.recordedAt;
+      });
+      const omitted=recent.items.length-items.length;
+      if(omitted)continuity.recent={...recent,items,count:items.length,omitted:(recent.omitted??0)+omitted,
+        batchDelivery:{complete:false,omittedEarlierTurns:omitted,meaning:'旧对话仍在材料库，需要时通过 lookup 查阅；本列表仅表示这次交付。'}};
+    }
     continuity.contactTargets=[...new Set([
       ...[...store.all('workspace')].map(x=>x.scene),
       ...[...store.all('event')].map(x=>x.scene)
@@ -532,8 +564,9 @@ export function prepareReflection({previousDecisions=[],investigationContinuityV
       const delivered=materialList(store,selected,true),keys=new Set(delivered.map(m=>refKey(m.ref)));
       const presentation={presented:information.candidates.filter(c=>keys.has(refKey(c.ref))).map(c=>c.ref),
         omitted:information.candidates.filter(c=>!keys.has(refKey(c.ref))).map(c=>({ref:c.ref,reason:'input-budget-or-material-limit'}))};
-      return seal('reflection',{...payload,materials:delivered,...(information.results.length?{information:{kind:'local-memory-results',originalTrigger:null,trace:information.trace,
-        ...(information.associations?{associations:information.associations}:{}),results:information.results,presentation}}:{})},budgetBytes,instructionSuffix);
+      const body={...payload,materials:delivered,...(information.results.length?{information:{kind:'local-memory-results',originalTrigger:null,trace:information.trace,
+        ...(information.associations?{associations:information.associations}:{}),results:information.results,presentation}}:{})};
+      return seal('reflection',internal?.kind==='autonomy'?jsonSafe(body):body,budgetBytes,instructionSuffix);
     };
     try{const packet=deliverLookupMaterials({materials:assignments,candidates:information.candidates,render});
       if(!information.traces.length)return packet;
@@ -545,6 +578,14 @@ export function prepareReflection({previousDecisions=[],investigationContinuityV
   });
 }
 
+// Host-scheduled autonomy opportunity: a small reflection-stage packet with no world
+// observation. The model sees only her own goals, work, states and granted tools.
+export function prepareAutonomy({store,subjectId,workspace,identity='',style='',allowedActionTools=[],opportunity,kind='idle',now=Date.now(),budgetBytes=131072,focus=null,timezoneMinutes=480,motivationProjection=null,materials=[]}){
+  // Reuse the reflection pipeline for an authentic attention/workbench context. The model
+  // only receives the compact intent view built from this base packet.
+  return prepareReflection({store,subjectId,workspace,identity,style,allowedActionTools,budgetBytes,motivationProjection,materials,
+    internal:{format:'reflection-frame-v1',kind:'autonomy',opportunityType:kind,opportunity,now,timezoneMinutes,verifiedZip:true,...(focus?{focus}:{})}});
+}
 const APPERCEPTION_DOMAINS=new Set(['self','relationship','world','normative']);
 const APPERCEPTION_PERSPECTIVES=new Set(['relevance','meaning','coping','norm_self']);
 const APPERCEPTION_STATUSES=new Set(['fact','interpretation','inference','uncertain']);
@@ -589,7 +630,21 @@ export function commitDecision(args){  const context=packetContext(args?.packet,
     return result;
   }catch(error){args?.store?.recordDiagnostic({stage:'decision.rejected',status:'rejected',context,data:{...failureMetadata(error),...outputMetrics(args?.output)}});throw error;}
 }
-function commitDecisionChecked({store,packet,output,requestId,decisionId,allowedActionTools=[],maxOutputBytes=16384,invocationKey=null,guardRefs=[],taskGuard=null,motivationTransition=null,affectTurn=null,extensionWrites=[]}) {
+// An Intent and the tasks bound to it must move in one transaction: a new Intent
+// revision must never leave a running task pointing at the previous one.
+function stageIntentTaskSync({store,subjectId,changed,now}) {
+  const commands=[],settle={deferred:'paused',completed:'cancelled',abandoned:'cancelled',expired:'cancelled'}[changed.status]??null;
+  for(const summary of store.all('agent_task')){
+    if(summary.subjectId!==subjectId||summary.intentRef?.id!==changed.id)continue;
+    if(!['running','waiting','paused','blocked'].includes(summary.status))continue;
+    const task=store.read(summary.id);ensure(task&&task.revision===summary.revision,'AGENT_TASK_CONFLICT','intent-bound task changed during commit');
+    const next={...task,intentRef:{id:changed.id,revision:changed.revision},updatedAt:now};
+    if(settle){next.status=settle;next.controlRevision=(task.controlRevision??0)+1;next.lease=null;next.wakeAt=null;if(settle==='cancelled')next.blockedReason=null;}
+    commands.push({op:'put_agent_task',task:next,expectedRevision:task.revision});
+  }
+  return commands;
+}
+function commitDecisionChecked({store,packet,output,requestId,decisionId,allowedActionTools=[],maxOutputBytes=16384,invocationKey=null,guardRefs=[],taskGuard=null,motivationTransition=null,affectTurn=null,extensionWrites=[],foregroundRecovery=false}) {
   const reflection=packet?.stage==='reflection';
   const hasContinuity=continuityStage(packet?.stage);verify(packet,hasContinuity?packet.stage:'decision');text(requestId,'request id');text(decisionId,'decision id');
   ensure(!reflection||packet.payload.current===undefined,'REFLECTION_INPUT','reflection packet has no world observation');
@@ -650,6 +705,10 @@ function commitDecisionChecked({store,packet,output,requestId,decisionId,allowed
     }
   }
   const selected=out.options.find(o=>o.id===out.selected);ensure(selected,'INVALID_CHOICE','selected option is missing');
+  // Autonomy has no external reply opportunity. Intent-v1 already forbids it;
+  // full-protocol autonomy must be held to the same boundary at commit.
+  ensure(!(selected.kind==='respond'&&packet.payload?.internal?.kind==='autonomy'),'AUTONOMY_REPLY','autonomy cannot send a QQ reply');
+  ensure(!(selected.kind==='lookup'&&packet.payload?.internal?.kind==='autonomy'),'AUTONOMY_LOOKUP','autonomy cannot spend an opportunity on lookup');
   const waitGuards=selected.kind==='wait'&&packet.payload.waitSupport?validateWaitCommit({store,support:packet.payload.waitSupport,payload:selected.payload}):[];
   ensure(Array.isArray(out.used)&&out.used.length<=16,'OUTPUT_LIMIT','up to sixteen used references');
   const delivered=new Map(packet.payload.materials.map(m=>[refKey(m.ref),m])), uses=new Set();
@@ -660,7 +719,7 @@ function commitDecisionChecked({store,packet,output,requestId,decisionId,allowed
   }
   ensure(Array.isArray(guardRefs)&&guardRefs.length<=16,'INPUT_LIMIT','up to sixteen explicit host commit guards');
   const commands=uniqueRefs([...guardRefs,...waitGuards]).map(ref=>({op:'assert_current',ref})), workspace=asRef(packet.payload.workspace), encounter=reflection?null:asRef(packet.payload.current);
-  let action=null;
+  let action=null,changedIntent=null;
   if(taskGuard)commands.push({...taskGuard,op:'assert_task_control'});
   const lessonCommands=stageExperienceLessons({store,packet,output:out,decisionId});
   if(selected.kind==='intent'){
@@ -673,35 +732,49 @@ function commitDecisionChecked({store,packet,output,requestId,decisionId,allowed
       commands.push({op:'assert_current',ref:asRef(existing)});
       const intent={...existing,...Object.fromEntries(Object.entries(selected.payload).filter(([k])=>k!=='intentId').map(([k,v])=>[k,v==null?existing[k]:v])),updatedAt:packet.payload.now??Date.now()};
       commands.push({op:'put_intent',id:intent.id,expectedRevision:existing.revision,value:intent});
+      changedIntent={id:intent.id,revision:existing.revision+1,status:intent.status};
     }else{
       ensure(selected.payload.goal,'INTENT','new intent needs a goal');
       const intent={format:'jingyang-intent-v1',id:`intent:${packet.payload.continuity.subject.id}:${decisionId}`,subject:packet.payload.continuity.subject.id,goal:selected.payload.goal,
         rationale:selected.payload.rationale??null,nextAction:selected.payload.nextAction??null,dueAt:selected.payload.dueAt??null,status:selected.payload.status??'open',source:'reflection',createdAt:packet.payload.now??Date.now()};
       commands.push({op:'put_intent',id:intent.id,expectedRevision:0,value:intent});
+      changedIntent={id:intent.id,revision:1,status:intent.status};
     }
+    commands.push(...stageIntentTaskSync({store,subjectId:packet.payload.continuity.subject.id,changed:changedIntent,now:packet.payload.now??Date.now()}));
   }
   if(selected.kind==='act'){
     const tool=selected.payload.tool;
     ensure(packet.payload.allowedActionTools.includes(tool)&&permitted(allowedActionTools).includes(tool),'TOOL_NOT_GRANTED','tool not granted at preparation or commit');
+    // The durable task action is the only one that can sit in host recovery and be
+    // retried later; illegal arguments must not create it at all. Native actions
+    // keep their execution-time failed-receipt path so their result stays visible.
+    if(tool==='start_agent_task')validateToolArguments(tool,selected.payload.args);
     const taskIntentRefs=[];
     if(tool==='start_agent_task'&&selected.payload.args.intentId!==undefined){
       const id=selected.payload.args.intentId,delivered=packet.payload.continuity.intents?.find(i=>i.id===id),current=store.read(id);
       ensure(delivered&&current?.type==='intent'&&current.subject===packet.payload.continuity.subject.id,'UNDELIVERED_INTENT','task must reference a delivered own intent');
       ensure(delivered.revision===current.revision,'STALE_INTENT','task intent changed since delivery');taskIntentRefs.push(asRef(current));commands.push({op:'assert_current',ref:asRef(current)});
     }
-    action={id:`${decisionId}:action`,revision:1};
-    // The actual trigger is host execution context, not a fabricated model-use declaration.
-    commands.push({op:'propose_action',id:action.id,workspace,tool,args:selected.payload.args,inputRefs:uniqueRefs(reflection?out.used.map(u=>u.ref):[encounter,...out.used.map(u=>u.ref)]),...(taskIntentRefs.length?{intentRef:taskIntentRefs[0]}:{})});
+    // Task steps are executed by AgentRuntime and already persist toolOps/
+    // observations. They must not create a second, never-settled host Action.
+    if(!taskGuard){
+      action={id:`${decisionId}:action`,revision:1};
+      // The actual trigger is host execution context, not a fabricated model-use declaration.
+      commands.push({op:'propose_action',id:action.id,workspace,tool,args:selected.payload.args,inputRefs:uniqueRefs(reflection?out.used.map(u=>u.ref):[encounter,...out.used.map(u=>u.ref)]),...(taskIntentRefs.length?{intentRef:taskIntentRefs[0]}:{})});
+    }
   }
   commands.push({op:'record_decision',id:decisionId,currentEvent:encounter,workspace,materials:inputRefs(packet.payload),input:packet,output:out,action,
-    ...(reflection?{reflection:true}:{}),...(hasContinuity?{requestKey:requestId,invocationKey}:{})});
+    ...(reflection?{reflection:true}:{}),...(taskGuard?{taskStep:true,taskGuard}:{}),...(hasContinuity?{requestKey:requestId,invocationKey}:{})});
   if(hasContinuity){
-    commands.push({op:'advance_subject',motivationTransition,affectTurn,extensionWrites,subject:packet.payload.continuity.subject,decision:{id:decisionId,revision:1},attempt:asRef(attempt)});
+    // Ordinary QQ private turns may opt into the host's bounded foreground
+    // fallback: when the frame is full, the store drops only the oldest
+    // self-directed residence with no active-task purpose. The decision output
+    // is unchanged, so the captured attempt remains exactly what is adopted.
+    commands.push({op:'advance_subject',motivationTransition,affectTurn,extensionWrites,subject:packet.payload.continuity.subject,decision:{id:decisionId,revision:1},attempt:asRef(attempt),foregroundRecovery:foregroundRecovery===true});
     // Validate the original delivered versions before advancing note heads, in the SAME transaction.
     commands.push(...lessonCommands);
-    return store.execute({requestId,commands}).find(r=>r.type==='decision');
   }
-  return store.execute({requestId,commands}).at(-1);
+  return hasContinuity?store.execute({requestId,commands}).find(r=>r.type==='decision'):store.execute({requestId,commands}).at(-1);
   }catch(error){if(attempt&&error.details)error.details={...error.details,attempt:asRef(attempt)};throw error;}
 }
 

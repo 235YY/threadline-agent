@@ -87,9 +87,9 @@ test('completed A keeps stored associations and B history; background is bounded
  assert.equal(history(s,'A').length,1);assert.equal(history(s,'B').length,1);const q=prepare(s);assert.equal(q.payload.continuity.threads.foreground.id,'B');
  assert.equal(record(s,source,'A').value.status,'active');
 });
-test('Schema11 restart preserves withdrawn A/active B and pinned historical source',t=>{
+test('Schema12 restart preserves withdrawn A/active B and pinned historical source',t=>{
  const file=disk(t),s=setup(t,file),source=s.e;commit(s,delta([proc('A'),proc('B')],[pair(source,'A'),pair(source,'B')]));next(s);commit(s,delta([],[],[pair(source,'A')]),{materials:[material(source)]});
- s.store.close();const reopened=new ContinuityStore(file);try{assert.equal(SCHEMA_VERSION,11);const ss={...s,store:reopened};assert.equal(history(ss,'A').length,0);assert.equal(history(ss,'B').length,1);assert.equal(reopened.read(record(ss,source,'A').id,1).value.status,'active');}finally{reopened.close();}
+ s.store.close();const reopened=new ContinuityStore(file);try{assert.equal(SCHEMA_VERSION,12);const ss={...s,store:reopened};assert.equal(history(ss,'A').length,0);assert.equal(history(ss,'B').length,1);assert.equal(reopened.read(record(ss,source,'A').id,1).value.status,'active');}finally{reopened.close();}
 });
 test('reflection uses the same explicit contract and atomic commit',t=>{
  const s=setup(t),source=s.e;commit(s,delta([proc('A')]));
@@ -111,6 +111,7 @@ test('same shared Event has only own-subject exchanges in explicitly linked hist
 
 test('budget compaction includes eligible event directory before sealing; exact re-seal stable',t=>{
  const s=setup(t);for(let i=0;i<70;i++)put(s.store,'bulk'+i,event('bulk'+i,{body:'context '.repeat(150),occurredAt:1100+i}));
+ s.store.execute({requestId:'admit-bulk',commands:Array.from({length:70},(_,i)=>({op:'admit_subject_event',subjectId:'S',event:{id:'bulk'+i,revision:1}}))});
  next(s);const materials=[];for(let i=0;i<20;i++)materials.push(material(s.store.read('bulk'+i)));
  const p=prepare(s,{materials,capabilities:[],budgetBytes:98304});
  assert.equal(p.payload.continuity.attention.eventProcessSupport.events.length,21);

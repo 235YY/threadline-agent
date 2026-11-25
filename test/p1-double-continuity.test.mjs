@@ -13,8 +13,8 @@ const pin=(id,revision=1)=>({id,revision});
 const process=(id,label='任务')=>({id,expectedRevision:0,label,body:`${label} 正文`,status:'active',world:'actual',intervals:[],basis:[]});
 function setup(t,{processes=[],eventExtra={}}={}){
   const holder=memory(t),store=holder.store,session=new ContinuitySession({store,subjectId:'p',attention:true});
-  put(store,'entity',{op:'write_entity',id:'e1',kind:'person',name:'哥哥'});
-  const [initial,w]=put(store,'init',event('p-e1',{sender:{system:'fixture',id:'u',name:'哥哥',entityId:'e1',isOwner:false},...eventExtra}),frame());
+  put(store,'entity',{op:'write_entity',id:'e1',kind:'person',name:'朋友'});
+  const [initial,w]=put(store,'init',event('p-e1',{sender:{system:'fixture',id:'u',name:'朋友',entityId:'e1',isOwner:false},...eventExtra}),frame());
   const s={store,session,e:initial,w,holder,seq:0};
   if(processes.length)s.attention=put(store,'proc',{op:'initialize_attention',subjectId:'p'});
   return s;
@@ -34,7 +34,7 @@ function commit(s,{changes=[],attention=keepAttention(),selected='choice',option
   return s.session.commit({packet:p,output:output(p,{changes,attention,selected,options}),decisionId:id,requestId:id,allowedActionTools:allowed});
 }
 function nextEvent(s,{threadId=null,body=null}={}){
-  const id=`p-e${++s.seq+1}`;s.e=put(s.store,`ev-${id}`,event(id,{sender:{system:'fixture',id:'u',name:'哥哥',entityId:'e1',isOwner:false},...(threadId?{threadId}:{}),...(body?{body}:{})})).at(-1);return s.e;
+  const id=`p-e${++s.seq+1}`;s.e=put(s.store,`ev-${id}`,event(id,{sender:{system:'fixture',id:'u',name:'朋友',entityId:'e1',isOwner:false},...(threadId?{threadId}:{}),...(body?{body}:{})})).at(-1);return s.e;
 }
 function attentionWith(s,processes,extra={}){
   return {processes,relations:[],residency:{upsert:[],remove:[]},questions:[],...extra};
@@ -187,8 +187,10 @@ test('P1 final 0/1/19/20/21 recent 窗口边界',t=>{
 
 test('P1 final 跨场景 recent 默认隔离，anchor_recall 不返回 impression 正文',t=>{
   const s=setup(t);
-  put(s.store,'scene-a',event('scene-a',{scene:'qq/private/a',body:'A 场景'}));
-  put(s.store,'scene-b',event('scene-b',{scene:'qq/group/b',body:'B 场景'}));
+  const eventA=put(s.store,'scene-a',event('scene-a',{scene:'qq/private/a',body:'A 场景'})).at(-1);
+  put(s.store,'admit-a',{op:'admit_subject_event',subjectId:'p',event:{id:eventA.id,revision:eventA.revision}});
+  const eventB=put(s.store,'scene-b',event('scene-b',{scene:'qq/group/b',body:'B 场景'})).at(-1);
+  put(s.store,'admit-b',{op:'admit_subject_event',subjectId:'p',event:{id:eventB.id,revision:eventB.revision}});
   const a=recentContext({store:s.store,subjectId:'p',scene:'qq/private/a',limit:50});
   assert.deepEqual(a.items.map(x=>x.text),['A 场景']);
   assert.equal(a.items.some(x=>x.text==='B 场景'),false);

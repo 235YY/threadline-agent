@@ -28,10 +28,11 @@ export async function recoverOutputOnce({packet,primary,ledger,client,verified,p
  ensure(!existing||existing.attemptId===attemptId&&existing.packetHash===packetHash,'MODEL_RECOVERY_CHANGED','recovery belongs to another frozen input');
  if(existing?.selected)return selectedModelOutput(ledger.data.requests,primary).output;
  if(existing?.closed)return primary.output;
+ const inputHash=digest(providerMessages);
  const feedback={kind:'host-format-feedback',packetId:expectedPacketId,issue,adopted:false,savedBusinessChanges:false,toolExecution:'not-started',remainingAutomaticCorrections:0,instruction:'前稿未被采用，任何查询/发送/状态修改均未执行。原任务、材料和固定版本如下，原稿也保留。请重新提交完整JSON候选，保留packetId。不要将提案说成已执行；可以自主选择回应、查阅、等待等合法选项。不要猜证据、对象版本或权限。只有一次自动重填机会。'};
  const messages=[...providerMessages,{role:'assistant',content:primary.output},{role:'user',content:JSON.stringify(feedback)}],bytes=Buffer.byteLength(JSON.stringify(messages));
  const close=reason=>{primary.proposalRecovery={...primary.proposalRecovery,closed:true,reason};ledger.save();return primary.output;};
- if(!existing){primary.proposalRecovery={attemptId,packetHash,issue,feedback,selected:false};ledger.save();}
+ if(!existing){primary.proposalRecovery={attemptId,packetHash,inputHash,issue,feedback,selected:false};ledger.save();}
  if(bytes>packet.budgetBytes)return close('CORRECTION_INPUT_LIMIT');
  if(Date.now()-startedAt>=timeoutMs)return close('CORRECTION_TIME_LIMIT');
  let attempt=ledger.tryFind(attemptId);
@@ -39,6 +40,10 @@ export async function recoverOutputOnce({packet,primary,ledger,client,verified,p
   ensure(attempt.status==='settled'&&attempt.providerResult,'TRANSPORT_REPLAY','corrective attempt already entered; do not resend');
   if(typeof attempt.output!=='string'&&typeof attempt.providerResult.output==='string')ledger.attachOutput(attemptId,attempt.providerResult.output);
  }else{
+  // Resume an unsent correction only with the exact provider messages used
+  // to prepare it. Already-settled corrections are read, never sent again.
+  if(existing?.inputHash&&existing.inputHash!==inputHash)return close('CORRECTION_INPUT_CHANGED');
+  if(existing&&!existing.inputHash&&primary.wireTelemetry?.wireLayout==='staged-v1')return close('CORRECTION_INPUT_UNVERIFIED');
   try{await beforeCorrection?.();const r=await client.call({id:attemptId,packet:{...verified,packetId:packet.packetId,payload:packet.payload,messages,bytes},requestContext:primary.source?{source:primary.source,packetId:packet.packetId,parentRequestId:primary.id}:null,signal:AbortSignal.timeout(Math.max(1,Math.min(timeoutMs-(Date.now()-startedAt),60000)))});ledger.attachProviderResult(attemptId,r);ledger.attachOutput(attemptId,r.output);attempt=ledger.find(attemptId);}
   catch(error){if(!ledger.tryFind(attemptId)&&['SPEND_LIMIT','CALL_LIMIT','TASK_CALL_BUDGET','AGENT_CONTROL_CHANGED','AGENT_LEASE_LOST','INTENT_TASK_REVIEW_REQUIRED','NETWORK_PREFLIGHT_FAILED','CANCELLED'].includes(error.code))return close(error.code);throw error;}
  }

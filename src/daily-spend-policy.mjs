@@ -37,7 +37,7 @@ export function dailySpendPolicy(path){
   amendment={hash:a.amendment.previousPolicy.sha256,ledger};
  }
  if(a.reconciliation){const value=evidence(a.reconciliation),provider=value.provider;validateBudgetRows(value.knownRows);validateBudgetRows(value.excludedRows);
-  ensure(value.format==='jingyang-provider-day-reconciliation-v1'&&provider.day===initial.dayKey&&provider.apiKeyLabel==='新版鲸漾系统'&&value.knownRows.every(r=>r.status==='settled')&&value.excludedRows.every(r=>r.status==='settled'),'BUDGET_RECONCILIATION','known settled rows and a fixed provider/day scope required');
+  ensure(value.format==='jingyang-provider-day-reconciliation-v1'&&provider.day===initial.dayKey&&provider.apiKeyLabel==='Threadline Agent'&&value.knownRows.every(r=>r.status==='settled')&&value.excludedRows.every(r=>r.status==='settled'),'BUDGET_RECONCILIATION','known settled rows and a fixed provider/day scope required');
   frozen(provider.screenshot);
   const rates=billingRates(Date.parse(provider.day+'T12:00:00+08:00'));ensure(rates.period==='off-peak','BUDGET_RECONCILIATION','this aggregate reconciliation requires a full off-peak day');
   let tokens=0,cost=0;const known=new Map();for(const r of value.knownRows){const charge=tokenCharge(r.usage,rates);ensure(charge!==null,'BUDGET_RECONCILIATION','complete raw token usage required');tokens+=r.usage.prompt+r.usage.completion;cost+=charge;known.set(r.id,{row:r,charge});}

@@ -1,17 +1,13 @@
-﻿// 原生桌宠：复用旧 DesktopLink/动画协议；不经过旧 DSH。
-import {DesktopLink} from '../../../整理版_2026-10-16/qq-bridge/src/desktop-link.js';
-import {fileURLToPath} from 'node:url';
-import {resolve} from 'node:path';
-const legacy=fileURLToPath(new URL('../../../整理版_2026-10-16/qq-bridge/',import.meta.url));
-const link=new DesktopLink({
-  directory:resolve(legacy,'..','desktop-companion'),
-  logDirectory:resolve(legacy,'..','..','鲸漾新系统','_local','desktop'),
-  enabled:()=>true,renderer:()=>'animation',
-});
+// Optional integration supplied by the operator; no machine-specific default.
+import {isAbsolute,resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
 export async function runDesktop(input={}){
-  const action=input.action??'status';
-  if(action==='status')return link.status();
-  if(action==='start')return link.start();
-  if(action==='stop')return link.stop();
-  return link.request(action,input.args??{});
+ const path=process.env.THREADLINE_DESKTOP_ADAPTER;
+ if(!path){
+  if((input.action??'status')==='status')return {available:false,configured:false};
+  throw Object.assign(Error('Desktop adapter is not configured'),{code:'TOOL_DEPENDENCY_MISSING',transportInvoked:false});
+ }
+ const m=await import(isAbsolute(path)||path.startsWith('.')?pathToFileURL(resolve(path)).href:path);
+ if(typeof m.runDesktop!=='function')throw Object.assign(Error('Adapter must export runDesktop'),{code:'TOOL_DEPENDENCY_MISSING',transportInvoked:false});
+ return m.runDesktop(input);
 }

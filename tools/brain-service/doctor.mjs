@@ -13,6 +13,7 @@ import {spawnSync} from 'node:child_process';
 import {createServer} from 'node:net';
 import {fileURLToPath} from 'node:url';
 import {resolveBrainConfig,assertSupportedNode} from './runtime-config.mjs';
+import {affectRuntimeStatus} from './bootstrap.mjs';
 
 const OK='ok',WARN='warn',BLOCK='blocked',INFO='info';
 const item=(area,status,summary,fix=null)=>({area,status,summary,...(fix?{fix}:{})});
@@ -89,12 +90,28 @@ export async function diagnose({root=process.cwd(),env=process.env,platform=proc
   }
 
   if(config.affect.enabled){
-    const py=env.JY_AFFECT_PYTHON;
-    if(!py)out.push(item('affect',BLOCK,'JY_AFFECT=1 但未设置 JY_AFFECT_PYTHON；默认指向原机 Windows 路径','设置 JY_AFFECT_PYTHON 为 Python >=3.10 解释器'));
-    else{
-      const v=pythonVersion(py,spawn),[maj,min]=(v??'0.0').split('.').map(Number);
-      out.push(!v?item('affect',BLOCK,`无法运行 ${py}`,'检查解释器路径'):maj>3||maj===3&&min>=10?item('affect',OK,`Python ${v}`):item('affect',BLOCK,`Python ${v} 过旧，需要 >=3.10`));
+    // The packaged runtime is the default; JY_AFFECT_PYTHON is an explicit override.
+    // A missing/tampered runtime makes startup degrade (core keeps running), so it is
+    // a WARN unless the operator explicitly requires affect via JY_AFFECT_REQUIRED=1.
+    const required=env.JY_AFFECT_REQUIRED==='1';
+    const status=affectRuntimeStatus({root,env});
+    const fixRuntime='部署已验证的 _local/affect-runtime 包（含 PROVENANCE.json），或设置 JY_AFFECT_PYTHON';
+    if(!status.ok){
+      out.push(required
+        ? item('affect',BLOCK,`affect runtime 不可用（${status.code}），且 JY_AFFECT_REQUIRED=1：启动会拒绝`,fixRuntime+'; 或移除 JY_AFFECT_REQUIRED 允许降级')
+        : item('affect',WARN,`affect runtime 不可用（${status.code}）：启动将降级为无 affect/fusion，核心对话继续`,fixRuntime+'; 确需硬性要求时设置 JY_AFFECT_REQUIRED=1'));
+    }else if(status.source==='operator'){
+      const v=pythonVersion(status.pythonPath,spawn),[maj,min]=(v??'0.0').split('.').map(Number);
+      const usable=!!v&&(maj>3||maj===3&&min>=10);
+      if(!v)out.push(required?item('affect',BLOCK,`无法运行 operator 提供的解释器：${status.pythonPath}`,'检查解释器路径或改用打包 runtime')
+        :item('affect',WARN,`无法运行 operator 提供的解释器：${status.pythonPath}；启动将降级`,'修正 JY_AFFECT_PYTHON 或改用已验证打包 runtime'));
+      else if(!usable)out.push(required?item('affect',BLOCK,`Python ${v} 过旧，需要 >=3.10`,'升级 Python 或改用打包 runtime')
+        :item('affect',WARN,`Python ${v} 过旧（需要 >=3.10）；启动将降级`,'升级 Python 或改用打包 runtime'));
+      else out.push(item('affect',OK,`operator-provided Python ${v}（provenance 未验证）`));
+    }else{
+      out.push(item('affect',OK,`打包 runtime ${status.provenance?.version??'unknown'}（exe/archive sha 与签名验证通过）`));
     }
+    if(required)out.push(item('affect-required',INFO,'JY_AFFECT_REQUIRED=1：runtime 不可用或解释器无效将阻断启动'));
   }
 
   if(probePort){
@@ -120,7 +137,7 @@ function finish(checks,config){
 }
 export function formatReport(report){
   const mark={ok:'✓',warn:'!',blocked:'✗',info:'·'};
-  const lines=[`鲸漾启动前诊断  mode=${report.mode??'unknown'}  ${report.ready?'可以启动':'有阻断项'}`,''];
+  const lines=[`Threadline 启动前诊断  mode=${report.mode??'unknown'}  ${report.ready?'可以启动':'有阻断项'}`,''];
   for(const c of report.checks){lines.push(`${mark[c.status]} ${c.area.padEnd(22)} ${c.summary}`);if(c.fix&&c.status!==OK)lines.push(`  ${''.padEnd(22)} → ${c.fix}`);}
   return lines.join('\n');
 }

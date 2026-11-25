@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as sqlite from 'node:sqlite';
 import {spawnSync} from 'node:child_process';
@@ -84,10 +84,12 @@ test('没有表达选择时保持null，不从文字猜测动机',t=>{
   const s=setup(t),c=commit(s);assert.equal(readReaction({store:s.store,subjectId:'jingyang',decision:ref(c.decision)}).expressionChoice,null);
 });
 
-test('准备输入不消费消息；deferred保留待处理状态',t=>{
+test('准备输入不消费消息；deferred保留可审计状态',t=>{
   const s=setup(t);input(s);assert.equal(s.store.subjectObservation('jingyang','o1').status,'received');
   commit(s,'wait',{kind:'wait',payload:{},disposition:'deferred'});assert.equal(s.store.subjectObservation('jingyang','o1').status,'deferred');
-  assert.equal(s.store.subjectInbox({subjectId:'jingyang'}).total,1);assert.equal(s.store.read('wait:response'),null);
+  assert.equal(s.store.subjectInbox({subjectId:'jingyang'}).total,1);
+  assert.equal(s.store.subjectInbox({subjectId:'jingyang',excludeDeferred:true}).total,0);
+  assert.equal(s.store.read('wait:response'),null);
 });
 
 test('未入箱和非真实触发不能悄悄创建个人状态',t=>{

@@ -21,10 +21,10 @@ if(fresh){
   console.log('seeded',N,'events in',Date.now()-t0,'ms');
 }
 const sender=(()=>{const s=ensurePerson(store,people[3]);delete s.nickname;return s;})();
-const cur=put(store,'cur'+Date.now(),event('cur'+Date.now(),{body:'@鲸漾 在吗',scene:'qq/group/555',actor:sender.entityId,sender,occurredAt:clock,source:{system:'qq',key:'cur'+Date.now()}})).at(-1);
+const cur=put(store,'cur'+Date.now(),event('cur'+Date.now(),{body:'@小栈 在吗',scene:'qq/group/555',actor:sender.entityId,sender,occurredAt:clock,source:{system:'qq',key:'cur'+Date.now()}})).at(-1);
 const ws=store.read('ws-g');
 const time=(label,fn)=>{const t=performance.now();const r=fn();console.log(label.padEnd(18),(performance.now()-t).toFixed(0)+'ms');return r;};
 time('recentContext',()=>recentContext({store,subjectId:'jingyang',currentEvent:cur,scene:cur.scene,limit:50}));
 time('socialProjection',()=>socialProjection({store,subjectId:'jingyang',currentEvent:cur,attentionFrame:null,now:clock}));
-time('prepare (full)',()=>session.prepare({currentEvent:ref(cur),workspace:ref(ws),identity:'你是鲸漾。',mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,taskThreads:true,subjectiveMemoryV2:true,socialContext:true,localLookupPolicy:{maxReads:2,maxHits:4},allowedActionTools:[],budgetBytes:131072,now:clock}));
+time('prepare (full)',()=>session.prepare({currentEvent:ref(cur),workspace:ref(ws),identity:'你是小栈。',mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,taskThreads:true,subjectiveMemoryV2:true,socialContext:true,localLookupPolicy:{maxReads:2,maxHits:4},allowedActionTools:[],budgetBytes:131072,now:clock}));
 store.close();

@@ -1,12 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import {fileURLToPath} from 'node:url';
 import {openFocusFixture,SUPPLEMENT_CASES} from '../experiments/focus-study/fixture.mjs';
 import {wirePacket,verifiedWire,expandOutput,declaredEvidence} from '../experiments/automated-study/protocol.mjs';
 import {checkCaseGate} from '../experiments/bounded-study.mjs';
-import {verifiedModelInput} from '../src/cognition.mjs';
-const campaign=new URL('../evaluation/focus-study_2026-11-05/',import.meta.url);
+import {verifiedModelInput,sealedWithGeneration} from '../src/cognition.mjs';
+const legacyFixture=packet=>{const p=structuredClone(packet);delete p.payload.operationContract;return sealedWithGeneration(p,'r006');};
 test('焦点薄接口只有一个输出外壳；保留输入continuity路径和完整语义限制',()=>{
  const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
   const p=f.prepare(),w=wirePacket(p.packet,'compact-focus');verifiedWire(w);
@@ -27,13 +25,11 @@ test('顶层attention能够提交；旧外壳仍拒绝，不静默翻译格式�
   assert.equal(f.snapshot().states.length,4);assert.deepEqual(f.snapshot().requiredByProjection,[]);
  }finally{f.store.close();}
 });
-test('旧两份实际wire仍可原样核验，新profile不重写已付费证据',()=>{
- for(const pointer of ['current.json','supplement-current.json']){
-  const p=JSON.parse(readFileSync(new URL(pointer,campaign),'utf8')),id=pointer==='current.json'?'f01':'f03';
-  for(const step of ['r0','r1']){const path=fileURLToPath(new URL(`${p.hash}/`,campaign))+'/'+id+'/'+step+'/call/wire.json',before=readFileSync(path,'utf8');
-   const w=JSON.parse(before);verifiedWire(w);assert.equal(readFileSync(path,'utf8'),before);
-  }
- }
+test('合成旧 wire 可验证，验证不重写封包',()=>{
+ const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
+  const legacy=legacyFixture(f.prepare().packet),w=wirePacket(legacy,'compact-focus');
+  const copy=JSON.stringify(w);verifiedWire(w);assert.equal(JSON.stringify(w),copy);
+ }finally{f.store.close();}
 });
 test('新profile不放宽来源、版本与用途权限',()=>{
  const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
@@ -54,8 +50,7 @@ test('recovery-002 wire: legacy/current mixed verification never reseals evidenc
  const f=openFocusFixture(':memory:',SUPPLEMENT_CASES[0]);try{
   const current=f.prepare().packet;
   assert.equal(current.payload.operationContract.format,'operation-contract-v1');
-  const pointer=JSON.parse(readFileSync(new URL('current.json',campaign),'utf8'));
-  const archived=JSON.parse(readFileSync(new URL(`${pointer.hash}/f01/r0/call/wire.json`,campaign),'utf8')).basePacket;
+  const archived=legacyFixture(current);
   assert.equal(Object.hasOwn(archived.payload,'operationContract'),false);
   for(const p of [archived,current,JSON.parse(JSON.stringify(archived)),JSON.parse(JSON.stringify(current))]){
    const original=JSON.stringify(p);verifiedModelInput(p);assert.equal(JSON.stringify(p),original);

@@ -4,9 +4,20 @@ export function blockedChatSet(env={}){
  for(const c of String(env.QQ_BLOCKED_CHATS??'').split(',')){const s=c.trim();if(/^qq\/(private|group)\/\d+$/.test(s))out.add(s);}
  return out;
 }
-export function acceptsChat({privateChat,userId,groupId,scene},{scope,ownerOnly,blockedChats}={}){
+export function allowedGroupSet(env={}){
+ const out=new Set();
+ for(const g of String(env.QQ_ALLOWED_GROUPS??'').split(',')){const id=g.trim();if(/^\d+$/.test(id))out.add('qq/group/'+id);}
+ return out;
+}
+export function acceptsChat({privateChat,userId,groupId,scene},{scope,ownerOnly,blockedChats,allowedGroups}={}){
  const s=scene??(privateChat&&userId!==undefined?'qq/private/'+userId:!privateChat&&groupId!==undefined?'qq/group/'+groupId:null);
  if(s&&blockedChats?.has?.(s))return false;
+ // Explicit group allowlist: only listed groups get in, private chat stays owner-only.
+ // It never widens access; QQ_BLOCKED_* still wins above.
+ if(allowedGroups?.size){
+  if(privateChat)return !ownerOnly||String(userId)===String(ownerOnly);
+  return groupId!==undefined&&allowedGroups.has('qq/group/'+groupId);
+ }
  if(scope==='all')return true;
  return !ownerOnly||(privateChat&&String(userId)===String(ownerOnly));
 }

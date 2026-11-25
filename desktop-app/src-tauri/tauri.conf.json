@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Threadline Studio",
+  "version": "2.9.0",
+  "identifier": "io.github.235yy.threadline.studio",
+  "build": {
+    "frontendDist": "../../scripts/desktop-ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Threadline Studio",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 620,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "dmg",
+      "appimage",
+      "deb"
+    ],
+    "resources": {
+      "../../src": "src/",
+      "../../tools": "tools/",
+      "../../scripts": "scripts/",
+      "../../prompts": "prompts/",
+      "../../config": "config/",
+      "../../package.json": "package.json",
+      "../../LICENSE": "LICENSE",
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../../runtime/node": "runtime/node/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": true
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

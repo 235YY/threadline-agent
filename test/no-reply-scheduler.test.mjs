@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {mkdirSync,mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {startBrainService} from '../tools/brain-service/server.mjs';
-import {keepAttention} from '../src/attention.mjs';
+import {startBrainService,createSchedulerFailureReporter} from '../tools/brain-service/server.mjs';
+import {keepAttention,attentionId} from '../src/attention.mjs';
+import {DebugArchive} from '../src/debug-reader.mjs';
 
 const response=packet=>({packetId:packet.packetId,options:[{id:'r',kind:'respond',payload:{text:'在的'}}],selected:'r',summary:'回归回复',used:[],
   continuity:{changes:[],residency:{add:[],remove:[]},expressionChoice:{mode:'direct',reason:null},observationDisposition:'handled',attention:{...keepAttention(),focus:{select:[]}}}});
@@ -57,4 +58,78 @@ test('P0-C: 只有陈旧队列项时清理引用，不调用模型，不永久�
     assert.equal(calls,0,'stale item does not create repeated model turns');
     assert.equal(service.store.subjectInbox({subjectId:'jingyang',pendingOnly:true}).total,0);
   }finally{if(service)await close(service);}
+});
+
+test('memory reflection coalesces fresh events and eventually processes a small batch',async t=>{
+ const f=fixture();t.after(()=>rmSync(f.dir,{recursive:true,force:true}));
+ const hour=3_600_000;
+ let now=Date.now(),reflections=0,service;
+ try{
+  service=await startBrainService({storePath:f.storePath,stateDirectory:f.state,global:true,heartbeatMs:0,
+   clock:()=>now,idleIntervalMs:12*hour,rhythm:{minGapMs:1},
+   decide:packet=>{
+    const proposal=wait(packet);
+    if(!packet.payload.current){
+     reflections++;
+     delete proposal.continuity.observationDisposition;
+     delete proposal.continuity.expressionChoice;
+    }
+    return JSON.stringify(proposal);
+   }});
+  assert.ok((await service.idleReflect({manual:true})).skipped);
+  const msg={source:'qq',key:'temporary:reflection',text:'记录一个真实会话事件的合成测试',scene:'qq/private/1',actor:'fixture'};
+  await service.observe(msg);
+  await service.observe(msg);
+  await service.idleTurn();
+  assert.equal(service.context().eventsSince,1);
+  now+=2*hour;
+  assert.ok((await service.idleReflect({manual:true})).skipped);
+  now+=4*hour;
+  await service.idleReflect({manual:true});
+  assert.equal(reflections,1);
+  assert.equal(service.context().eventsSince,0);
+  assert.ok((await service.idleReflect({manual:true})).skipped);
+ }finally{if(service)await close(service);}
+});
+
+test('scheduler failures are recorded once per unchanged error and again after cooldown',()=>{
+  const seen=[];let now=1_000_000;
+  const report=createSchedulerFailureReporter({subjectId:'s',clock:()=>now,recordDiagnostic:value=>{seen.push(value);return {logged:true};}});
+  assert.deepEqual(report({code:'SYNTHETIC_FAULT',message:'boom'}),{recorded:true,errorCode:'SYNTHETIC_FAULT'});
+  assert.deepEqual(report({code:'SYNTHETIC_FAULT',message:'boom'}),{recorded:false,duplicate:true,errorCode:'SYNTHETIC_FAULT'});
+  assert.equal(report({code:'OTHER_FAULT',message:'other'}).recorded,true);
+  assert.equal(report({code:'SYNTHETIC_FAULT',message:'boom'}).recorded,false);
+  assert.equal(report({code:'OTHER_FAULT',message:'other'}).recorded,false);
+  assert.equal(seen.length,2);
+  now+=3_600_000;
+  assert.equal(report({code:'SYNTHETIC_FAULT',message:'boom'}).recorded,true);
+  assert.equal(report({code:'THIRD_FAULT',message:'boom'}).recorded,true);
+  assert.equal(seen.length,4);
+  assert.equal(seen[0].stage,'scheduler.failed');
+  assert.equal(seen[0].data.errorCode,'SYNTHETIC_FAULT');
+  assert.equal(seen[0].data.reason,'boom');
+  assert.equal(seen[0].context.subjectId,'s');
+});
+
+test('a repeated scheduled-tick exception produces one diagnostic, not one per heartbeat',async t=>{
+  const f=fixture();t.after(()=>rmSync(f.dir,{recursive:true,force:true}));
+  let service,realRead,realDiagnostic;const seen=[];let faults=0;
+  try{
+    service=await startBrainService({storePath:f.storePath,stateDirectory:f.state,heartbeatMs:0,rhythm:{minGapMs:1},decide:packet=>JSON.stringify(wait(packet))});
+    realRead=service.store.read.bind(service.store);realDiagnostic=service.store.recordDiagnostic.bind(service.store);
+    service.store.read=(id,rev)=>{if(id===attentionId('jingyang')){faults++;throw Object.assign(new Error('synthetic scheduler fault'),{code:'SYNTHETIC_SCHEDULER_FAULT'});}return realRead(id,rev);};
+    service.store.recordDiagnostic=value=>{seen.push(value);return realDiagnostic(value);};
+    service.startScheduling(20);
+    assert.ok(await until(()=>faults>=3),'the scheduled tick really faulted repeatedly');
+    await sleep(40);
+    const scheduler=seen.filter(x=>x.stage==='scheduler.failed');
+    assert.equal(scheduler.length,1);
+    assert.equal(scheduler[0].data.errorCode,'SYNTHETIC_SCHEDULER_FAULT');
+    assert.match(scheduler[0].data.reason,/synthetic scheduler fault/);
+    assert.equal(service.store.debugHealth().failedWrites,0,'the diagnostic must satisfy the existing metadata contract');
+    const archive=new DebugArchive(f.storePath);
+    try{const items=archive.journal({limit:200}).items;assert.ok(items.some(x=>x.stage==='scheduler.failed'&&x.data.errorCode==='SYNTHETIC_SCHEDULER_FAULT'));}finally{archive.close();}
+  }finally{
+    if(service){if(realRead)service.store.read=realRead;if(realDiagnostic)service.store.recordDiagnostic=realDiagnostic;await close(service);}
+  }
 });

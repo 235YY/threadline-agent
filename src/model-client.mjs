@@ -5,6 +5,7 @@ import {lookup as systemLookup} from 'node:dns/promises';
 import {canonical,digest,ensure} from './contracts.mjs';
 import {verifiedModelInput} from './cognition.mjs';
 import {writeLedgerAtomically} from './ledger-io.mjs';
+import {parseProviderSSEStream} from './upstream-sse.mjs';
 
 const PUBLIC_API='https://api.deepseek.com/chat/completions';
 const safeNetworkCode=e=>{
@@ -42,6 +43,20 @@ export async function requireStudyNetwork(options={}){
   return result;
 }
 
+// A successful public probe is reused briefly within this model instance.
+// Budget, credentials and durable dispatch checks still run on every request.
+export function reuseSuccessfulNetworkProbe(probe,{clock=Date.now,ttlMs=30_000}={}){
+  let previous=null,expiresAt=0;
+  const check=async options=>{
+    if(previous&&clock()<expiresAt)return {...previous,reused:true};
+    const result=await probe(options);
+    if(result?.ok===true){previous=result;expiresAt=clock()+ttlMs;}
+    return {...result,reused:false};
+  };
+  check.invalidate=()=>{previous=null;expiresAt=0;};
+  return check;
+}
+
 // Official peak rates, CNY per 1M tokens, checked 2026-11-02.
 export const RATES=Object.freeze({hit:0.04,miss:2,output:8,source:'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'});
 export function pricedUsage(u) {
@@ -54,12 +69,12 @@ export function pricedUsage(u) {
 
 // The default remains the legacy JSON contract. Reading experiments can explicitly
 // select text without silently inheriting a contradictory JSON-only API setting.
-export function buildStudyRequest(messages,{maxTokens=6000,outputFormat='json',reasoning='high'}={}) {
+export function buildStudyRequest(messages,{maxTokens=6000,outputFormat='json',reasoning='high',stream=false}={}) {
   ensure(Number.isSafeInteger(maxTokens)&&maxTokens>0&&maxTokens<=6000,'OUTPUT_LIMIT','bounded model output required');
   ensure(['json','text'].includes(outputFormat),'OUTPUT_FORMAT','explicit JSON or text output required');
   ensure(['high','low','off'].includes(reasoning),'REASONING_CONFIG','explicit high, low or off configuration required');
   return {model:'deepseek-flash',thinking:{type:reasoning==='off'?'disabled':'enabled'},...(reasoning==='off'?{}:{reasoning_effort:reasoning}),
-    ...(outputFormat==='json'?{response_format:{type:'json_object'}}:{}),stream:false,max_tokens:maxTokens,messages};
+    ...(outputFormat==='json'?{response_format:{type:'json_object'}}:{}),stream:Boolean(stream),...(stream?{stream_options:{include_usage:true}}:{}),max_tokens:maxTokens,messages};
 }
 
 export class StudyLedger {
@@ -122,7 +137,7 @@ export class StudyLedger {
 }
 
 export class DeepSeekStudyClient {
-  constructor({ledger,getKey,transport=fetch,maxTokens=6000,timeoutMs=120000,outputFormat='json',reasoning='high',inputVerifier=verifiedModelInput,monitor=null,requireMonitor=false,admitRequest=null,
+  constructor({ledger,getKey,transport=fetch,maxTokens=6000,timeoutMs=120000,outputFormat='json',reasoning='high',stream=false,inputVerifier=verifiedModelInput,monitor=null,requireMonitor=false,admitRequest=null,
     networkCheck=transport===fetch?requireStudyNetwork:async()=>({ok:true,classification:'explicitly-injected-transport'})}={}) {
     ensure(Number.isSafeInteger(maxTokens)&&maxTokens>0&&maxTokens<=6000,'OUTPUT_LIMIT','bounded model output required');
     ensure(typeof inputVerifier==='function','INPUT_VERIFIER','explicit packet verifier required');
@@ -133,12 +148,16 @@ export class DeepSeekStudyClient {
     ensure(typeof requireMonitor==='boolean'&&(!requireMonitor||monitor!==null),'MONITOR_CONFIG','mandatory recording requires an explicit monitor');
     ensure(!requireMonitor||typeof ledger?.recordUnsentMonitorStop==='function','LEDGER_CONFIG','mandatory recording requires unsent-stop ledger support');
     ensure(admitRequest===null||typeof admitRequest==='function','ADMISSION_CONFIG','optional synchronous admission gate required');
-    Object.assign(this,{ledger,getKey,transport,maxTokens,timeoutMs,outputFormat,reasoning,inputVerifier,networkCheck,monitor,requireMonitor,admitRequest});
+    Object.assign(this,{ledger,getKey,transport,maxTokens,timeoutMs,outputFormat,reasoning,stream:Boolean(stream),inputVerifier,networkCheck,monitor,requireMonitor,admitRequest});
   }
-  async call({id,packet,signal,expectedRequestFingerprint=null,requestContext=null}) {
+  async call({id,packet,signal,expectedRequestFingerprint=null,requestContext=null,onTextDelta=null,workRequest=null}) {
+    ensure(onTextDelta===null||this.stream&&this.outputFormat==='text'&&typeof onTextDelta==='function','STREAM_CONTRACT','only text-only streaming may emit live content');
     const input=this.inputVerifier(packet);
     ensure(!signal?.aborted,'CANCELLED','cancelled before preflight, credentials or reservation');
-    const request=buildStudyRequest(input.messages,{maxTokens:this.maxTokens,outputFormat:this.outputFormat,reasoning:this.reasoning});
+    ensure(workRequest===null||!this.stream&&this.outputFormat==='text'&&workRequest.stream===false&&
+      workRequest.messages===input.messages&&workRequest.max_tokens===this.maxTokens,
+      'WORK_REQUEST','verified non-streaming work request required');
+    const request=workRequest??buildStudyRequest(input.messages,{maxTokens:this.maxTokens,outputFormat:this.outputFormat,reasoning:this.reasoning,stream:this.stream});
     ensure(expectedRequestFingerprint===null||typeof expectedRequestFingerprint==='string'&&/^[a-f0-9]{64}$/.test(expectedRequestFingerprint)
       &&digest(request)===expectedRequestFingerprint,'REQUEST_FINGERPRINT','actual request differs from frozen configuration; nothing sent');
     const trace=this.monitor?.start({id,packet,request});
@@ -156,7 +175,9 @@ export class DeepSeekStudyClient {
     this.admitRequest?.();
     requireTrace('startup');
     trace?.record('network.preflight.started');
+    const probeStart=performance.now();
     const network=await this.networkCheck({signal});
+    const preflightMs=Math.round(performance.now()-probeStart);
     trace?.record('network.preflight.completed',{status:network?.ok===true?'ok':'failed',classification:network?.classification??null});
     ensure(network?.ok===true,'NETWORK_PREFLIGHT_FAILED','Network preflight did not confirm transport; no inference was reserved');
     ensure(!signal?.aborted,'CANCELLED','cancelled during preflight before credentials or reservation');
@@ -179,6 +200,19 @@ export class DeepSeekStudyClient {
         signal:signal?AbortSignal.any([signal,AbortSignal.timeout(this.timeoutMs)]):AbortSignal.timeout(this.timeoutMs)});
       trace?.record('transport.response',{httpStatus:response.status});
       ensure(response.ok,'PROVIDER_HTTP',`provider returned HTTP ${response.status}`,{httpStatus:response.status});
+      if(this.stream){
+        const sse=await parseProviderSSEStream(response.body,{maxBytes:2*1024*1024,startedAt:started,
+          onContentDelta:onTextDelta,onToolCallDelta:onTextDelta?()=>ensure(false,'STREAM_TOOL_UNAVAILABLE','text-only stream cannot emit tools'):null});
+        ensure(sse.settled,'STREAM_INCOMPLETE',sse.reason??'provider SSE ended without final usage');
+        const usage=pricedUsage(sse.usage);this.ledger.settle(id,usage);accounted=true;
+        trace?.record('budget.settled',{usage,status:'settled',firstContentMs:sse.timing.firstContentMs});
+        const complete=sse.finishReason==='stop'&&typeof sse.content==='string'&&sse.content.trim().length>0;
+        trace?.record('call.completed',{complete,finishReason:sse.finishReason,firstContentMs:sse.timing.firstContentMs,latencyMs:sse.timing.latencyMs});
+        return {id,packetId:input.packetId,model:sse.reportedModel??request.model,finishReason:sse.finishReason,
+          reportedModel:sse.reportedModel,providerResponseId:sse.providerResponseId,providerCreated:sse.providerCreated,
+          startedAt,completedAt:new Date().toISOString(),output:sse.content,usage,firstContentMs:sse.timing.firstContentMs,
+          latencyMs:sse.timing.latencyMs,preflightMs,preflightReused:network.reused===true,transportOk:true,complete,...(trace?{monitor:trace.summary()}: {})};
+      }
       const reader=response.body.getReader(),parts=[];let length=0;
       try{while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;
         ensure(length<=1024*1024,'RESPONSE_LIMIT','bounded provider response required');parts.push(Buffer.from(value));}}
@@ -193,11 +227,12 @@ export class DeepSeekStudyClient {
       return {id,packetId:input.packetId,model:body.model??request.model,finishReason:choice?.finish_reason??null,
         reportedModel:typeof body.model==='string'?body.model:null,providerResponseId:typeof body.id==='string'?body.id:null,
         providerCreated:Number.isSafeInteger(body.created)?body.created:null,startedAt,completedAt:new Date().toISOString(),
-        output:typeof content==='string'?content:'',usage,latencyMs:Math.round(performance.now()-started),
+        output:typeof content==='string'?content:'',...(workRequest?{workMessage:choice?.message??null}:{}),usage,latencyMs:Math.round(performance.now()-started),preflightMs,preflightReused:network.reused===true,
         transportOk:true,complete,...(trace?{monitor:trace.summary()}: {})};
       // Provider reasoning is kept only in an explicitly enabled local sidecar, never in the public output.
     }catch(error){
       if(!transportInvoked)throw error;
+      this.networkCheck.invalidate?.();
       if(this.ledger.find(id).status==='settled')accounted=true;
       if(!accounted){
         this.ledger.uncertain(id,error.cause?.code??error.code??'NETWORK_OR_PROVIDER_ERROR');

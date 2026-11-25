@@ -30,7 +30,7 @@ export const CAPABILITIES=Object.freeze([
   {id:'qq_list_voices',name:'看语音库',what:'列出已有语音文件',when:'想发旧语音时',how:'do("qq_list_voices", {limit})',why:'自己的声音库'},
   {id:'qq_sticker_note',name:'表情备注',what:'给表情写/改本地备注和标签',when:'想记住一个表情怎么用',how:'do("qq_sticker_note", {id,note,tags})',why:'表情也是表达'},
   {id:'attention_mute',name:'暂时屏蔽',what:'某个来源/聊天框的消息先存着，不叫醒她',when:'嫌某个群太吵时',how:'do("attention_mute", {prefix})',why:'注意力有限'},
-  {id:'attention_unmute',name:'解除屏蔽',what:'恢复某个来源，并按时间补进积压',when:'想看那个来源时',how:'do("attention_unmute", {prefix,load:true})',why:'她决定何时回来'},
+  {id:'attention_unmute',name:'解除屏蔽',what:'恢复某个来源的接收；默认不补发屏蔽期间的积压',when:'想看那个来源时',how:'do("attention_unmute", {prefix,load:true})',why:'她决定何时回来'},
   {id:'attention_load',name:'加载积压',what:'把屏蔽期间的消息批量放回工作台',when:'想统一看积压时',how:'do("attention_load", {prefix,limit})',why:'像人集中回消息'},
   {id:'attention_status',name:'看屏蔽状态',what:'列出正在屏蔽的来源和积压数',when:'想确认时',how:'do("attention_status", {})',why:'知道自己的注意力状态'},
   {id:'qq_minecraft',name:'MC',what:'查看/连接本机 MC 世界，执行 mc_* 工具',when:'想进游戏时',how:'do("qq_minecraft", {action:status|catalog|call|start|stop,...})',why:'在 Java 世界里活动'},

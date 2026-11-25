@@ -1,4 +1,4 @@
-// 鲸漾唯一消息规范：内部只认 content parts，不认 provider-specific wire format。
+// Threadline 消息规范：内部只认 content parts，不认 provider-specific wire format。
 // 旧事件没有 message 时，由 fromLegacyBody 投影成 text message。
 import {createHash} from 'node:crypto';
 import {ensure} from './contracts.mjs';

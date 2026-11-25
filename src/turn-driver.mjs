@@ -1,4 +1,4 @@
-import {attentionId} from './attention.mjs';
+import {attentionId,DEFAULT_ATTENTION_CAPACITY_POLICY,normalizeAttentionCapacityPolicy} from './attention.mjs';
 import {readFileSync} from 'node:fs';
 // 她的一轮：收观察 → 问她的节律 → 组装最合理的处境 → 把决定权交给她 → 执行她的选择 → 收出站/等待。
 // 宿主只提供事实、结构、资源与执行；不替她挑焦点、不替她写记忆、不替她解释。
@@ -14,6 +14,9 @@ import {observeAssociation} from './association-observe.mjs';
 import {readActivity,saveActivity,activityWrite} from './turn-activity.mjs';
 import {runtimeFeedback} from './runtime-feedback.mjs';
 import {modelRequestSource} from './model-transport.mjs';
+import {memoryReminders,shouldTrySemanticRecall} from './memory-reminders.mjs';
+import {readPinboard} from './memory-gating.mjs';
+import {memoryAudience} from './memory-access.mjs';
 
 const ref=r=>({id:r.id,revision:r.revision});
 const TASK_STEP_SUFFIX='这是 AgentTask 单步执行，不是新的对话轮。continuity.attention.frame 只是输入，不得原样写回输出。若本轮不修改 attention 就完全省略 attention；若修改，attention 必须是增量 {processes,relations,residency,questions}，可选 focus，绝不能包含 frame。准备好结果时使用 task_finish。';
@@ -21,8 +24,12 @@ const TASK_RESULT_SUFFIX='本轮 current 是 AgentTask 的 tool_receipt 结果�
 
 const MEMORY_SCOPE_V1=readFileSync(new URL('../prompts/memory-scope-v1.zh.md',import.meta.url),'utf8');
 export class TurnDriver {
-  #store;#subjectId;#session;#lookup;#decide;#config;#lookupPolicy;#workspace;#identity;#style;#eventBypass;#materialsFor;#maxCalls;#state;#outbox;#tendency;#allowed;#capabilities;#algorithmV011;#apperceptionV1;#subjectiveDomains;#subjectiveMemory;#subjectiveMemoryV2;#taskThreads;#anchorDirectory;#memoryScopeV1;#investigationContinuityV1;#experienceLearningV1;#intentProtocol;
-  constructor({store,subjectId,decide,workspace,identity='',style='',eventBypass=false,materialsFor=null,rhythm={},lookupPolicy={maxReads:2,maxHits:4},maxCallsPerTurn=3,maxForeground=16,tendency=null,allowedActionTools=[],capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,memoryScopeV1=false,investigationContinuityV1=false,experienceLearningV1=false,intentProtocol=false,sessionFactory=null}={}){
+  #store;#subjectId;#session;#lookup;#decide;#config;#lookupPolicy;#workspace;#identity;#style;#eventBypass;#materialsFor;#maxCalls;#state;#outbox;#tendency;#allowed;#capabilities;#algorithmV011;#apperceptionV1;#subjectiveDomains;#subjectiveMemory;#subjectiveMemoryV2;#taskThreads;#anchorDirectory;#memoryScopeV1;#investigationContinuityV1;#experienceLearningV1;#intentProtocol;#timezoneMinutes;#attentionPolicy;#semanticMemory;#contextBudgetBytes;
+  constructor({store,subjectId,decide,workspace,identity='',style='',eventBypass=false,materialsFor=null,rhythm={},lookupPolicy={maxReads:2,maxHits:4},maxCallsPerTurn=3,maxForeground=16,tendency=null,allowedActionTools=[],capabilities=null,algorithmV011=false,apperceptionV1=false,subjectiveDomains=false,subjectiveMemory=false,subjectiveMemoryV2=false,taskThreads=false,anchorDirectory=false,memoryScopeV1=false,investigationContinuityV1=false,experienceLearningV1=false,intentProtocol=false,timezoneMinutes=480,attentionPolicy=DEFAULT_ATTENTION_CAPACITY_POLICY,sessionFactory=null,semanticMemory=null,contextBudgetBytes=131072}={}){
+    this.#timezoneMinutes=timezoneMinutes;
+    this.#semanticMemory=semanticMemory;
+    ensure(Number.isSafeInteger(contextBudgetBytes)&&contextBudgetBytes>=16384&&contextBudgetBytes<=131072,'TURN_DRIVER','context byte cap out of range');
+    this.#contextBudgetBytes=contextBudgetBytes;
     ensure(store&&typeof store.execute==='function','TURN_DRIVER','store required');
     text(subjectId,'subject id');ensure(typeof decide==='function','TURN_DRIVER','decide function required');
     const w=store.read(workspace?.id??workspace,workspace?.revision);
@@ -45,7 +52,7 @@ export class TurnDriver {
     this.#subjectiveMemory=subjectiveMemory===true;
     this.#subjectiveMemoryV2=subjectiveMemoryV2===true;
     this.#taskThreads=taskThreads===true;
-    this.#anchorDirectory=anchorDirectory===true;this.#memoryScopeV1=memoryScopeV1===true;this.#experienceLearningV1=experienceLearningV1===true;this.#investigationContinuityV1=investigationContinuityV1===true||this.#experienceLearningV1;this.#intentProtocol=intentProtocol===true;
+    this.#anchorDirectory=anchorDirectory===true;this.#memoryScopeV1=memoryScopeV1===true;this.#experienceLearningV1=experienceLearningV1===true;this.#investigationContinuityV1=investigationContinuityV1===true||this.#experienceLearningV1;this.#intentProtocol=intentProtocol===true;this.#attentionPolicy=normalizeAttentionCapacityPolicy(attentionPolicy);
     const sessionArgs={store,subjectId,attention:true,maxForeground,requestJournal:decide.requestJournal??null};
     this.#session=sessionFactory?sessionFactory(sessionArgs):new ContinuitySession(sessionArgs);
     this.#lookup=new LocalLookupSession({store,subjectId,policy:lookupPolicy});
@@ -81,7 +88,12 @@ export class TurnDriver {
       return [...selected.filter(s=>s.kind==='process').map(s=>s.id),...(d.output.continuity?.attention?.processes??[]).map(p=>p.id)].some(id=>ids.has(id));
     }).sort((a,b)=>Number(b.id===receiptDecision?.id)-Number(a.id===receiptDecision?.id)||Number(b.id===last?.id)-Number(a.id===last?.id)||(b.recordedAt??0)-(a.recordedAt??0)||b.id.localeCompare(a.id)).slice(0,2).reverse().map(ref);
   }
-  #instructions(extra=null){const policy=this.#decide.operationPolicy;return [extra,this.#memoryScopeV1?MEMORY_SCOPE_V1:null,'【宿主操作反馈】'+JSON.stringify(runtimeFeedback({store:this.#store,subjectId:this.#subjectId,policy:policy?{externalSend:policy.externalSend??null,dependencyStatus:policy.dependencyStatus??'not-confirmed'}:null}))].filter(Boolean).join('\n\n')||null;}
+  #instructions(extra=null,context={}){
+    const policy=this.#decide.operationPolicy;
+    const feedback=runtimeFeedback({store:this.#store,subjectId:this.#subjectId,
+      policy:policy?{externalSend:policy.externalSend??null,dependencyStatus:policy.dependencyStatus??'not-confirmed'}:null,...context});
+    return [extra,this.#memoryScopeV1?MEMORY_SCOPE_V1:null,'【宿主操作反馈】'+JSON.stringify(feedback)].filter(Boolean).join('\n\n');
+  }
   get state(){return {...this.#state};}
   get subjectId(){return this.#subjectId;}
   setStyle(style){this.#style=String(style??'').slice(0,16000);}
@@ -98,7 +110,7 @@ export class TurnDriver {
   }
 
   // 节律机会：醒来 ≠ 必须思考。没有待处理观察时只是空闲；预算门由节律层给出。
-  async tick({now=Date.now(),localHour=null,dayKey=null,memoryUpdate=false,followup=null,eventBypass=this.#eventBypass,idleReflection=false}={}){
+  async tick({now=Date.now(),localHour=null,dayKey=null,memoryUpdate=false,followup=null,eventBypass=this.#eventBypass,idleReflection=false,reflectionAfterEventId=null}={}){
     let pendingRecord=readActivity(this.#store,this.#subjectId,this.#workspace),pendingActivity=pendingRecord?.value;
     if(pendingActivity?.failure?.outcome==='uncertain'&&!this.#store.read('extension:'+this.#subjectId+':runtime:invocation:'+pendingActivity.packet.packetId)){
       // Preserve and quarantine the already-recorded legacy unknown, never
@@ -119,7 +131,7 @@ export class TurnDriver {
     }
     if(followup)return this.#runReflection({now,reason:'followup',followup});
     const blocked=new Set([...this.#store.all('extension_record')].filter(r=>r.owner===this.#subjectId&&r.theory==='runtime'&&r.stateType==='operation-feedback'&&r.value?.invocationStopped===true).map(r=>r.value.sourceEvent));
-    const pending=this.#store.subjectInbox({subjectId:this.#subjectId,limit:64,pendingOnly:true}).items.filter(o=>{
+    const pending=this.#store.subjectInbox({subjectId:this.#subjectId,limit:64,pendingOnly:true,excludeDeferred:true}).items.filter(o=>{
       const event=this.#store.read(o.eventId),source={subject:this.#subjectId,kind:'event',event:ref(event)},j=this.#decide.requestJournal;
       return j?.sourceRequest(source)?!j.blocks(source):!blocked.has(o.eventId)&&!(this.#session.sourceBlocked?.(o.eventId));
     });
@@ -143,7 +155,7 @@ export class TurnDriver {
     const r=rhythmTick({now,localHour:hour,state:{lastWakeAt:this.#state.lastWakeAt??(now),nextWakeAt:this.#state.nextWakeAt,
       callsToday:calls,clockSuspect:false,pendingEvents:pending.length},config:this.#config});
     this.#state={lastWakeAt:r.state.lastWakeAt,nextWakeAt:r.state.nextWakeAt,callsToday:r.state.callsToday,dayKey:day};
-    if(memoryUpdate&&pending.length===0&&r.modelAllowed)return this.#runReflection({now,reason:'memory-update',memoryUpdate:true});
+    if(memoryUpdate&&pending.length===0&&r.modelAllowed)return this.#runReflection({now,reason:'memory-update',memoryUpdate:true,reflectionAfterEventId});
     if(idleReflection&&pending.length===0&&r.modelAllowed)return this.#runReflection({now,reason:'idle'});
     if(!r.wake)return {wake:false,reason:r.reason,nextAt:r.nextAt};
     if(!r.modelAllowed)return {wake:true,reason:r.reason,action:'budget-blocked',pending:pending.length,nextAt:r.nextAt};
@@ -152,15 +164,17 @@ export class TurnDriver {
   }
 
   // 节律醒来但没有新观察：给内部时间/注意力摘要，让她自己决定要不要做点什么（不写事件）。
-  async #runReflection({now,reason,memoryUpdate=false,followup=null,resume=null,internal:restoredInternal=null}){
+  async #runReflection({now,reason,memoryUpdate=false,followup=null,resume=null,internal:restoredInternal=null,reflectionAfterEventId=null}){
+    const reflectionTools=this.#allowed.filter(name=>name!=='delegate_workspace_work');
     const internal=restoredInternal??reflectionFrame({read:(id,rev)=>this.#store.read(id,rev),subjectId:this.#subjectId,workspace:this.#workspace,now,
       sinceLastInteraction:this.#state.lastWakeAt===null?null:Math.max(0,now-this.#state.lastWakeAt),
       waitingUntil:this.#state.nextWakeAt});
-    const context={kind:'reflection',now,reason,memoryUpdate,followup,internal},lookups=[...(resume?.context.lookups??[])],outbox=[];let decision=null,choiceKind=null;
+    const context={kind:'reflection',now,reason,memoryUpdate,followup,internal,
+      ...(reflectionAfterEventId?{reflectionAfterEventId}:{})},lookups=[...(resume?.context.lookups??[])],outbox=[];let decision=null,choiceKind=null;
     for(let c=resume?.context.step??0;c<this.#maxCalls;c++){
       const packet=resume?.packet??await this.#session.prepareReflection({previousDecisions:this.#priorDecisions(),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,instructionSuffix:this.#instructions(),store:this.#store,subjectId:this.#subjectId,workspace:this.#workspace,identity:this.#identity,
-        internal,localLookupPolicy:this.#lookupPolicy,apperceptionV1:this.#apperceptionV1,budgetBytes:131072,allowedActionTools:this.#allowed,lookupResults:lookups,capabilities:this.#capabilities,memoryUpdateDue:memoryUpdate,style:this.#style,followup,subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory});
-      decision=await this.#durableDecision(packet,{...context,step:c,lookups},this.#allowed);resume=null;
+        internal,localLookupPolicy:this.#lookupPolicy,apperceptionV1:this.#apperceptionV1,budgetBytes:this.#contextBudgetBytes,allowedActionTools:reflectionTools,lookupResults:lookups,capabilities:this.#capabilities,memoryUpdateDue:memoryUpdate,reflectionAfterEventId,style:this.#style,followup,subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory});
+      decision=await this.#durableDecision(packet,{...context,step:c,lookups},reflectionTools);resume=null;
       observeAssociation({store:this.#store,packet,decision});
       const choice=decision.output.options.find(o=>o.id===decision.output.selected);choiceKind=choice.kind;
       if(choice.kind==='lookup'){
@@ -178,6 +192,32 @@ export class TurnDriver {
     return {wake:true,reason,action:'reflected',decision:ref(decision),choice:choiceKind,silent:!outbox.some(o=>o.kind==='respond'),outbox:[...outbox],lookups};
   }
 
+  // Host-scheduled autonomy: one decision per opportunity slot, on its own workspace.
+  // No QQ scene, no inbox item, no reply. A pending slot reuses its exact packet so a
+  // retry cannot silently ask a different question.
+  async autonomyStep({now=Date.now(),opportunity,kind='idle',focus=null}){
+    ensure(['agent/autonomy','ws:agent/autonomy'].includes(this.#workspace.id),'AUTONOMY_WORKSPACE','autonomy must use its own workspace');
+    ensure(Number.isSafeInteger(opportunity)&&opportunity>0,'AUTONOMY_OPPORTUNITY','opportunity slot required');
+    let packet=null,row=readActivity(this.#store,this.#subjectId,this.#workspace);
+    const same=row&&!['complete','ready'].includes(row.value.phase)&&row.value.packet?.payload?.internal?.kind==='autonomy'&&row.value.packet?.payload?.internal?.opportunity===opportunity;
+    if(same)packet=row.value.packet;
+    else if(row&&!['complete','ready'].includes(row.value.phase))this.#finishActivity();
+    if(!packet){
+      const pin=readPinboard(this.#store);
+      const allowed=memoryAudience({store:this.#store,event:{scene:'agent/autonomy'},subjectId:this.#subjectId,now});
+      const materials=allowed(pin)&&[...pin.body].length<=600?[{ref:ref(pin),aspect:'knowledge'}]:[];
+      packet=await this.#session.prepareAutonomy({workspace:this.#workspace,identity:this.#identity,style:this.#style,
+        allowedActionTools:this.#allowed.filter(name=>name!=='delegate_workspace_work'),opportunity,kind,now,budgetBytes:this.#contextBudgetBytes,focus,timezoneMinutes:this.#timezoneMinutes,materials});
+    }
+    const decision=await this.#durableDecision(packet,{kind:'autonomy',now,opportunity},this.#allowed.filter(name=>name!=='delegate_workspace_work'),{decisionId:'decision:autonomy:'+opportunity,resumePending:Boolean(same)});
+    observeAssociation({store:this.#store,packet,decision});
+    const choice=decision.output.options.find(o=>o.id===decision.output.selected);
+    let action=null;
+    if(choice.kind==='act'){ensure(this.#allowed.includes(choice.payload.tool),'TOOL_NOT_GRANTED','autonomy action tool must be in unified allowedActionTools');action=decision.action??null;}
+    this.#finishActivity();
+    return {wake:true,reason:'autonomy',action:'autonomy',decision:ref(decision),choice:choice.kind,actionOut:action?{tool:choice.payload.tool,args:choice.payload.args,action}:null};
+  }
+
   capturedTaskPacket(task){
     return [...this.#store.all('affect_turn')].find(t=>t.subject===this.#subjectId&&t.status==='captured'&&t.packet.payload.task?.id===task.id&&t.packet.payload.task.stepCount===task.stepCount&&(t.packet.payload.task.controlRevision??0)===(task.controlRevision??0))?.packet??null;
   }
@@ -186,11 +226,49 @@ export class TurnDriver {
     const output=this.#session.capturedOutput?.(packet);ensure(typeof output==='string','TASK_CAPTURE','captured output required');
     const tools=[...new Set([...this.taskAllowedTools(task),'task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'])];
     const id='task-decision:'+packet.packetId;
-    const decision=await this.#session.commit({packet,output,decisionId:id,requestId:id,allowedActionTools:tools,maxOutputBytes:32768,taskGuard:{id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null}});
+    const decision=await this.#session.commit({packet,output,decisionId:id,requestId:id,allowedActionTools:tools,maxOutputBytes:32768,foregroundRecovery:false,taskGuard:{id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null}});
     const choice=decision.output.options.find(o=>o.id===decision.output.selected);
     if(choice.kind==='lookup'){this.#lookup.execute({decision:ref(decision)});return {lookupExhausted:true,decision:null,choice,packet,calls:0,recovered:true};}
     task.interruptCursor=Math.min(task.interrupts.length,(packet.payload.task.interruptCursor??0)+(packet.payload.task.interrupts?.length??0));
     return {decision,choice,packet,decisionRef:ref(decision),calls:0,recovered:true};
+  }
+  // Phase 3.2 R1/R2: find one durable captured decision_attempt for the current task
+  // step and prove it is still bindable to the live subject/attention-frame/workspace
+  // and to the journal's settled, unadopted request. Never invokes a model.
+  capturedTaskAttempt(task){
+    ensure(task&&task.format==='agent-task-v1','TASK_CAPTURE','agent task required');
+    const journal=this.#decide?.requestJournal;
+    if(!journal||typeof journal.packetRequest!=='function'||typeof journal.assertTaskCaptureAdoptable!=='function')return {recoverable:false,reason:'journal-unavailable'};
+    const attempts=[...this.#store.all('decision_attempt')].filter(a=>a.status==='captured'&&typeof a.decisionId==='string'&&a.decisionId.startsWith('task-decision:'));
+    const matches=attempts.filter(a=>{
+      const t=a.input?.payload?.task;
+      return t&&t.id===task.id&&t.stepCount===task.stepCount&&(t.controlRevision??0)===(task.controlRevision??0)&&
+        a.input?.payload?.continuity?.subject?.id===this.#subjectId&&a.decisionId==='task-decision:'+(a.input?.packetId??'');
+    });
+    if(!matches.length)return {recoverable:false,reason:'no-captured-attempt'};
+    if(matches.length>1)return {recoverable:false,reason:'ambiguous-captured-attempt'};
+    const attempt=matches[0],packet=attempt.input,packetId=packet?.packetId,decisionId='task-decision:'+packetId;
+    if(!packetId||attempt.decisionId!==decisionId)return {recoverable:false,reason:'capture-identity'};
+    if(this.#store.read(decisionId))return {recoverable:false,reason:'already-committed'};
+    const subject=this.#store.read(this.#subjectId),delivered=packet.payload?.continuity?.subject;
+    if(!subject||delivered?.id!==this.#subjectId||subject.revision!==delivered.revision)return {recoverable:false,reason:'stale-subject'};
+    const frameRef=packet.payload?.continuity?.attention?.frame;
+    if(frameRef&&this.#store.read(attentionId(this.#subjectId))?.revision!==frameRef.revision)return {recoverable:false,reason:'stale-frame'};
+    const workspaceRef=packet.payload?.workspace;
+    if(workspaceRef&&this.#store.read(workspaceRef.id)?.revision!==workspaceRef.revision)return {recoverable:false,reason:'stale-workspace'};
+    try{journal.assertTaskCaptureAdoptable({packetId,source:journal.taskSource({subject:this.#subjectId,taskId:task.id,step:task.stepCount}),refsUnchanged:true});}
+    catch(error){return {recoverable:false,reason:error.code??'journal-guard',message:error.message};}
+    return {recoverable:true,reason:null,attempt:{id:attempt.id,decisionId},packet,output:attempt.output,decisionId,requestId:attempt.requestKey??decisionId};
+  }
+  async recoverTaskAttempt(task,capture){
+    ensure(capture?.recoverable===true,'TASK_CAPTURE','recoverable captured attempt required');
+    ensure(typeof this.#session.commitCaptured==='function','TASK_CAPTURE','capture-capable session required');
+    const tools=[...new Set([...this.taskAllowedTools(task),'task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'])];
+    const decision=await this.#session.commitCaptured({packet:capture.packet,output:capture.output,decisionId:capture.decisionId,requestId:capture.requestId,allowedActionTools:tools,maxOutputBytes:32768,foregroundRecovery:false,taskGuard:{id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null}});
+    const choice=decision.output.options.find(o=>o.id===decision.output.selected);
+    if(choice.kind==='lookup'){this.#lookup.execute({decision:ref(decision)});return {lookupExhausted:true,decision:null,choice,packet:capture.packet,calls:0,recovered:true,recovery:'captured-attempt'};}
+    task.interruptCursor=Math.min(task.interrupts.length,(capture.packet.payload.task.interruptCursor??0)+(capture.packet.payload.task.interrupts?.length??0));
+    return {decision,choice,packet:capture.packet,taskRef:{id:task.id},decisionRef:ref(decision),calls:0,recovered:true,recovery:'captured-attempt'};
   }
   recoverTaskDecision(task){
     const subject=this.#store.read(this.#subjectId),d=subject?.lastDecision?this.#store.read(subject.lastDecision.id,subject.lastDecision.revision):null;
@@ -217,14 +295,14 @@ export class TurnDriver {
     for(let c=0;c<limit;c++){
       const deliveredInterruptCount=task.interrupts.length;
       const taskContext={id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null,interruptCursor:task.interruptCursor??0,goal:task.goal,plan:task.plan,status:task.status,target:task.target,threadId:task.threadId??null,processId:task.processId??null,stepCount:task.stepCount,budget:task.budget??null,observations:clean(task.observations.slice(-8)),earlierObservations:earlier,observationRefs:clean(task.observationRefs),interrupts:clean(task.interrupts.slice(task.interruptCursor??0)),controlTools:controls};
-      packet=await this.#session.prepare({instructionSuffix:this.#instructions(TASK_STEP_SUFFIX),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials:[],previousDecisions:this.#investigationContinuityV1?[...previousDecisions,...lookupDecisions.slice(-2)]:previousDecisions,investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,lookupResults,mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,localLookupPolicy:this.#lookupPolicy,allowedActionTools:tools,budgetBytes:131072,now,capabilities:this.#capabilities,task:taskContext});
+      packet=await this.#session.prepare({instructionSuffix:this.#instructions(TASK_STEP_SUFFIX),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials:[],previousDecisions:this.#investigationContinuityV1?[...previousDecisions,...lookupDecisions.slice(-2)]:previousDecisions,investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,lookupResults,mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,localLookupPolicy:this.#lookupPolicy,allowedActionTools:tools,budgetBytes:this.#contextBudgetBytes,now,capabilities:this.#capabilities,task:taskContext});
       const output=await this.#session.invoke(packet,async p=>{
         try{ensure(calls<maxModelCalls,'TASK_CALL_BUDGET','task model attempt budget exhausted');await onModelAttempt?.();}catch(error){error.transportInvoked=false;throw error;}
         this.#state.callsToday++;calls++;return this.#decide(p,{beforeCorrection:async()=>{ensure(calls<maxModelCalls,'TASK_CALL_BUDGET','no remaining task model attempt for correction');await onModelAttempt?.();this.#state.callsToday++;calls++;}});
       });
       try{await onDecisionReady?.();}catch(error){await this.#session.supersede?.(packet,error);throw error;}
       const decisionId='task-decision:'+packet.packetId;
-      decision=await this.#session.commit({packet,output,decisionId,requestId:decisionId,allowedActionTools:tools,maxOutputBytes:32768,taskGuard:{id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null}});
+      decision=await this.#session.commit({packet,output,decisionId,requestId:decisionId,allowedActionTools:tools,maxOutputBytes:32768,foregroundRecovery:false,taskGuard:{id:task.id,controlRevision:task.controlRevision??0,leaseToken:task.lease?.token??null}});
       observeAssociation({store:this.#store,packet,decision});
       choice=decision.output.options.find(o=>o.id===decision.output.selected);
       if(choice.kind==='lookup'){if(c===limit-1)return {decision:null,choice,packet,taskRef:{id:task.id},lookupExhausted:true,calls};lookupResults.push(ref(this.#lookup.execute({decision:ref(decision)})));if(this.#investigationContinuityV1)lookupDecisions.push(ref(decision));else previousDecisions.push(ref(decision));continue;}
@@ -238,25 +316,38 @@ export class TurnDriver {
     ensure(event?.type==='event','TURN_DRIVER','pending observation must be an existing event');
     const context={kind:'decision',now,observation,reason},current=ref(event),lookups=[...(resume?.context.lookups??[])],outbox=[];
     const materials=[...(this.#materialsFor({store:this.#store,subjectId:this.#subjectId,event:current,now})??[])];
+    let stateRefs=[];
     // 长期经验卡：宿主先确认这是"她自己的学习语境"，才生成并作为知识材料交付；卡片不是指令。
     if(this.#tendency){
       const context=this.#tendency.contextFor({store:this.#store,event:current,now});
       if(context){const card=this.#tendency.learning.material({context});materials.push({ref:card.ref,aspect:'knowledge'});}
     }
+    if(this.#intentProtocol&&!admission&&materials.length<32){
+      const provided=new Set(materials.map(m=>m.ref.id));
+      const semantic=!resume&&this.#semanticMemory&&['observed','reported'].includes(event.origin)&&shouldTrySemanticRecall(event.body)
+        ?await this.#semanticMemory.find({store:this.#store,subjectId:this.#subjectId,event,now,text:event.body}):[];
+      const reminders=this.#store.view(()=>memoryReminders({store:this.#store,subjectId:this.#subjectId,event:current,now,semantic}));
+      stateRefs=reminders.filter(m=>m.state).map(m=>m.ref);
+      materials.push(...reminders.filter(m=>!m.state&&!provided.has(m.ref.id)).slice(0,32-materials.length));
+    }
     let decision=null,choiceKind=null;
     for(let c=resume?.context.step??0;c<this.#maxCalls;c++){
       const taskResult=event.origin==='tool_receipt'&&event.source?.system==='agent-runtime';
-      const allowedForDecision=taskResult?this.#allowed.filter(t=>!['task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'].includes(t)):this.#allowed;
-      const prepareArgs={instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n')),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
+      const gatewayTextOnly=event.scene?.startsWith('local/gateway/');
+      const decisionTools=this.#allowed.filter(name=>name!=='delegate_workspace_work'||event.scene==='local/chat'&&event.origin==='reported'&&event.actor==='local-desktop-user');
+      const allowedForDecision=gatewayTextOnly?[]:taskResult?decisionTools.filter(t=>!['task_finish','task_blocked','task_help','task_pause','task_wait','task_replan','task_redirect'].includes(t)):decisionTools;
+      const capabilities=gatewayTextOnly?this.#capabilities?.filter(c=>c!=='do'&&!this.#allowed.includes(c))??null:this.#capabilities;
+      const prepareArgs={instructionSuffix:this.#instructions([taskResult?TASK_RESULT_SUFFIX:null,admission?'【显式重新准入】'+JSON.stringify(admission):null].filter(Boolean).join('\n'),this.#intentProtocol&&!admission&&!taskResult?{scene:event.scene,now}:{}),currentEvent:current,workspace:this.#workspace,identity:this.#identity,style:this.#style,materials,stateRefs,previousDecisions:this.#priorDecisions({event}),investigationContinuityV1:this.#investigationContinuityV1,experienceLearningV1:this.#experienceLearningV1,
         mind:true,unified:true,workbenchMaterials:true,workbenchFocus:true,workbenchRecovery:true,algorithmV011:this.#algorithmV011,apperceptionV1:this.#apperceptionV1,
         subjectiveDomains:this.#subjectiveDomains,subjectiveMemory:this.#subjectiveMemory,subjectiveMemoryV2:this.#subjectiveMemoryV2,taskThreads:this.#taskThreads,anchorDirectory:this.#anchorDirectory,socialContext:true,
-        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:131072,now,capabilities:this.#capabilities,...(this.#intentProtocol?{intentProtocol:true}:{})};
+        localLookupPolicy:this.#lookupPolicy,lookupResults:lookups,allowedActionTools:allowedForDecision,budgetBytes:this.#contextBudgetBytes,now,capabilities,...(this.#intentProtocol?{intentProtocol:true,timezoneMinutes:this.#timezoneMinutes}:{})};
       let packet=resume?.packet;
       if(!packet){
         try{packet=await this.#session.prepare(prepareArgs);}
         catch(error){
           if(error.code==='INPUT_OVERFLOW'&&materials.length>0){
-            for(const slim of [materials.slice(0,4),[]]){
+            const explicit=materials.filter(m=>!m.reminder);
+            for(const slim of (explicit.length!==materials.length?[explicit,explicit.slice(0,4),[]]:[materials.slice(0,4),[]])){
               try{packet=await this.#session.prepare({...prepareArgs,materials:slim});break;}
               catch(nextErr){if(nextErr.code!=='INPUT_OVERFLOW')throw nextErr;if(!slim.length)throw nextErr;}
             }
@@ -268,7 +359,10 @@ export class TurnDriver {
       const choice=decision.output.options.find(o=>o.id===decision.output.selected);choiceKind=choice.kind;
       if(choice.kind==='lookup'){
         if(c+1>=this.#maxCalls){this.#finishActivity();return {wake:true,reason,action:'lookup-exhausted',decision:ref(decision),outbox,lookups};}
-        lookups.push(ref(this.#lookup.execute({decision:ref(decision)})));
+        const semantic=this.#semanticMemory&&choice.payload.terms&&packet.payload.intentProtocol?.format==='intent-base-v5'
+          ?await this.#semanticMemory.find({store:this.#store,subjectId:this.#subjectId,event,now,
+            text:choice.payload.terms.join(' '),query:choice.payload.terms}):[];
+        lookups.push(ref(this.#lookup.execute({decision:ref(decision),semantic})));
         this.#finishActivity({...context,step:c+1,lookups});
         continue;
       }
@@ -281,12 +375,27 @@ export class TurnDriver {
     return {wake:true,reason,action:'decided',decision:ref(decision),choice:choiceKind,silent:!outbox.some(o=>o.kind==='respond'),outbox:[...outbox],lookups};
   }
 
-  async #durableDecision(packet,context,allowedActionTools){
+  // Policy decides admission for one decision; only a live foreground decision may reclaim
+  // desk entries. The kind is derived from the actual call path, never from a driver flag.
+  #decisionKind(packet,context){
+    if(context?.kind==='autonomy')return 'autonomy';
+    if(context?.kind==='reflection')return 'reflection';
+    if(packet?.payload?.task)return 'task';
+    const current=packet?.payload?.current?this.#store.read(packet.payload.current.id,packet.payload.current.revision):null;
+    if(current?.origin==='tool_receipt'&&current?.source?.system==='agent-runtime')return 'agent';
+    return 'foreground';
+  }
+  #allowsForegroundRecovery(packet,context){
+    return this.#attentionPolicy.allowsForegroundRecovery({decisionKind:this.#decisionKind(packet,context)})===true;
+  }
+  get attentionPolicy(){return this.#attentionPolicy;}
+  async #durableDecision(packet,context,allowedActionTools,{decisionId:fixedDecisionId=null,resumePending=false}={}){
     let row=readActivity(this.#store,this.#subjectId,this.#workspace);
     const save=value=>{row=saveActivity(this.#store,row,{subject:this.#subjectId,workspace:this.#workspace,value});};
-    if(!row||['complete','ready'].includes(row.value.phase)||['uncertain','not-executed'].includes(row.value.failure?.outcome))save({phase:'prepared',context,packet});
+    const staleFailure=['uncertain','not-executed'].includes(row?.value?.failure?.outcome);
+    if(!row||['complete','ready'].includes(row.value.phase)||(staleFailure&&!resumePending))save({phase:'prepared',context,packet});
     ensure(row.value.packet?.packetId===packet.packetId,'TURN_ACTIVITY_CHANGED','finish the exact pending turn before starting another');
-    const decisionId='decision:'+packet.packetId,requestId='commit:'+packet.packetId;
+    const decisionId=fixedDecisionId??('decision:'+packet.packetId),requestId='commit:'+(fixedDecisionId??packet.packetId);
     if(row.value.phase==='committed'){
       const d=this.#store.read(row.value.decision.id,row.value.decision.revision);
       ensure(d?.type==='decision'&&d.input.packetId===packet.packetId&&d.input.payload.continuity.subject.id===this.#subjectId,'TURN_ACTIVITY_CHANGED','fixed committed Decision required');
@@ -298,7 +407,9 @@ export class TurnDriver {
       output=this.#session.capturedOutput?.(packet);
       if(typeof output!=='string'){
         const error=Object.assign(new Error('interrupted model invocation requires explicit accounting/capture recovery; do not resend'),{code:'TURN_OUTCOME_UNKNOWN'});
-        this.#isolateInvocation(row,error);throw error;
+        const isolated='extension:'+this.#subjectId+':runtime:invocation:'+packet.packetId;
+        if(!this.#store.read(isolated))this.#isolateInvocation(row,error);
+        throw error;
       }
       save({...row.value,phase:'captured',output});
     }
@@ -318,7 +429,7 @@ export class TurnDriver {
     }
     ensure(row.value.phase==='captured','TURN_ACTIVITY','captured output required');
     const write=activityWrite(row,{subject:this.#subjectId,workspace:this.#workspace,value:{phase:'committed',context:row.value.context,packet,decision:{id:decisionId,revision:1}}});
-    try{return await this.#session.commit({packet,output:row.value.output,decisionId,requestId,allowedActionTools,maxOutputBytes:32768,extensionWrites:[write]});}
+    try{return await this.#session.commit({packet,output:row.value.output,decisionId,requestId,allowedActionTools,maxOutputBytes:32768,extensionWrites:[write],foregroundRecovery:this.#allowsForegroundRecovery(packet,context)});}
     catch(error){
       const journal=activityWrite(row,{subject:this.#subjectId,workspace:this.#workspace,value:{...row.value,phase:'complete',failure:{code:error.code??'ERROR',outcome:'rejected-not-adopted'}}});
       this.#session.closeRejected?.({packet,error,journal});throw error;
@@ -398,6 +509,7 @@ export class TurnDriver {
   }
   persistState(){
     const id=`rhythm:${this.#subjectId}`,old=this.#store.read(id),body=canonical({format:'rhythm-state-v1',...this.#state});
+    if(old?.body===body)return ref(old);
     const out=this.#store.execute({requestId:`rhythm-state:${digest({id,body,expected:old?.revision??0})}`,
       commands:[{op:'write_note',id,expectedRevision:old?.revision??0,kind:'skill',change:'self_report',evidence:[],body}]}).at(-1);
     return ref(out.record);

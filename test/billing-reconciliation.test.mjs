@@ -6,7 +6,7 @@ function fixture(){const dir=mkdtempSync(join(tmpdir(),'jy-billing-reconcile-'))
  const initial={format:'jingyang-daily-brain-budget-v1',dayKey:'2026-11-14',dailyMicros:2000000,dailyCalls:30,requests:[row],halted:null,auditEvents:[]};
  const old={format:'jingyang-standing-daily-spend-v1',approvedAt:now,userInstruction:'一天5元，次数不限',dailyMicros:5000000,maxCalls:null,timeZone:'Asia/Shanghai',standing:true,initialLedger:save('history/initial.json',initial),history:[{...save('history/carry.json',{requests:[outside,held]}),kind:'dated',day:'2026-11-14'}]};
  const previousPolicy=save('history/old-policy.json',old),data={...initial,dailyMicros:5000000,dailyCalls:null,dailyPolicySha256:previousPolicy.sha256};writeFileSync(path,JSON.stringify(data));
- const screenshot=save('history/synthetic-screen.json',{synthetic:true}),reconciliation={format:'jingyang-provider-day-reconciliation-v1',provider:{day:'2026-11-14',apiKeyLabel:'新版鲸漾系统',calls:1,tokens:100,displayCny:0,screenshot},knownRows:[row],excludedRows:[outside]};
+ const screenshot=save('history/synthetic-screen.json',{synthetic:true}),reconciliation={format:'jingyang-provider-day-reconciliation-v1',provider:{day:'2026-11-14',apiKeyLabel:'Threadline Agent',calls:1,tokens:100,displayCny:0,screenshot},knownRows:[row],excludedRows:[outside]};
  const policy={...old,amendment:{previousPolicy,previousLedger:save('history/prior-ledger.json',data)},reconciliation:save('history/reconciliation.json',reconciliation)};writeFileSync(path+'.daily.json',JSON.stringify(policy));
  return {dir,path,row,held,policy,reconciliation,save,writePolicy:()=>writeFileSync(path+'.daily.json',JSON.stringify(policy)),open:()=>new DailyBudgetLedger(path,{dailyMicros:5000000,dailyCalls:null,clock:()=>now})};
 }

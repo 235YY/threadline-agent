@@ -3,6 +3,19 @@ import {keepAttention} from './attention.mjs';
 import {deriveRevisions} from './revision-derivation.mjs';
 // Structural, lossless-to-audit adaptation only. No guessed beliefs, sources,
 // state versions, tool grants, action choices, or evidence natures.
+// A string-encoded array is a serialization difference, not a different request:
+// compile it to the declared array shape before the attempt/decision are written.
+// Only a valid JSON string array is accepted; every other string stays unchanged
+// so the ordinary tool contract rejects it instead of falling back to defaults.
+const ACTION_ARGS_NORMALIZERS={
+ start_agent_task(args,diagnostics,path){
+  if(typeof args.allowedTools!=='string')return;
+  let parsed;try{parsed=JSON.parse(args.allowedTools);}catch{return;}
+  if(!Array.isArray(parsed)||!parsed.every(item=>typeof item==='string'))return;
+  diagnostics.push({path:path+'.allowedTools',code:'STRING_ARRAY_PARSED',originalValue:args.allowedTools,parsedLength:parsed.length});
+  args.allowedTools=parsed;
+ }
+};
 export function normalizeProposal(raw,packet){
   let value;try{value=typeof raw==='string'?JSON.parse(raw):JSON.parse(canonical(raw));}catch{return {value:raw,diagnostics:[]};}
   if(!value||Array.isArray(value)||typeof value!=='object')return {value:raw,diagnostics:[]};
@@ -15,7 +28,7 @@ export function normalizeProposal(raw,packet){
     for(const [key,fallback] of [['changes',[]],['residency',{add:[],remove:[]}],['expressionChoice',null],['attention',keepAttention()]]){
       if(!Object.hasOwn(c,key)&&!(key==='attention'&&!['decisionAttention','decisionMind','decisionGraph','reflection'].includes(packet.stage))&&!(packet.stage==='reflection'&&key==='expressionChoice')){c[key]=fallback;diagnostics.push({path:'continuity.'+key,code:'DEFAULT_NO_OPERATION'});}
     }
-    strip(c.attention,['processes','relations','residency','questions','focus','frame','eventProcesses'],'continuity.attention');
+    strip(c.attention,['processes','relations','residency','questions','focus','frame','eventProcesses','followups'],'continuity.attention');
     for(const [i,change]of (Array.isArray(c.changes)?c.changes:[]).entries()){
       strip(change,['id','expectedRevision','kind','body','status','scope','nature','reason','basis','mind','anchor','domains','about','stage'],`continuity.changes[${i}]`);
       if(change?.mind&&Object.hasOwn(change.mind,'basis')&&change.basis&&canonical(change.basis)===canonical(change.mind.basis)){
@@ -32,6 +45,8 @@ export function normalizeProposal(raw,packet){
       delete o.payload.tool;
       diagnostics.push({path:`options[${i}].payload.tool`,code:'ABSENT_EQUIVALENT_REPLY_TOOL_NULL_REMOVED',originalValue:null,reason:'reply-kind-has-no-tool-selection'});
     }
+    if(o?.kind==='act'&&o.payload&&Object.getPrototypeOf(o.payload)===Object.prototype&&o.payload.args&&Object.getPrototypeOf(o.payload.args)===Object.prototype&&typeof o.payload.tool==='string'&&Object.hasOwn(ACTION_ARGS_NORMALIZERS,o.payload.tool))
+      ACTION_ARGS_NORMALIZERS[o.payload.tool](o.payload.args,diagnostics,`options[${i}].payload.args`);
   }
   return {value,diagnostics};
 }

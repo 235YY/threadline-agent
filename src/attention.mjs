@@ -5,6 +5,83 @@ import {restoreUse} from './workbench-recovery.mjs';
 export const attentionId=subject=>`attention:${digest(subject)}`;
 export const PURPOSES=['active-task','affects-current-choice','awaiting-reply','self-directed','recovery-point'];
 export const RELATIONS=['task-part-of','during','overlaps','before','causes','contributes-to','affects','supports','challenges','similar','related','realizes'];
+// Single source of attention-capacity limits. Only foreground comes from the subject; the
+// rest are fixed host resources. Pure constants/derivations: no persistence, no cache, no
+// per-channel policy. The write seam remains update_attention -> advanceAttention.
+export const ATTENTION_CAPACITY_LIMITS=Object.freeze({
+  processes:128,relations:256,questions:64,followups:32,questionAttempts:16,deferrals:32,residenceUpsert:16,restoration:16
+});
+export const ATTENTION_CAPACITY_CODES=Object.freeze(['FOREGROUND_CAPACITY','ATTENTION_CAPACITY','DEFERRAL_CAPACITY']);
+// RESIDENCE_UPSERT_CAPACITY intentionally stays OUT of host-capacity classification: it is a
+// typed output/commit-limit refusal (shape/semantic failure like ATTENTION_LIMIT), so it must
+// not enter the background capacity gate or the deferred-source lifecycle.
+export function isAttentionCapacityError(code){return ATTENTION_CAPACITY_CODES.includes(code);}
+// The only model-visible capacity sentence. No numeric used/max is exposed to the subject;
+// host-only measurement stays in policy.measure/snapshot.
+export const ATTENTION_CAPACITY_HINT='注意力工作区已经满了。外面还有一件事在等你。先看看有没有可以暂时放下的旧事，再处理它。';
+export const ATTENTION_CAPACITY_POLICY_FORMAT='jingyang-attention-capacity-policy-v1';
+export const ATTENTION_DECISION_KINDS=Object.freeze(['foreground','autonomy','reflection','task','agent']);
+const DEFAULT_MAX_FOREGROUND=8;
+function foregroundLimit(subjectOrMaxForeground){
+  const candidate=subjectOrMaxForeground&&typeof subjectOrMaxForeground==='object'?subjectOrMaxForeground.maxForeground:subjectOrMaxForeground;
+  const value=candidate===undefined||candidate===null?DEFAULT_MAX_FOREGROUND:candidate;
+  ensure(Number.isSafeInteger(value)&&value>0&&value<=32,'STATE_LIMIT','foreground capacity must be 1..32');
+  return value;
+}
+export function capacityLimits(subjectOrMaxForeground){
+  return Object.freeze({foreground:foregroundLimit(subjectOrMaxForeground),...ATTENTION_CAPACITY_LIMITS});
+}
+// Host-only projection. Never place this object in a model-visible structure.
+export function measureAttention(frame,policyOrMaxForeground){
+  ensure(frame&&typeof frame==='object','ATTENTION_REQUIRED','attention frame required');
+  const supplied=policyOrMaxForeground;
+  const limits=supplied?.limits?supplied.limits:supplied&&Number.isSafeInteger(supplied.foreground)?supplied:capacityLimits(supplied);
+  const residences=Array.isArray(frame.residences)?frame.residences:[];
+  const activeDeferrals=(frame.deferrals??[]).filter(d=>!['restored','cancelled'].includes(d.status)).length;
+  const used=residences.length,max=limits.foreground;
+  return {used,max,full:used>=max,slots:{
+    foreground:{used,max},
+    processes:{used:liveProcesses(frame.processes??[]).length,max:limits.processes},
+    relations:{used:(frame.relations??[]).length,max:limits.relations},
+    questions:{used:(frame.questions??[]).length,max:limits.questions},
+    followups:{used:(frame.followups??[]).length,max:limits.followups},
+    deferrals:{used:activeDeferrals,max:limits.deferrals}
+  }};
+}
+const defaultResolver=context=>{
+  const kind=context?.decisionKind;
+  return ATTENTION_DECISION_KINDS.includes(kind)?kind:'reflection';
+};
+// Service-level singleton: one frozen object for the same subject across all entries.
+// resolver(context) resolves the decision kind once per decision; only 'foreground' may
+// reclaim a desk entry, all background kinds are fail-closed for reclamation.
+export function createAttentionCapacityPolicy({resolver=null}={}){
+  ensure(resolver===null||resolver===undefined||typeof resolver==='function','ATTENTION_POLICY_SHAPE','resolver must be a function or null');
+  const resolve=context=>{
+    const kind=(resolver??defaultResolver)(context??{});
+    ensure(ATTENTION_DECISION_KINDS.includes(kind),'ATTENTION_POLICY_SHAPE','resolver must return a known decisionKind');
+    return kind;
+  };
+  return Object.freeze({
+    format:ATTENTION_CAPACITY_POLICY_FORMAT,
+    hint:ATTENTION_CAPACITY_HINT,
+    resolve,
+    allowsForegroundRecovery:context=>resolve(context)==='foreground',
+    measure:(frame,subjectOrMaxForeground)=>measureAttention(frame,subjectOrMaxForeground),
+    snapshot:(frame,subjectOrMaxForeground)=>measureAttention(frame,subjectOrMaxForeground),
+    isCapacityError:isAttentionCapacityError
+  });
+}
+export const DEFAULT_ATTENTION_CAPACITY_POLICY=createAttentionCapacityPolicy();
+export function normalizeAttentionCapacityPolicy(value){
+  if(value===undefined||value===null)return DEFAULT_ATTENTION_CAPACITY_POLICY;
+  ensure(value&&typeof value==='object'&&!Array.isArray(value)&&typeof value.resolve==='function'
+    &&typeof value.allowsForegroundRecovery==='function'&&typeof value.isCapacityError==='function','ATTENTION_POLICY_SHAPE','attentionPolicy must be a normalized policy object');
+  return value;
+}
+// Add-only compatibility aliases for callers that adopted the Phase 0 names first.
+export const createAttentionPolicy=createAttentionCapacityPolicy;
+export const DEFAULT_ATTENTION_POLICY=DEFAULT_ATTENTION_CAPACITY_POLICY;
 const copy=x=>JSON.parse(canonical(x)),ref=x=>({id:x.id,revision:x.revision});
 const same=(a,b)=>a?.id===b?.id&&a?.revision===b?.revision;
 const short=(x,n,max=160)=>{text(x,n);ensure([...x].length<=max,'ATTENTION_LIMIT',`${n} too long`);return x;};
@@ -77,8 +154,14 @@ function topology(frame){
   for(const id of nodes.keys())visit(id);
 }
 
+// A process that reached a terminal subject status is a working-graph tombstone: it stays
+// in the frame so task/thread evidence can still resolve it, but it no longer consumes the
+// live-process capacity. The explicit archive marker/shape beyond terminal status is a
+// Lead-owned protocol decision (see phase3.1/impl-u3-b.md interface request).
+export const ARCHIVED_PROCESS_STATUSES=Object.freeze(['completed','abandoned']);
+export const liveProcesses=processes=>processes.filter(p=>!ARCHIVED_PROCESS_STATUSES.includes(p.status));
 export function advanceAttention(previous,raw,env){
-  const delta=attentionDelta(raw),next=copy(previous),visible=env.processRefs??[];
+  const delta=attentionDelta(raw),next=copy(previous),visible=env.processRefs??[],limits=env.limits??capacityLimits(env.maxForeground);
   ensure(!previous.focus||env.workbenchFocus===true,'FOCUS_CAPABILITY','enabled focus cannot be bypassed');
   ensure(!Object.hasOwn(delta,'focus')||env.workbenchFocus===true,'FOCUS_CAPABILITY','focus patch needs explicit capability');
   const observations=env.observations??[],basisRefs=uniqueRefs([...observations.map(ref),...(env.memoryRefs??[])]);
@@ -115,11 +198,16 @@ export function advanceAttention(previous,raw,env){
     ensure(next.processes.some(p=>p.id===change.processId&&['active','proposed'].includes(p.status)),'FOLLOWUP_PROCESS','followup process must be active or proposed');
     time(change.dueAt);ensure(change.dueAt>env.at&&change.dueAt<=env.at+7*24*60*60*1000,'FOLLOWUP_TIME','followup dueAt must be within seven days');
     const basis=uniqueRefs(change.basis);ensure(basis.length>0&&basis.every(r=>basisRefs.some(b=>same(r,b))),'UNDELIVERED_BASIS','followup basis must be delivered');
+    if(typeof env.read==='function'){
+      const original=basis.map(r=>env.read(r.id,r.revision)).find(x=>x?.type==='event'&&['observed','reported'].includes(x.origin)&&x.scene===change.targetScene);
+      ensure(original,'FOLLOWUP_BASIS','followup target must be an admitted original event in its basis');
+    }
     ensure(!next.followups.some(f=>f.id===change.id),'FOLLOWUP_DUPLICATE','followup id already exists');
     next.followups.push({id:change.id,processId:change.processId,targetScene:change.targetScene,dueAt:change.dueAt,status:'scheduled',attempts:0,basis,createdAt:env.at,updatedAt:env.at,lastResponse:null});
   }
-  ensure(next.followups.length<=32,'ATTENTION_CAPACITY','followup limit is thirty-two');
-  ensure(next.processes.length<=128&&next.relations.length<=256,'ATTENTION_CAPACITY','working graph full; explicit archival is required');topology(next);
+  ensure(next.followups.length<=limits.followups,'ATTENTION_CAPACITY','followup limit is thirty-two');
+  const live=liveProcesses(next.processes);
+  ensure(live.length<=limits.processes&&next.relations.length<=limits.relations,'ATTENTION_CAPACITY','live working graph full; completed/abandoned processes are tombstones and do not count, but new live processes need explicit progress');topology(next);
   for(const change of delta.questions){
     exact(change,['id','expectedRevision','op','text','awaitingResponseFrom','responseEvent'],'question');short(change.id,'question id',200);
     const old=next.questions.find(q=>q.id===change.id);ensure(change.expectedRevision===(old?.revision??0),'QUESTION_CONFLICT','question revision changed');
@@ -132,7 +220,7 @@ export function advanceAttention(previous,raw,env){
       ensure(!old||old.status==='open','QUESTION_CLOSED','followup requires an open question');
       ensure(env.responseIntent,'QUESTION_UNSENT','a question attempt needs the selected response intent');
       ensure(change.responseEvent===null,'QUESTION_RESPONSE','sending cannot fabricate an answer');
-      ensure(value.attempts.length<16,'ATTENTION_CAPACITY','question attempt limit');value.attempts.push(pin(env.responseIntent));
+      ensure(value.attempts.length<limits.questionAttempts,'ATTENTION_CAPACITY','question attempt limit');value.attempts.push(pin(env.responseIntent));
     }else if(change.op==='handle'){
       ensure(['open','suspended'].includes(value.status),'QUESTION_CLOSED','question already closed');
       const answer=pin(change.responseEvent),observation=observations.find(o=>same(o,answer));
@@ -148,11 +236,11 @@ export function advanceAttention(previous,raw,env){
     value.revision=change.expectedRevision+1;value.recordedAt=env.at;
     if(old)next.questions[next.questions.indexOf(old)]=value;else next.questions.push(value);
   }
-  ensure(next.questions.length<=64,'ATTENTION_CAPACITY','working questions full; explicit archival is required');
+  ensure(next.questions.length<=limits.questions,'ATTENTION_CAPACITY','working questions full; explicit archival is required');
   if(delta.residency.restore?.length){
     ensure(env.workbenchRecovery===true,'RECOVERY_CAPABILITY','restoration was not enabled');
     const restored=delta.residency.restore.map(r=>restoreUse(r,{frame:next,read:env.read,subject:previous.subject,currentEvent:env.currentEvent,sources:env.recoverySources??[]}));
-    delta.residency.upsert.push(...restored);ensure(delta.residency.upsert.length<=16,'ATTENTION_LIMIT','combined restoration/upsert exceeds bound');
+    delta.residency.upsert.push(...restored);ensure(delta.residency.upsert.length<=limits.residenceUpsert,'RESIDENCE_UPSERT_CAPACITY','combined restoration/upsert exceeds bound');
   }
   for(const id of delta.residency.remove){ensure(next.residences.some(r=>r.id===id),'RESIDENCE_MISSING','cannot remove an unknown residence');
     ensure(!env.residenceIds||env.residenceIds.includes(id),'UNREAD_RESIDENCE','read a residence before removing it');}
@@ -218,6 +306,37 @@ export function advanceAttention(previous,raw,env){
       .filter(p=>p.kind!=='awaiting-reply'||next.questions.find(q=>q.id===p.questionId)?.status==='open');
     return purposes.length?[{...r,target:{...r.target,ref:ref(value)},purposes}]:[];
   });
+  // Opt-in host fallback for foreground turns: the model never sees the
+  // foreground count, so a full desk would otherwise reject an otherwise valid
+  // reply. A state residence with no process endpoint is only a desk entry: the
+  // intent-v1 compiler marks self-authored states as active-task but never binds
+  // them to a process, and self-directed states are the same kind of desk line.
+  // Drop the oldest ordinary state, never a process, an intention, a residence
+  // whose purposes carry process endpoints (any purpose kind, not just
+  // active-task), a residence added this turn, or a state updated this turn even
+  // when its residence was not re-upserted. The underlying state, Intent and
+  // Note are never touched. The generic path stays strict and still refuses
+  // silent eviction.
+  if(next.residences.length>env.maxForeground&&env.foregroundRecovery===true){
+    const excess=next.residences.length-env.maxForeground,added=new Set(delta.residency.upsert.map(r=>r.id));
+    const changedStateIds=new Set([...(env.changedStateIds??[]),...(env.changedStateRefs??[]).map(r=>r?.id??r)]);
+    const candidates=next.residences.filter(r=>{
+      if(r.target.kind!=='state'||added.has(r.id)||changedStateIds.has(r.target.ref.id))return false;
+      const purposes=r.purposes??[];
+      // A purpose that names process endpoints is a real working binding no matter
+      // which kind label it carries; protect it by semantics, not by active-task alone.
+      if(purposes.some(p=>(p.eventIds??[]).length>0))return false;
+      const value=env.read(r.target.ref.id,r.target.ref.revision);
+      return Boolean(value)&&value.kind!=='intention';
+    });
+    const drop=new Set(candidates.slice(0,excess).map(r=>r.id));
+    if(drop.size){
+      // Observation hook only: the host may type this as a capacity diagnostic. Never let a
+      // diagnostic sink break the transaction, and never let it change the eviction decision.
+      try{env.onCapacityEviction?.([...drop]);}catch{}
+      next.residences=next.residences.filter(r=>!drop.has(r.id));
+    }
+  }
   ensure(next.residences.length<=env.maxForeground,'FOREGROUND_CAPACITY','choose residence explicitly; no silent eviction');
   if(delta.deferrals){
     if(!Array.isArray(next.deferrals))next.deferrals=[];
@@ -247,7 +366,7 @@ export function advanceAttention(previous,raw,env){
       d.status='eligible';d.events.push({type:'defer_became_eligible',at:env.at??0,by:'subject'});
     }
     const activeDeferrals=next.deferrals.filter(d=>!['restored','cancelled'].includes(d.status)).length;
-    ensure(activeDeferrals<=32,'DEFERRAL_CAPACITY','active deferral cap exceeded');
+    ensure(activeDeferrals<=limits.deferrals,'DEFERRAL_CAPACITY','active deferral cap exceeded');
   }
   return env.workbenchFocus?advanceWorkbenchFocus(next,delta.focus,{...env,changedProcessIds:delta.processes.map(p=>p.id),changedResidenceIds:delta.residency.upsert.map(r=>r.id)}):next;
 }
@@ -290,7 +409,7 @@ export function expandEvents(frame,query,{maxNodes=8}={}){
     truncated:[...truncated].sort(),nextOffset:null,checkedEdges:Math.min(checkedEdges,256)};
 }
 
-export function attentionView(frame,{read,currentEvent,workbenchFocus=false,focusProcessIds=[],stateCandidates=[],associationCandidates=[]}){
+export function attentionView(frame,{read,currentEvent,workbenchFocus=false,focusProcessIds=[],stateCandidates=[],associationCandidates=[],maxForeground=null}){
   ensure(!frame.focus||workbenchFocus,'FOCUS_CAPABILITY','enabled focus must be explicitly projected');
   const focus=workbenchFocus?focusWorkbench(frame,{read,currentEvent,priorityProcessIds:focusProcessIds,stateCandidates}):null;
   const foreground=[],entries=[],residences=[],materials=[];
@@ -323,9 +442,10 @@ export function attentionView(frame,{read,currentEvent,workbenchFocus=false,focu
     const response=read(a.id);ensure(response?.type==='response','QUESTION_RESPONSE','missing response intent');
     return {ref:ref(response),status:response.status,askedAt:response.status==='sent'?response.recordedAt:null,receipts:response.receipts};})}));
   const requiredStates=[...new Map(foreground.map(s=>[refKey(s),s])).values()],requiredKeys=new Set(requiredStates.map(refKey));
+  const capacity=Number.isSafeInteger(maxForeground)?measureAttention(frame,maxForeground):null;
   return {foreground:requiredStates,metadata:{frame:ref(frame),kind:'retained-context-not-current-observation',residences,entries:entries.filter(s=>!requiredKeys.has(refKey(s.ref))),processes,relations,questions,
     ...(associationCandidates.length?{associationCandidates,associationMeaning:'automatic-flickers-not-facts-not-read; bodies-not-delivered; cross-scene-pointers-are-labels-only; to inspect use lookup ref or terms'}:{}),
-    ...(materials.length?{materials}:{}),...(focus?{focusSupport:focus.metadata}:{}),...(frame.deferrals?.length?{deferrals:frame.deferrals.filter(d=>!['restored','cancelled'].includes(d.status))}:{}),...(frame.followups?.length?{followups:frame.followups}:{}),
+    ...(materials.length?{materials}:{}),...(focus?{focusSupport:focus.metadata}:{}),...(capacity?.full?{capacityHint:ATTENTION_CAPACITY_HINT}:{}),...(frame.deferrals?.length?{deferrals:frame.deferrals.filter(d=>!['restored','cancelled'].includes(d.status))}:{}),...(frame.followups?.length?{followups:frame.followups}:{}),
     directory:{total:frame.processes.length,shown:processes.length,route:'graph.directory'},
     omittedRelations:frame.relations.length-relations.length,
     staleRelations:frame.relations.filter(r=>r.status==='active'&&!activeRelations(frame).some(e=>e.id===r.id))

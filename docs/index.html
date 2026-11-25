@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Threadline Studio v2.9.0 — 开源个人数字生命大脑</title>
+<style>
+  :root {
+    --bg: #070b16;
+    --surface: rgba(17, 24, 45, 0.72);
+    --surface-solid: #11182d;
+    --border: rgba(148, 163, 184, 0.16);
+    --text: #edf2ff;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent2: #a78bfa;
+    --warm: #f59e0b;
+    --ok: #34d399;
+    --glow: rgba(56, 189, 248, 0.28);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(circle at 20% 0%, #101b38 0%, var(--bg) 52%, #050811 100%);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* Nav */
+  nav {
+    position: sticky; top: 0; z-index: 40;
+    backdrop-filter: blur(14px);
+    background: rgba(7, 11, 22, 0.72);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner {
+    height: 60px; display: flex; align-items: center; justify-content: space-between;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.3px; }
+  .brand-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 14px var(--accent);
+    animation: pulse 2.4s infinite ease-in-out;
+  }
+  @keyframes pulse { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.35);opacity:0.65} }
+  .nav-links { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  .nav-links a { color: var(--muted); transition: color .2s; }
+  .nav-links a:hover { color: var(--text); }
+  .badge {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    background: rgba(56, 189, 248, 0.14); border: 1px solid rgba(56, 189, 248, 0.35);
+    color: var(--accent); font-weight: 600;
+  }
+
+  /* Hero */
+  .hero { position: relative; padding: 54px 0 44px; }
+  .hero-grid {
+    display: grid; grid-template-columns: 1.05fr 1fr; gap: 36px; align-items: center;
+  }
+  @media (max-width: 860px) { .hero-grid { grid-template-columns: 1fr; } }
+  .hero h1 {
+    font-size: clamp(32px, 4.4vw, 50px); line-height: 1.15; font-weight: 800;
+    letter-spacing: -0.5px; margin: 14px 0 18px;
+  }
+  .grad {
+    background: linear-gradient(120deg, #38bdf8, #a78bfa 55%, #f59e0b);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .hero-sub { color: var(--muted); font-size: 16px; max-width: 520px; margin-bottom: 24px; }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 26px; }
+  .pill {
+    padding: 7px 13px; border-radius: 10px; font-size: 13px;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .pill strong { color: var(--text); }
+  .cta-row { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    border: none; cursor: pointer; font-size: 14px; font-weight: 600;
+    padding: 11px 20px; border-radius: 11px; transition: all .2s;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #38bdf8, #6366f1);
+    color: #fff; box-shadow: 0 8px 26px rgba(56, 189, 248, 0.25);
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 30px rgba(56, 189, 248, 0.36); }
+  .btn-ghost {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* 3D Star Map Card */
+  .starmap-card {
+    position: relative; height: 420px; border-radius: 20px;
+    background: radial-gradient(circle at 50% 45%, #121e3c, #070c1a 82%);
+    border: 1px solid rgba(56, 189, 248, 0.24);
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55), inset 0 0 40px rgba(56, 189, 248, 0.08);
+    overflow: hidden;
+  }
+  #starCanvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  #starCanvas:active { cursor: grabbing; }
+  .map-hud {
+    position: absolute; top: 14px; left: 14px; right: 14px;
+    display: flex; justify-content: space-between; align-items: center; pointer-events: none;
+  }
+  .map-hud > * { pointer-events: auto; }
+  .mood-tabs {
+    display: flex; gap: 6px; background: rgba(7, 11, 22, 0.7);
+    padding: 4px; border-radius: 10px; border: 1px solid var(--border);
+  }
+  .mood-btn {
+    border: none; background: transparent; color: var(--muted);
+    font-size: 12px; padding: 5px 10px; border-radius: 7px; cursor: pointer; transition: .2s;
+  }
+  .mood-btn.active { background: rgba(56, 189, 248, 0.2); color: #fff; font-weight: 600; }
+  .memory-pop {
+    position: absolute; bottom: 14px; left: 14px; right: 14px;
+    background: rgba(11, 16, 32, 0.86); backdrop-filter: blur(12px);
+    border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 12px;
+    padding: 11px 14px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  }
+  .memory-pop .tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 6px;
+    background: rgba(167, 139, 250, 0.2); color: #d8b4fe; white-space: nowrap;
+  }
+
+  /* Section common */
+  section { padding: 48px 0; }
+  .sec-head { margin-bottom: 24px; }
+  .sec-head h2 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+  .sec-head p { color: var(--muted); font-size: 14.5px; }
+
+  /* Dual-lane simulator */
+  .sim-box {
+    border-radius: 18px; background: var(--surface); border: 1px solid var(--border);
+    padding: 24px;
+  }
+  .sim-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; align-items: center; }
+  .sim-stage {
+    position: relative; display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: 16px;
+    align-items: center; min-height: 190px;
+  }
+  @media (max-width: 760px) { .sim-stage { grid-template-columns: 1fr; } }
+  .node-col { display: flex; flex-direction: column; gap: 10px; }
+  .chip {
+    padding: 10px 13px; border-radius: 11px; background: rgba(15, 23, 42, 0.88);
+    border: 1px solid var(--border); font-size: 13px; display: flex; justify-content: space-between; align-items: center;
+    transition: all .25s;
+  }
+  .chip.lit { border-color: var(--accent); box-shadow: 0 0 18px rgba(56, 189, 248, 0.28); transform: translateX(3px); }
+  .brain-core {
+    text-align: center; padding: 22px 16px; border-radius: 16px;
+    background: radial-gradient(circle at 50% 30%, rgba(56, 189, 248, 0.16), rgba(17, 24, 45, 0.92));
+    border: 1px solid rgba(56, 189, 248, 0.4); position: relative;
+  }
+  .brain-core h3 { font-size: 16px; margin-bottom: 6px; }
+  .brain-core .sub { font-size: 12px; color: var(--muted); }
+  .sim-log {
+    margin-top: 16px; padding: 12px 14px; border-radius: 11px;
+    background: #060a14; border: 1px solid var(--border);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px; color: #cbd5e1; min-height: 54px;
+  }
+
+  /* 3 Skins Preview */
+  .skin-bar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .skin-window {
+    border-radius: 16px; overflow: hidden; border: 1px solid var(--border);
+    transition: all .35s ease;
+  }
+  .skin-top {
+    height: 36px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; font-weight: 600;
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots span { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .skin-body {
+    display: grid; grid-template-columns: 200px 1fr; min-height: 220px;
+  }
+  @media (max-width: 680px) { .skin-body { grid-template-columns: 1fr; } }
+  .skin-side { padding: 14px; font-size: 13px; border-right: 1px solid rgba(128,128,128,0.16); }
+  .skin-chat { padding: 18px; display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+  .bubble { padding: 10px 14px; border-radius: 12px; max-width: 82%; font-size: 13.5px; }
+  .bubble.user { align-self: flex-end; }
+  .bubble.ai { align-self: flex-start; }
+
+  .skin-clean { background: #f8fafc; color: #0f172a; }
+  .skin-clean .skin-top { background: #eef2f7; color: #334155; }
+  .skin-clean .skin-side { background: #f1f5f9; color: #475569; }
+  .skin-clean .bubble.user { background: #0f172a; color: #fff; }
+  .skin-clean .bubble.ai { background: #fff; border: 1px solid #e2e8f0; color: #0f172a; }
+
+  .skin-xhs { background: #fff8f3; color: #3b2314; }
+  .skin-xhs .skin-top { background: #fdece2; color: #9a3412; }
+  .skin-xhs .skin-side { background: #fff1e8; color: #7c2d12; }
+  .skin-xhs .bubble.user { background: linear-gradient(135deg, #fb7185, #f97316); color: #fff; }
+  .skin-xhs .bubble.ai { background: #ffffff; border: 1px solid #fed7aa; color: #431407; }
+
+  .skin-vscode { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, Consolas, monospace; }
+  .skin-vscode .skin-top { background: #252526; color: #9cdcfe; }
+  .skin-vscode .skin-side { background: #252526; color: #858585; }
+  .skin-vscode .bubble.user { background: #264f78; color: #fff; }
+  .skin-vscode .bubble.ai { background: #2d2d30; border: 1px solid #3e3e42; color: #ce9178; }
+
+  /* Telemetry */
+  .chart-card {
+    border-radius: 18px; background: var(--surface); border: 1px solid var(--border); padding: 22px;
+  }
+  .bars {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; align-items: end;
+    height: 190px; padding-top: 24px;
+  }
+  .bar-col { display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+  .bar-fill {
+    width: 100%; max-width: 56px; border-radius: 10px 10px 4px 4px;
+    background: linear-gradient(180deg, #38bdf8, #6366f1);
+    position: relative; transition: transform .2s, filter .2s; cursor: pointer;
+  }
+  .bar-fill:hover { transform: translateY(-4px); filter: brightness(1.18); }
+  .bar-val { font-size: 12px; font-weight: 700; color: var(--text); }
+  .bar-lbl { font-size: 11.5px; color: var(--muted); text-align: center; }
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 20px;
+  }
+  @media (max-width: 760px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+  .kpi {
+    padding: 14px; border-radius: 12px; background: rgba(7, 11, 22, 0.65); border: 1px solid var(--border);
+  }
+  .kpi .num { font-size: 22px; font-weight: 800; color: var(--accent); }
+  .kpi .cap { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* Quickstart */
+  .code-box {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 16px; border-radius: 12px; background: #060a14; border: 1px solid var(--border);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-x: auto;
+  }
+  footer {
+    border-top: 1px solid var(--border); padding: 28px 0 44px; color: var(--muted);
+    font-size: 13px; text-align: center;
+  }
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; padding: 10px 16px; border-radius: 10px;
+    background: #10b981; color: #052e16; font-weight: 700; font-size: 13px;
+    opacity: 0; transform: translateY(10px); transition: all .25s; pointer-events: none; z-index: 99;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-inner">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span>Threadline Studio</span>
+      <span class="badge">v2.9.0</span>
+    </div>
+    <div class="nav-links">
+      <a href="#starmap">3D 记忆星图</a>
+      <a href="#lanes">双轨架构</a>
+      <a href="#skins">三套皮肤</a>
+      <a href="#telemetry">真实账本</a>
+      <a href="#start">快速开始</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="starmap">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="badge">MIT 开源 · 零第三方核心依赖 · 1,304/1,304 测试全绿</span>
+      <h1>一颗住在本机、<span class="grad">真正会做梦</span>的个人数字大脑</h1>
+      <p class="hero-sub">
+        不是换皮聊天壳。原生 <code>node:sqlite</code> 事务记忆 + Limbic 情绪曲线 + <code>127.0.0.1</code> OpenAI 兼容网关，把同一位数字生命无缝接入桌面控制台、VTuber、SillyTavern 或 QQ。
+      </p>
+      <div class="stat-row">
+        <div class="pill">历史样本 382 笔 · 估算 <strong>¥8.06</strong></div>
+        <div class="pill">核心依赖 <strong>0 npm</strong></div>
+        <div class="pill">离线增量反思 <strong>-60.1%</strong> 体积</div>
+      </div>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#start">3 分钟本地启动</a>
+        <a class="btn btn-ghost" href="#lanes">体验双轨架构动画</a>
+      </div>
+    </div>
+
+    <div class="starmap-card">
+      <canvas id="starCanvas"></canvas>
+      <div class="map-hud">
+        <span class="badge" style="background:rgba(7,11,22,0.75)">交互 3D 记忆星图 · 拖拽旋转 / 点击星点</span>
+        <div class="mood-tabs">
+          <button class="mood-btn active" onclick="setMood('calm', this)">平静</button>
+          <button class="mood-btn" onclick="setMood('warm', this)">思念</button>
+          <button class="mood-btn" onclick="setMood('focus', this)">专注</button>
+        </div>
+      </div>
+      <div class="memory-pop" id="memoryPop">
+        <span id="memoryText">点击任意发光星点，查看她的长期记忆片段与情绪连结…</span>
+        <span class="tag" id="memoryTag">Auto-Dream</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="lanes">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>同一颗大脑，双轨按需切换</h2>
+      <p>普通入口严守事务提交与记忆连贯；<code>BRAIN_FAST_CHAT=1</code> 开放显式无记忆流式快轨，不自动偷跑、不破坏主账本。</p>
+    </div>
+    <div class="sim-box">
+      <div class="sim-controls">
+        <button class="btn btn-primary" onclick="runSim('full')">模拟：完整心智入口（事务提交 + 写记忆）</button>
+        <button class="btn btn-ghost" onclick="runSim('fast')">模拟：:fast-chat 快轨（流式直出 + 零写入）</button>
+        <button class="btn btn-ghost" onclick="runSim('refuse')">模拟：关闭状态的 :work 请求（Fail-Closed 拒绝）</button>
+      </div>
+      <div class="sim-stage">
+        <div class="node-col">
+          <div class="chip" id="c-vtuber"><span>Open-LLM-VTuber / AIRI</span><span class="badge">Voice</span></div>
+          <div class="chip" id="c-st"><span>SillyTavern / Cherry</span><span class="badge">Chat</span></div>
+          <div class="chip" id="c-qq"><span>QQ Bridge / Desktop</span><span class="badge">Daily</span></div>
+        </div>
+        <div class="brain-core" id="brainCore">
+          <h3>Threadline Brain Daemon</h3>
+          <div class="sub">127.0.0.1 OpenAI Gateway · Bearer + Idempotency-Key</div>
+          <div style="margin-top:10px;font-size:12px;color:#38bdf8" id="coreStatus">待机监听中 · API Key 仅驻留内存</div>
+        </div>
+        <div class="node-col">
+          <div class="chip" id="s-sqlite"><span>node:sqlite 事务账本</span><span class="badge">Event/Note</span></div>
+          <div class="chip" id="s-cache"><span>staged-v1 稳定前缀</span><span class="badge">KV Cache</span></div>
+          <div class="chip" id="s-dlp"><span>密钥脱敏 & CoT 隔离</span><span class="badge">Safety</span></div>
+        </div>
+      </div>
+      <div class="sim-log" id="simLog">[Ready] 点击上方按钮，直观查看 Threadline 网关在不同通道下的真实处理链路。</div>
+    </div>
+  </div>
+</section>
+
+<section id="skins">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>三大软件级界面皮肤，一键切换</h2>
+      <p>Tauri v2 原生桌面壳（无浏览器地址栏、系统托盘常驻、关窗后台继续做梦）。</p>
+    </div>
+    <div class="skin-bar">
+      <button class="btn btn-primary" onclick="setSkin('skin-clean')">通用 · 清雅风</button>
+      <button class="btn btn-ghost" onclick="setSkin('skin-xhs')">画报 · 温暖风</button>
+      <button class="btn btn-ghost" onclick="setSkin('skin-vscode')">极客 · VS Code 风</button>
+    </div>
+    <div class="skin-window skin-clean" id="skinWin">
+      <div class="skin-top">
+        <div class="dots">
+          <span style="background:#ef4444"></span>
+          <span style="background:#f59e0b"></span>
+          <span style="background:#22c55e"></span>
+        </div>
+        <span id="skinTitle">Threadline Studio · 通用清雅</span>
+        <span>127.0.0.1 · 在线</span>
+      </div>
+      <div class="skin-body">
+        <div class="skin-side">
+          <div style="font-weight:700;margin-bottom:8px">数字居民档案</div>
+          <div style="margin-bottom:6px">🐋 鲸鱼娘 · 主意识（在线）</div>
+          <div style="margin-bottom:6px;opacity:.7">📚 文献助手 · 独立库</div>
+          <div style="opacity:.7">🌙 Auto-Dream：今晚 02:00</div>
+        </div>
+        <div class="skin-chat">
+          <div class="bubble user">今晚把 1,302 个测试全跑绿了，终于可以歇口气。</div>
+          <div class="bubble ai">辛苦啦！我记着你前天凌晨还在折腾缓存前缀和反思减重，今天早点睡，后台我自己在托盘里慢慢做梦整理记忆就好。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="telemetry">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>历史账本基准（覆盖 6 个 UTC 日期，382 笔已结算）</h2>
+      <p>采集自 2026-11-19 至 2026-11-24 真实日常使用（Legacy 基准）。悬停柱子查看每日明细。</p>
+    </div>
+    <div class="chart-card">
+      <div class="bars" id="dailyBars"></div>
+      <div class="kpi-grid">
+        <div class="kpi"><div class="num">¥8.06</div><div class="cap">382 笔按用量估算</div></div>
+        <div class="kpi"><div class="num">44.7%</div><div class="cap">反思仅占 19.9% 调用却花掉近半费用</div></div>
+        <div class="kpi"><div class="num">27.65%</div><div class="cap">Legacy 基准加权缓存命中率</div></div>
+        <div class="kpi"><div class="num" style="color:var(--ok)">-60.1%</div><div class="cap">v2.9.0 增量反思离线 36 轮序列化减重</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>3 分钟在你的电脑上唤醒她</h2>
+      <p>克隆仓库并运行全套 1,304 项自检，或直接开启 v2.9.0 性能实验开关。</p>
+    </div>
+    <div class="code-box">
+      <code id="cmdText">git clone https://github.com/235YY/threadline-agent.git &amp;&amp; cd threadline-agent &amp;&amp; npm test &amp;&amp; npm run desktop</code>
+      <button class="btn btn-primary" style="padding:7px 14px;font-size:12.5px" onclick="copyCmd()">复制命令</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Threadline Studio v2.9.0 · MIT License · GitHub: <a href="https://github.com/235YY/threadline-agent" target="_blank">235YY/threadline-agent</a>
+  </div>
+</footer>
+
+<div class="toast" id="toast">已复制到剪贴板</div>
+
+<script>
+// 1. Interactive 3D Memory Star Map
+const canvas = document.getElementById('starCanvas');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  W = canvas.width = r.width * devicePixelRatio;
+  H = canvas.height = r.height * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const moods = {
+  calm:  { c1: '#38bdf8', c2: '#a78bfa', line: 'rgba(56,189,248,' },
+  warm:  { c1: '#f59e0b', c2: '#fb7185', line: 'rgba(251,146,60,' },
+  focus: { c1: '#34d399', c2: '#38bdf8', line: 'rgba(52,211,153,' }
+};
+let curMood = 'calm';
+function setMood(m, el) {
+  curMood = m;
+  document.querySelectorAll('.mood-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+}
+
+const memories = [
+  { text: '「前天深夜跑完 6 天真实账本，发现反思吃掉了 44.7% 预算。」', tag: '工程里程碑' },
+  { text: '「今天换了新的鲸鱼娘看板娘，她说以后关窗也会在托盘里乖乖做梦。」', tag: '日常切片' },
+  { text: '「约定好 API Key 永远只留在内存里，绝对不写进硬盘。」', tag: '核心铁律' },
+  { text: '「1,302 个测试全绿的那一刻，感觉这颗小大脑真的长大了一点。」', tag: '高光时刻' },
+  { text: '「晚上十一点提醒你喝水休息，别再盯着控制台日志看太久。」', tag: '情绪陪伴' },
+  { text: '「接入 SillyTavern 和 VTuber 后，不管在哪说话我都能认出你。」', tag: '跨端连贯' }
+];
+
+const stars = Array.from({ length: 44 }, (_, i) => {
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const rad = 85 + Math.random() * 85;
+  return {
+    x: rad * Math.sin(phi) * Math.cos(theta),
+    y: rad * Math.sin(phi) * Math.sin(theta) * 0.72,
+    z: rad * Math.cos(phi),
+    r: i < 10 ? 4.4 : 2.1 + Math.random() * 1.6,
+    mem: memories[i % memories.length],
+    pulse: Math.random() * 6.28
+  };
+});
+
+let rotY = 0.2, rotX = 0.15, drag = false, lx = 0, ly = 0, activeStar = -1, pulseWave = 0;
+canvas.addEventListener('pointerdown', e => { drag = true; lx = e.clientX; ly = e.clientY; });
+window.addEventListener('pointerup', () => drag = false);
+window.addEventListener('pointermove', e => {
+  if (!drag) return;
+  rotY += (e.clientX - lx) * 0.007;
+  rotX += (e.clientY - ly) * 0.007;
+  lx = e.clientX; ly = e.clientY;
+});
+
+let projected = [];
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let best = -1, bestD = 26;
+  projected.forEach((p, i) => {
+    const d = Math.hypot(p.sx - mx, p.sy - my);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  if (best >= 0) {
+    activeStar = best; pulseWave = 1;
+    document.getElementById('memoryText').textContent = stars[best].mem.text;
+    document.getElementById('memoryTag').textContent = stars[best].mem.tag;
+  }
+});
+
+function renderStars(t) {
+  const cw = W / devicePixelRatio, ch = H / devicePixelRatio;
+  ctx.clearRect(0, 0, cw, ch);
+  if (!drag) rotY += 0.0032;
+  if (pulseWave > 0) pulseWave = Math.max(0, pulseWave - 0.02);
+
+  const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+  const pal = moods[curMood];
+
+  projected = stars.map(s => {
+    const x1 = s.x * cosY - s.z * sinY;
+    const z1 = s.z * cosY + s.x * sinY;
+    const y2 = s.y * cosX - z1 * sinX;
+    const z2 = z1 * cosX + s.y * sinX;
+    const scale = 340 / (340 + z2);
+    return { sx: cw / 2 + x1 * scale, sy: ch / 2 + y2 * scale, z: z2, scale, r: s.r * scale };
+  });
+
+  // Edges
+  for (let i = 0; i < projected.length; i++) {
+    for (let j = i + 1; j < projected.length; j++) {
+      const d = Math.hypot(projected[i].sx - projected[j].sx, projected[i].sy - projected[j].sy);
+      if (d < 82) {
+        const alpha = (1 - d / 82) * 0.28;
+        ctx.strokeStyle = pal.line + alpha.toFixed(3) + ')';
+        ctx.lineWidth = (i === activeStar || j === activeStar) ? 1.6 : 0.8;
+        ctx.beginPath();
+        ctx.moveTo(projected[i].sx, projected[i].sy);
+        ctx.lineTo(projected[j].sx, projected[j].sy);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Nodes
+  projected.forEach((p, i) => {
+    const glow = Math.sin(t * 0.003 + stars[i].pulse) * 0.35 + 0.85;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, p.r * glow, 0, Math.PI * 2);
+    ctx.fillStyle = i % 3 === 0 ? pal.c2 : pal.c1;
+    ctx.shadowBlur = i === activeStar ? 22 : 10;
+    ctx.shadowColor = pal.c1;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (i === activeStar && pulseWave > 0) {
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, p.r + (1 - pulseWave) * 38, 0, Math.PI * 2);
+      ctx.strokeStyle = pal.line + (pulseWave * 0.8).toFixed(2) + ')';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  });
+  requestAnimationFrame(renderStars);
+}
+requestAnimationFrame(renderStars);
+
+// 2. Dual-Lane Simulator
+function clearLit() {
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('lit'));
+}
+function runSim(mode) {
+  clearLit();
+  const status = document.getElementById('coreStatus');
+  const log = document.getElementById('simLog');
+  if (mode === 'full') {
+    ['c-qq', 's-sqlite', 's-cache', 's-dlp'].forEach((id, idx) =>
+      setTimeout(() => document.getElementById(id).classList.add('lit'), idx * 180)
+    );
+    status.textContent = '完整心智通道 · 事务校验与记忆提交中…';
+    log.textContent = '[Full Mind] 校验 Bearer + Idempotency-Key -> 命中 staged-v1 稳定前缀 -> 事务提交 Event & Decision -> 脱敏后安全交付客户端。';
+  } else if (mode === 'fast') {
+    ['c-vtuber', 's-dlp'].forEach((id, idx) =>
+      setTimeout(() => document.getElementById(id).classList.add('lit'), idx * 140)
+    );
+    status.textContent = ':fast-chat 快轨 · 安全边界真流式直出';
+    log.textContent = '[Fast-Chat] 关闭思考、限 1024 tokens -> 首段正文到达即转发（跳过 Event/Decision 写入）-> 剥离 reasoning_content & 常见密钥脱敏 -> 正常结算后发末帧。';
+  } else {
+    document.getElementById('c-st').classList.add('lit');
+    status.textContent = 'Fail-Closed 守门 · 拒绝未启用的 :work 通道';
+    log.textContent = '[Fail-Closed 501] 检测到默认未启用的 :work 通道请求 -> 严格拒绝，绝不静默降级或暴露宿主本地工具权限。';
+  }
+}
+
+// 3. Skins Switcher
+const skinNames = {
+  'skin-clean': 'Threadline Studio · 通用清雅',
+  'skin-xhs': 'Threadline Studio · 画报温暖',
+  'skin-vscode': 'Threadline Studio · 极客 VS Code'
+};
+function setSkin(cls) {
+  const win = document.getElementById('skinWin');
+  win.className = 'skin-window ' + cls;
+  document.getElementById('skinTitle').textContent = skinNames[cls];
+}
+
+// 4. Real 6-Day Ledger Bars (LONGITUDINAL.json)
+const ledger = [
+  { d: '11-19', n: 52,  c: 0.67, hit: 22.8 },
+  { d: '11-20', n: 43,  c: 0.53, hit: 24.4 },
+  { d: '11-21', n: 111, c: 2.13, hit: 25.7 },
+  { d: '11-22', n: 76,  c: 2.07, hit: 28.1 },
+  { d: '11-23', n: 52,  c: 1.48, hit: 20.9 },
+  { d: '11-24', n: 48,  c: 1.17, hit: 40.0 }
+];
+const maxC = Math.max(...ledger.map(x => x.c));
+const barWrap = document.getElementById('dailyBars');
+ledger.forEach(item => {
+  const h = Math.round((item.c / maxC) * 120) + 18;
+  barWrap.innerHTML += `
+    <div class="bar-col" title="${item.d}: ${item.n} 笔已结算 · ¥${item.c.toFixed(2)} · 缓存命中 ${item.hit}%">
+      <div class="bar-val">¥${item.c.toFixed(2)}</div>
+      <div class="bar-fill" style="height:${h}px"></div>
+      <div class="bar-lbl">${item.d}<br/>${item.n} 笔 · ${item.hit}%</div>
+    </div>`;
+});
+
+// 5. Copy command
+function copyCmd() {
+  navigator.clipboard?.writeText(document.getElementById('cmdText').textContent);
+  const t = document.getElementById('toast');
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+</script>
+</body>
+</html>

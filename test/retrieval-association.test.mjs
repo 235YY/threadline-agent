@@ -25,7 +25,7 @@ function setup(t){
 }
 function prepare(s,lookupResults=[]){
   const session=new ContinuitySession({store:s.store,subjectId:'actor',attention:true,maxForeground:16});
-  return session.prepare({currentEvent:ref(s.current),workspace:ref(s.w),identity:'你是鲸漾。',materials:[],mind:true,unified:true,
+  return session.prepare({currentEvent:ref(s.current),workspace:ref(s.w),identity:'你是小栈。',materials:[],mind:true,unified:true,
     workbenchMaterials:true,workbenchFocus:true,budgetBytes:90000,localLookupPolicy:{maxReads:4,maxHits:8},lookupResults});
 }
 function firstLookup(s){

@@ -26,12 +26,12 @@ function impression(id,body,about,basis,extra={}){
 function setup(t){
   const holder=memory(t),store=holder.store;
   const session=new ContinuitySession({store,subjectId:'p1',attention:true});
-  const [entity]=put(store,'p1-entity',{op:'write_entity',id:'e1',kind:'person',name:'哥哥'});
-  const [e,w]=put(store,'p1-init',event('p1-e1',{sender:{system:'fixture',id:'sender',name:'哥哥',entityId:'e1',isOwner:false}}),frame());
+  const [entity]=put(store,'p1-entity',{op:'write_entity',id:'e1',kind:'person',name:'朋友'});
+  const [e,w]=put(store,'p1-init',event('p1-e1',{sender:{system:'fixture',id:'sender',name:'朋友',entityId:'e1',isOwner:false}}),frame());
   return {store,session,e,w,entity,holder,seq:0};
 }
 function nextEvent(s){
-  const id=`p1-e${++s.seq+2}`;[s.e]=put(s.store,`p1-event-${id}`,event(id,{sender:{system:'fixture',id:'sender',name:'哥哥',entityId:'e1',isOwner:false}}));return s.e;
+  const id=`p1-e${++s.seq+2}`;[s.e]=put(s.store,`p1-event-${id}`,event(id,{sender:{system:'fixture',id:'sender',name:'朋友',entityId:'e1',isOwner:false}}));return s.e;
 }
 function prepare(s,extra={}){
   return s.session.prepare({currentEvent:ref(s.e),workspace:ref(s.w),mind:true,unified:true,workbenchMaterials:true,
@@ -48,7 +48,7 @@ function commit(s,{changes=[],attention=keepAttention(),extra={}}={}){
 
 test('P1 impression 合法创建，无 mind，有 event basis',t=>{
   const s=setup(t);
-  commit(s,{changes:[impression('i1','哥哥可能只是累了',[{kind:'entity',id:'e1'}],[ref(s.e)])]});
+  commit(s,{changes:[impression('i1','朋友可能只是累了',[{kind:'entity',id:'e1'}],[ref(s.e)])]});
   const v=s.store.read('i1');
   assert.equal(v.kind,'impression');
   assert.equal(v.mind,undefined);

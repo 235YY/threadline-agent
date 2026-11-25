@@ -23,7 +23,7 @@ function setup(t,{decide,rhythm,materialsFor,allowedActionTools,workspaceId='qq'
   const holder=memory(t),store=holder.store;
   new ContinuitySession({store,subjectId:'actor',attention:true,maxForeground:16});
   const w=store.read(workspaceId)??put(store,'workspace',frame({id:workspaceId}))[0];
-  const driver=new TurnDriver({store,subjectId:'actor',workspace:ref(w),identity:'你是鲸漾。',decide,rhythm,materialsFor,allowedActionTools});
+  const driver=new TurnDriver({store,subjectId:'actor',workspace:ref(w),identity:'你是小栈。',decide,rhythm,materialsFor,allowedActionTools});
   return {store,w,driver};
 }
 
@@ -103,7 +103,7 @@ test('快照恢复：重启后她仍记得上一次醒来与下一次等待',asy
   await s.driver.tick({now:t0+4*MIN});
   const snap=s.driver.snapshot();
   let n=0;
-  const fresh=new TurnDriver({store:s.store,subjectId:'actor',workspace:ref(s.w),identity:'你是鲸漾。',decide:p=>{n++;return respond('好')(p);}});
+  const fresh=new TurnDriver({store:s.store,subjectId:'actor',workspace:ref(s.w),identity:'你是小栈。',decide:p=>{n++;return respond('好')(p);}});
   fresh.restore(snap);
   const r=await fresh.tick({now:t0+10*MIN});
   assert.equal(r.wake,false,'恢复后仍按上次醒来的间隔判断');
@@ -158,7 +158,7 @@ test('节律状态落成版本化 note，重启后接得上',async t=>{
   const note=s.store.read(saved.id,saved.revision);
   assert.equal(note.kind,'skill');assert.match(note.body,/rhythm-state-v1/);
   let n=0;
-  const fresh=new TurnDriver({store:s.store,subjectId:'actor',workspace:ref(s.w),identity:'你是鲸漾。',decide:p=>{n++;return respond('好')(p);}});
+  const fresh=new TurnDriver({store:s.store,subjectId:'actor',workspace:ref(s.w),identity:'你是小栈。',decide:p=>{n++;return respond('好')(p);}});
   assert.equal(fresh.loadState(),true);
   assert.deepEqual(fresh.state,s.driver.state);
   const r=await fresh.tick({now:t0+10*MIN});

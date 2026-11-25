@@ -272,6 +272,7 @@ test('V1.2.1 source_refs 白名单：current/material/recent/[] 可用，缺失�
   const s=setup(t);
   const old=put(s.store,'app-src-old',event('app-src-old',{occurredAt:900}))[0];
   const e=put(s.store,'app-src-current',event('app-src-current'))[0];
+  admitSubjectEvent({store:s.store,subjectId:'algorithm-test',event:ref(old),requestId:'app-src-admit-old'});
   admitSubjectEvent({store:s.store,subjectId:'algorithm-test',event:ref(e),requestId:'app-src-admit'});
   const p=packet({...s,e},{materials:[{ref:refOf(s.n),aspect:'experience'}],apperceptionV1:true});
   const recent=p.payload.continuity.recent.items.find(x=>x.ref.id===old.id);

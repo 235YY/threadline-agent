@@ -16,3 +16,5 @@ private-audit/
 __pycache__/
 *.pyc
 coverage/
+*.new
+*.lock

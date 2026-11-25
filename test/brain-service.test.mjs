@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import {startBrainService} from '../tools/brain-service/server.mjs';
 import {mkdtempSync,rmSync} from 'node:fs';
@@ -85,6 +85,7 @@ test('服务重启后保留待处理队列（同一 store/stateDirectory）',asy
   const result=await b.turn({});
   assert.equal(result.scene,'qq/private/3');assert.equal(result.silent,false);
 });
+
 test('服务可以本地执行 relate：写绑定 + 回执',async t=>{
   const service=await startBrainService({token:'t',clock:()=>1000,decide,rhythm:{minGapMs:1}});
   t.after(async()=>{await new Promise(r=>service.server.close(r));service.close();});

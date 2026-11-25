@@ -36,11 +36,27 @@ test('existing journal of the wrong format and an existing launch lock are block
  const r=await diagnose({...base,platform:'win32',env:{BRAIN_LIVE:'1',JY_LIVE_CONFIRM:'YES',BRAIN_LEDGER:join(d,'journal.json'),BRAIN_STORE:join(d,'s.sqlite'),BRAIN_STATE:join(d,'state'),BRAIN_IDENTITY_FILE:join(d,'id.txt'),JY_OFFICIAL_USAGE_TOKEN:'x'.repeat(32)}});
  assert.equal(find(r,'identity').status,'ok');assert.equal(find(r,'request-journal').status,'blocked');assert.equal(find(r,'instance').status,'blocked');assert.equal(find(r,'official-usage').status,'ok');
 });
-test('affect and QQ bridge requirements are explicit',async()=>{
- const r=await diagnose({...base,env:{JY_AFFECT:'1',QQ_UIN:'123'},qq:true,spawn:()=>({status:0,stdout:'3.9.1\n'})});
- assert.equal(find(r,'affect').status,'blocked');
- const r2=await diagnose({...base,env:{JY_AFFECT:'1',JY_AFFECT_PYTHON:'python3',QQ_UIN:'123'},qq:true,spawn:()=>({status:0,stdout:'3.13.2\n'})});
- assert.equal(find(r2,'affect').status,'ok');assert.equal(find(r2,'qq-sdk').status,'blocked');assert.equal(find(r2,'qq-onebot').status,'blocked');
+test('affect readiness uses packaged runtime/provenance, warns on degradation, blocks only when required',async t=>{
+ // The repo root carries the verified packaged runtime: JY_AFFECT=1 alone is OK.
+ const packaged=await diagnose({...base,env:{JY_AFFECT:'1'},spawn:()=>({status:1,stdout:''})});
+ assert.equal(find(packaged,'affect').status,'ok');assert.match(find(packaged,'affect').summary,/打包 runtime/);
+ // A clean checkout without the runtime degrades (WARN, still ready), not a block.
+ const clean=cleanRoot(t);
+ const missing=await diagnose({...base,root:clean,env:{JY_AFFECT:'1'},spawn:()=>({status:0,stdout:'3.13.2\n'})});
+ assert.equal(find(missing,'affect').status,'warn');assert.match(find(missing,'affect').summary,/降级/);assert.equal(missing.ready,true);
+ // Explicit operator requirement turns the same condition into a block.
+ const required=await diagnose({...base,root:clean,env:{JY_AFFECT:'1',JY_AFFECT_REQUIRED:'1'},spawn:()=>({status:0,stdout:'3.13.2\n'})});
+ assert.equal(find(required,'affect').status,'blocked');assert.equal(required.ready,false);
+ // Operator-provided interpreter: too old/unavailable warns by default, blocks when required.
+ const old=await diagnose({...base,root:clean,env:{JY_AFFECT:'1',JY_AFFECT_PYTHON:'python3'},spawn:()=>({status:0,stdout:'3.9.1\n'})});
+ assert.equal(find(old,'affect').status,'warn');
+ const oldRequired=await diagnose({...base,root:clean,env:{JY_AFFECT:'1',JY_AFFECT_PYTHON:'python3',JY_AFFECT_REQUIRED:'1'},spawn:()=>({status:0,stdout:'3.9.1\n'})});
+ assert.equal(find(oldRequired,'affect').status,'blocked');
+ const good=await diagnose({...base,root:clean,env:{JY_AFFECT:'1',JY_AFFECT_PYTHON:'python3'},spawn:()=>({status:0,stdout:'3.13.2\n'})});
+ assert.equal(find(good,'affect').status,'ok');
+ // QQ bridge requirements are still explicit when bridge checks are requested.
+ const r=await diagnose({...base,env:{JY_AFFECT:'1',QQ_UIN:'123'},qq:true,spawn:()=>({status:0,stdout:'3.13.2\n'})});
+ assert.equal(find(r,'qq-sdk').status,'blocked');assert.equal(find(r,'qq-onebot').status,'blocked');
 });
 test('live: new subject, new journal and all-chat scope are allowed only when explicitly acknowledged',async t=>{
  const rRoot=cleanRoot(t),d=scratch(t);writeFileSync(join(d,'id.txt'),'你是一个合成测试主体。');
